@@ -1,0 +1,158 @@
+package client
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+)
+
+// CommandRequest is the body for POST /v1/commands.
+type CommandRequest struct {
+	InstanceID    string `json:"instance_id"`
+	AccountID     string `json:"account_id"`
+	Command       string `json:"command"`
+	JiraTicketID  string `json:"jira_ticket_id,omitempty"`
+	ClientVersion string `json:"client_version,omitempty"`
+}
+
+// CommandResponse is the response from POST /v1/commands.
+type CommandResponse struct {
+	RequestID        string `json:"request_id"`
+	Status           string `json:"status"`
+	ExitCode         *int   `json:"exit_code,omitempty"`
+	Stdout           string `json:"stdout,omitempty"`
+	Stderr           string `json:"stderr,omitempty"`
+	Truncated        bool   `json:"truncated"`
+	DurationMs       int64  `json:"duration_ms"`
+	EffectiveCommand string `json:"effective_command,omitempty"`
+	JiraTicketID     string `json:"jira_ticket_id,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	TicketKey        string `json:"ticket_key,omitempty"`
+	TicketURL        string `json:"ticket_url,omitempty"`
+	Message          string `json:"message,omitempty"`
+}
+
+// ClassifyResponse is the response from POST /v1/classify.
+type ClassifyResponse struct {
+	Tier        string   `json:"tier"`
+	Reason      string   `json:"reason,omitempty"`
+	RewrittenTo []string `json:"rewritten_to,omitempty"`
+}
+
+// APIError represents a non-2xx response from the backend.
+type APIError struct {
+	HTTPStatus int
+	Message    string
+	Reason     string
+}
+
+func (e *APIError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("backend error %d: %s", e.HTTPStatus, e.Reason)
+	}
+	return fmt.Sprintf("backend error %d: %s", e.HTTPStatus, e.Message)
+}
+
+// Client is the bbctl-backend HTTP client.
+type Client struct {
+	baseURL       string
+	token         string
+	clientVersion string
+	http          *http.Client
+}
+
+// New creates a new Client.
+func New(baseURL, token, clientVersion string) *Client {
+	return &Client{
+		baseURL:       baseURL,
+		token:         token,
+		clientVersion: clientVersion,
+		http:          &http.Client{},
+	}
+}
+
+// RunCommand calls POST /v1/commands.
+func (c *Client) RunCommand(ctx context.Context, req CommandRequest) (*CommandResponse, error) {
+	req.ClientVersion = c.clientVersion
+	var resp CommandResponse
+	if err := c.postJSON(ctx, "/v1/commands", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Classify calls POST /v1/classify.
+func (c *Client) Classify(ctx context.Context, command, instanceID string) (*ClassifyResponse, error) {
+	body := map[string]string{"command": command, "instance_id": instanceID}
+	var resp ClassifyResponse
+	if err := c.postJSON(ctx, "/v1/classify", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// CancelCommand calls DELETE /v1/commands/{requestID}.
+func (c *Client) CancelCommand(ctx context.Context, requestID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		c.baseURL+"/v1/commands/"+requestID, nil)
+	if err != nil {
+		return err
+	}
+	c.addAuth(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		return c.parseError(resp)
+	}
+	return nil
+}
+
+func (c *Client) postJSON(ctx context.Context, path string, body, out any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.addAuth(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return c.parseError(resp)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) addAuth(req *http.Request) {
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+}
+
+func (c *Client) parseError(resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body)
+	var e struct {
+		Error  string `json:"error"`
+		Reason string `json:"reason"`
+	}
+	_ = json.Unmarshal(body, &e)
+	return &APIError{
+		HTTPStatus: resp.StatusCode,
+		Message:    e.Error,
+		Reason:     e.Reason,
+	}
+}

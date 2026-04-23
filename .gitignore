@@ -1,0 +1,25 @@
+# Binary
+bin/
+*.exe
+.code-review-graph
+
+
+# Config with secrets
+.env
+.env.local
+*.env
+
+# Token file
+token
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Test cache
+*.test

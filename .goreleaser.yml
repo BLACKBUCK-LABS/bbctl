@@ -1,0 +1,112 @@
+version: 2
+
+project_name: bbctl
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: bbctl
+    main: ./cmd/bbctl
+    binary: bbctl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X github.com/blackbuck/bbctl/commands.Version={{.Version}}
+      - -X github.com/blackbuck/bbctl/commands.Commit={{.Commit}}
+      - -X github.com/blackbuck/bbctl/commands.Date={{.Date}}
+
+archives:
+  - id: bbctl
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE*
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - 'merge conflict'
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+  groups:
+    - title: 'New features'
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: 'Bug fixes'
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: 'Other'
+      order: 999
+
+brews:
+  - name: bbctl
+    repository:
+      owner: Blackbuck-LABS
+      name: homebrew-bbctl
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/Blackbuck-LABS/bbctl"
+    description: "Gated EC2 access for Blackbuck — auditable, approval-driven, immutable logs"
+    license: "Proprietary"
+    commit_author:
+      name: Krishna Pratap Kushwah
+      email: krishna.kushwah@blackbuck.com
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    install: |
+      bin.install "bbctl"
+    test: |
+      system "#{bin}/bbctl", "version"
+
+release:
+  github:
+    owner: Blackbuck-LABS
+    name: bbctl
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+  header: |
+    ## bbctl {{ .Tag }}
+
+    Install via Homebrew:
+    ```
+    brew install Blackbuck-LABS/bbctl/bbctl
+    ```
+
+    Or download a binary below.

@@ -23,3 +23,6 @@ Thumbs.db
 
 # Test cache
 *.test
+
+# GoReleaser output
+dist/

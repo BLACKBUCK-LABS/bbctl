@@ -8,8 +8,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Version is set via ldflags at build time.
-var Version = "dev"
+// Build metadata — injected via ldflags at release time.
+var (
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "bbctl",

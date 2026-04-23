@@ -68,11 +68,20 @@ bbctl logout           # delete local token
 backend_url: https://bbctl.blackbuck.com
 ```
 
-You can also override the backend URL without a config file:
+You can also override settings via environment variables:
+
+| Variable | Purpose |
+|---|---|
+| `BBCTL_BACKEND_URL` | Override the backend URL (e.g. for staging) |
+| `BBCTL_OIDC_CLIENT_SECRET` | Override the embedded OAuth client secret (advanced — only needed if pointing at a custom OAuth client) |
+
+Example:
 
 ```bash
 BBCTL_BACKEND_URL=https://bbctl-staging.blackbuck.com bbctl run i-0abc123 -- ps aux
 ```
+
+See [docs/google-oauth-setup.md](docs/google-oauth-setup.md) for details on the OAuth client secret.
 
 ## Command categories
 

@@ -1,55 +1,75 @@
-# Google OAuth Setup for bbctl login
+# Google OAuth Setup for bbctl
+
+## Normal users: nothing to do
+
+The bbctl binary released via Homebrew or the GitHub Releases page has the Google
+OAuth client secret injected at build time. Just run:
+
+```bash
+bbctl login
+```
+
+No environment variables, no config file, no setup required.
 
 ## What is BBCTL_OIDC_CLIENT_SECRET?
 
-`BBCTL_OIDC_CLIENT_SECRET` is the OAuth 2.0 client secret issued by Google for
-the bbctl desktop application. Google's device authorization flow requires the
-client secret during the token exchange step, even though bbctl is a public
-(installed) application.
+`BBCTL_OIDC_CLIENT_SECRET` is an **override** for the build-injected OAuth 2.0
+client secret. You only need it if you are:
 
-The secret must **never** be committed to git or written to `~/.bbctl/config.yaml`.
-It is read exclusively from the environment variable `BBCTL_OIDC_CLIENT_SECRET`.
+- Building bbctl from source (the secret is not in the source tree)
+- Pointing bbctl at a different Google OAuth client (e.g. your own deployment)
 
-## Where to get it
+### Why is the secret not in source?
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Select the **Jenkins Login** project
-3. Navigate to **APIs & Services → Credentials**
-4. Find the OAuth 2.0 client named **bbctl**
-5. Click the download icon to view the client secret (starts with `GOCSPX-`)
+bbctl uses a Google OAuth **Desktop App** client. For this client type, the
+"secret" is not cryptographically sensitive — PKCE (Proof Key for Code Exchange)
+protects the flow, not the client secret. However, having it in source triggers
+GitHub push protection and creates unnecessary noise in the git history. The
+solution is to inject it at build time via `-ldflags` so it lives only in the
+compiled binary, not in the repository.
 
-## How to set it
+## Advanced: building from source
 
-Add to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
+Local builds (e.g. `go build ./cmd/bbctl`) produce a binary with an empty client
+secret. To use `bbctl login` with a locally built binary, set the env var:
 
 ```bash
 export BBCTL_OIDC_CLIENT_SECRET=GOCSPX-...
+bbctl login
 ```
 
-Or set it for a single session:
+Or for a single invocation:
 
 ```bash
-export BBCTL_OIDC_CLIENT_SECRET=GOCSPX-... bbctl login
+BBCTL_OIDC_CLIENT_SECRET=GOCSPX-... bbctl login
 ```
 
-## ~/.bbctl/config.yaml
+Ask DevOps for the secret value if you need it for a local build.
 
-Create (or update) `~/.bbctl/config.yaml` with the following:
+Release builds (GitHub Actions) get it injected automatically via the
+`OIDC_CLIENT_SECRET` repository secret — no manual step needed for CI.
 
-```yaml
-# Google OAuth settings for bbctl login
-oidc_issuer: https://accounts.google.com
-oidc_client_id: 396628175360-g90ptoadcl2coqrtk09oa2625a0k4ppf.apps.googleusercontent.com
-oidc_auth_endpoint: https://accounts.google.com/o/oauth2/v2/auth
-oidc_token_endpoint: https://oauth2.googleapis.com/token
-# client secret is set via env var BBCTL_OIDC_CLIENT_SECRET, never in this file
+## Advanced: overriding the OAuth client
 
-backend_url: https://<your-bbctl-backend-host>
+If you are running your own bbctl backend with a different Google OAuth client:
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Select your project → **APIs & Services → Credentials**
+3. Find your OAuth 2.0 Desktop App client and note the client ID and secret
+
+Set the override before running `bbctl login`:
+
+```bash
+export BBCTL_OIDC_CLIENT_SECRET=GOCSPX-...
+bbctl login
 ```
+
+You will also want to override the other OIDC fields and backend URL via
+`~/.bbctl/config.yaml` or `BBCTL_BACKEND_URL`.
 
 ## Security note
 
-The client secret authenticates the **application**, not the user. It is
-still sensitive — anyone with it can initiate OAuth flows as the bbctl app.
-Treat it like a password: do not log it, do not paste it into Slack or issues,
-and rotate it via Google Cloud Console if it is ever exposed.
+The client secret authenticates the **application** to Google, not the user.
+Do not log it or paste it into Slack or issues. If it is ever compromised,
+rotate it via Google Cloud Console, update the `OIDC_CLIENT_SECRET` repository
+secret, and ship a new binary release.

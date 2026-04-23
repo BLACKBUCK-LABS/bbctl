@@ -11,6 +11,11 @@ import (
 // ErrNotLoggedIn is returned when no token file exists.
 var ErrNotLoggedIn = errors.New("not logged in — run: bbctl login")
 
+// defaultOIDCClientSecret is injected at build time via -ldflags so the secret
+// never lives in source. Release builds set it via OIDC_CLIENT_SECRET in CI.
+// For local development, set BBCTL_OIDC_CLIENT_SECRET env var to override.
+var defaultOIDCClientSecret = ""
+
 // Config holds all user-facing configuration.
 type Config struct {
 	BackendURL         string `yaml:"backend_url"`
@@ -19,8 +24,8 @@ type Config struct {
 	OIDCClientID       string `yaml:"oidc_client_id"`
 	OIDCAuthEndpoint   string `yaml:"oidc_auth_endpoint"`
 	OIDCTokenEndpoint  string `yaml:"oidc_token_endpoint"`
-	// OIDCClientSecret is never written to config file — always read from
-	// BBCTL_OIDC_CLIENT_SECRET env var.
+	// OIDCClientSecret is not written to config file. The embedded default is used
+	// for all Blackbuck users; BBCTL_OIDC_CLIENT_SECRET overrides for custom OAuth clients.
 	OIDCClientSecret   string `yaml:"-"`
 	DefaultTimeoutSecs int    `yaml:"default_timeout_secs"`
 	DefaultAccountID   string `yaml:"default_account_id"` // AWS account ID used when --account is omitted
@@ -46,6 +51,7 @@ func LoadOrDefault(configDir string) (*Config, error) {
 		OIDCAuthEndpoint:   "https://accounts.google.com/o/oauth2/v2/auth",
 		OIDCTokenEndpoint:  "https://oauth2.googleapis.com/token",
 		DefaultAccountID:   "735317561518",
+		OIDCClientSecret:   defaultOIDCClientSecret,
 	}
 	data, err := os.ReadFile(filepath.Join(configDir, "config.yaml"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -63,7 +69,10 @@ func LoadOrDefault(configDir string) (*Config, error) {
 	if v := os.Getenv("BBCTL_BACKEND_URL"); v != "" {
 		cfg.BackendURL = v
 	}
-	// Client secret is never stored in config.yaml — always read from env.
-	cfg.OIDCClientSecret = os.Getenv("BBCTL_OIDC_CLIENT_SECRET")
+	// BBCTL_OIDC_CLIENT_SECRET overrides the embedded default — only needed when
+	// pointing at a custom OAuth client.
+	if v := os.Getenv("BBCTL_OIDC_CLIENT_SECRET"); v != "" {
+		cfg.OIDCClientSecret = v
+	}
 	return cfg, nil
 }

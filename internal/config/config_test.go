@@ -56,6 +56,36 @@ func TestLoadConfig_BackendURLEnvOverridesFile(t *testing.T) {
 	assert.Equal(t, "https://bbctl-staging.blackbuck.com", cfg.BackendURL)
 }
 
+func TestLoadConfig_ClientSecretDefault(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := config.LoadOrDefault(dir)
+	require.NoError(t, err)
+	// In local/test builds defaultOIDCClientSecret is "" (injected by ldflags in
+	// release builds). Assert the field holds whatever the var was set to — the
+	// key invariant is that config file and env var don't pollute it unexpectedly.
+	assert.Equal(t, "", cfg.OIDCClientSecret)
+}
+
+func TestLoadConfig_ClientSecretEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BBCTL_OIDC_CLIENT_SECRET", "custom-secret-value")
+	cfg, err := config.LoadOrDefault(dir)
+	require.NoError(t, err)
+	// Env var beats the embedded default.
+	assert.Equal(t, "custom-secret-value", cfg.OIDCClientSecret)
+}
+
+func TestLoadConfig_ClientSecretConfigFileIgnored(t *testing.T) {
+	dir := t.TempDir()
+	// Even if a malicious or buggy config.yaml tries to set the secret,
+	// the yaml:"-" tag must keep it out. The field must never equal the file value.
+	yaml := "oidc_client_secret: from-file-attempt\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0600))
+	cfg, err := config.LoadOrDefault(dir)
+	require.NoError(t, err)
+	assert.NotEqual(t, "from-file-attempt", cfg.OIDCClientSecret)
+}
+
 func TestLoadConfig_File(t *testing.T) {
 	dir := t.TempDir()
 	yaml := "backend_url: https://my-backend\nauth_mode: sigv4\n"

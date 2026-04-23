@@ -40,19 +40,28 @@ func LoadOrDefault(configDir string) (*Config, error) {
 	cfg := &Config{
 		AuthMode:           "jwt",
 		DefaultTimeoutSecs: 30,
+		BackendURL:         "https://bbctl.blackbuck.com",
+		OIDCIssuer:         "https://accounts.google.com",
+		OIDCClientID:       "396628175360-g90ptoadcl2coqrtk09oa2625a0k4ppf.apps.googleusercontent.com",
+		OIDCAuthEndpoint:   "https://accounts.google.com/o/oauth2/v2/auth",
+		OIDCTokenEndpoint:  "https://oauth2.googleapis.com/token",
+		DefaultAccountID:   "735317561518",
 	}
 	data, err := os.ReadFile(filepath.Join(configDir, "config.yaml"))
-	if errors.Is(err, os.ErrNotExist) {
-		return cfg, nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, err
+	if err == nil {
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return nil, err
+		}
 	}
 	if cfg.DefaultTimeoutSecs == 0 {
 		cfg.DefaultTimeoutSecs = 30
+	}
+	// BBCTL_BACKEND_URL env var takes highest precedence.
+	if v := os.Getenv("BBCTL_BACKEND_URL"); v != "" {
+		cfg.BackendURL = v
 	}
 	// Client secret is never stored in config.yaml — always read from env.
 	cfg.OIDCClientSecret = os.Getenv("BBCTL_OIDC_CLIENT_SECRET")

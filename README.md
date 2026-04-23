@@ -16,7 +16,7 @@ Or download a binary from the [Releases](https://github.com/Blackbuck-LABS/bbctl
 bbctl login
 ```
 
-Opens a browser for Google SSO. Token is saved to `~/.bbctl/config.yaml` and lasts ~1 hour. Run `bbctl login` again when it expires.
+No config file needed — all production defaults are baked in. Opens a browser for Google SSO. Your token is saved to `~/.bbctl/token` and lasts ~1 hour. Run `bbctl login` again when it expires.
 
 ## Usage
 
@@ -62,13 +62,17 @@ bbctl logout           # delete local token
 
 ## Configuration
 
-`~/.bbctl/config.yaml` is created by `bbctl login`. The only field you might edit:
+`~/.bbctl/config.yaml` is optional — all production defaults are baked into the binary. The only reason to create it is to override a value:
 
 ```yaml
 backend_url: https://bbctl.blackbuck.com
 ```
 
-Defaults are correct for production. Don't change unless you know what you're doing.
+You can also override the backend URL without a config file:
+
+```bash
+BBCTL_BACKEND_URL=https://bbctl-staging.blackbuck.com bbctl run i-0abc123 -- ps aux
+```
 
 ## Command categories
 
@@ -82,7 +86,7 @@ Run `bbctl commands` for the live list. Quick summary:
 
 - No pipes, redirects, or shell substitutions. `ps | grep java` will be rejected — run `pgrep java` instead. This is enforced by parsing the command as POSIX shell, not regex.
 - No environment variable expansion. `cat $LOG` won't work — write the literal path.
-- URL allowlist for curl/wget: only `*.blackbuck.com` and `*.jinka.in`.
+- `curl`/`wget` require a Jira ticket; the URL in the ticket must match exactly what you run.
 
 ## Troubleshooting
 

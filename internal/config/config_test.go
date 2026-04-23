@@ -16,6 +16,44 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "jwt", cfg.AuthMode)
 	assert.Equal(t, 30, cfg.DefaultTimeoutSecs)
+	assert.Equal(t, "https://bbctl.blackbuck.com", cfg.BackendURL)
+	assert.Equal(t, "https://accounts.google.com", cfg.OIDCIssuer)
+	assert.Equal(t, "396628175360-g90ptoadcl2coqrtk09oa2625a0k4ppf.apps.googleusercontent.com", cfg.OIDCClientID)
+	assert.Equal(t, "https://accounts.google.com/o/oauth2/v2/auth", cfg.OIDCAuthEndpoint)
+	assert.Equal(t, "https://oauth2.googleapis.com/token", cfg.OIDCTokenEndpoint)
+	assert.Equal(t, "735317561518", cfg.DefaultAccountID)
+}
+
+func TestLoadConfig_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(""), 0600))
+	cfg, err := config.LoadOrDefault(dir)
+	require.NoError(t, err)
+	// All production defaults must still be populated when config.yaml is empty.
+	assert.Equal(t, "https://bbctl.blackbuck.com", cfg.BackendURL)
+	assert.Equal(t, "https://accounts.google.com", cfg.OIDCIssuer)
+	assert.Equal(t, "396628175360-g90ptoadcl2coqrtk09oa2625a0k4ppf.apps.googleusercontent.com", cfg.OIDCClientID)
+	assert.Equal(t, "735317561518", cfg.DefaultAccountID)
+}
+
+func TestLoadConfig_BackendURLEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BBCTL_BACKEND_URL", "https://bbctl-staging.blackbuck.com")
+	cfg, err := config.LoadOrDefault(dir)
+	require.NoError(t, err)
+	// Env var beats both default and config file.
+	assert.Equal(t, "https://bbctl-staging.blackbuck.com", cfg.BackendURL)
+}
+
+func TestLoadConfig_BackendURLEnvOverridesFile(t *testing.T) {
+	dir := t.TempDir()
+	yaml := "backend_url: https://custom-backend\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0600))
+	t.Setenv("BBCTL_BACKEND_URL", "https://bbctl-staging.blackbuck.com")
+	cfg, err := config.LoadOrDefault(dir)
+	require.NoError(t, err)
+	// Env var beats config file value.
+	assert.Equal(t, "https://bbctl-staging.blackbuck.com", cfg.BackendURL)
 }
 
 func TestLoadConfig_File(t *testing.T) {

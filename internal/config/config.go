@@ -11,10 +11,17 @@ import (
 // ErrNotLoggedIn is returned when no token file exists.
 var ErrNotLoggedIn = errors.New("not logged in — run: bbctl login")
 
-// defaultOIDCClientSecret is injected at build time via -ldflags so the secret
-// never lives in source. Release builds set it via OIDC_CLIENT_SECRET in CI.
-// For local development, set BBCTL_OIDC_CLIENT_SECRET env var to override.
-var defaultOIDCClientSecret = ""
+// defaultOIDCClientSecret is the Google OAuth Desktop App client secret.
+//
+// WHY IT IS OK TO HARDCODE THIS:
+//   - Desktop App client secrets are public by design (Google's own docs
+//     acknowledge they cannot be kept confidential).
+//   - PKCE protects the OAuth flow, not this value.
+//   - This pattern does NOT apply to other secrets. Do not use it as
+//     precedent for API keys, database passwords, or anything else.
+//
+// When rotating: update the value here, tag a new release.
+const defaultOIDCClientSecret = "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"
 
 // Config holds all user-facing configuration.
 type Config struct {

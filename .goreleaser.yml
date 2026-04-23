@@ -27,7 +27,6 @@ builds:
       - -X github.com/blackbuck/bbctl/commands.Version={{.Version}}
       - -X github.com/blackbuck/bbctl/commands.Commit={{.Commit}}
       - -X github.com/blackbuck/bbctl/commands.Date={{.Date}}
-      - -X github.com/blackbuck/bbctl/internal/config.defaultOIDCClientSecret={{.Env.OIDC_CLIENT_SECRET}}
 
 archives:
   - id: bbctl

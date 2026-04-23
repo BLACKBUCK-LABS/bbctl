@@ -2,52 +2,45 @@
 
 ## Normal users: nothing to do
 
-The bbctl binary released via Homebrew or the GitHub Releases page has the Google
-OAuth client secret injected at build time. Just run:
+The bbctl binary released via Homebrew or the GitHub Releases page includes the
+Google OAuth client secret. Just run:
 
 ```bash
 bbctl login
 ```
 
-No environment variables, no config file, no setup required.
+No environment variables, no config file, no setup required. Local builds
+(`go build ./cmd/bbctl`) also include the embedded secret — same behavior as
+release builds.
 
 ## What is BBCTL_OIDC_CLIENT_SECRET?
 
-`BBCTL_OIDC_CLIENT_SECRET` is an **override** for the build-injected OAuth 2.0
-client secret. You only need it if you are:
-
-- Building bbctl from source (the secret is not in the source tree)
-- Pointing bbctl at a different Google OAuth client (e.g. your own deployment)
-
-### Why is the secret not in source?
-
-bbctl uses a Google OAuth **Desktop App** client. For this client type, the
-"secret" is not cryptographically sensitive — PKCE (Proof Key for Code Exchange)
-protects the flow, not the client secret. However, having it in source triggers
-GitHub push protection and creates unnecessary noise in the git history. The
-solution is to inject it at build time via `-ldflags` so it lives only in the
-compiled binary, not in the repository.
-
-## Advanced: building from source
-
-Local builds (e.g. `go build ./cmd/bbctl`) produce a binary with an empty client
-secret. To use `bbctl login` with a locally built binary, set the env var:
-
-```bash
-export BBCTL_OIDC_CLIENT_SECRET=GOCSPX-...
-bbctl login
-```
-
-Or for a single invocation:
+`BBCTL_OIDC_CLIENT_SECRET` is an **override** for the embedded OAuth 2.0 client
+secret. You only need it if you are pointing bbctl at a different Google OAuth
+client (e.g. your own deployment with a different OAuth app).
 
 ```bash
 BBCTL_OIDC_CLIENT_SECRET=GOCSPX-... bbctl login
 ```
 
-Ask DevOps for the secret value if you need it for a local build.
+## Why is the secret in source?
 
-Release builds (GitHub Actions) get it injected automatically via the
-`OIDC_CLIENT_SECRET` repository secret — no manual step needed for CI.
+bbctl uses a Google OAuth **Desktop App** client. For this client type, the
+"secret" is not cryptographically sensitive — PKCE (Proof Key for Code Exchange)
+protects the OAuth flow, not the client secret. Google's own documentation
+acknowledges that desktop app client secrets cannot be kept confidential.
+
+We previously attempted to inject this value at build time via `-ldflags`, but
+the complexity cost outweighed any actual security benefit given the secret's
+public-by-design nature. Treating this value as source is the correct engineering
+trade-off here — **and ONLY here**. Do not use this as precedent for actual
+secrets (API keys, database passwords, service tokens, etc.).
+
+## When rotating the secret
+
+1. Generate a new secret in Google Cloud Console → APIs & Services → Credentials
+2. Update `defaultOIDCClientSecret` in `internal/config/config.go`
+3. Tag a new release — Homebrew users get it on next `brew upgrade`
 
 ## Advanced: overriding the OAuth client
 
@@ -70,6 +63,5 @@ You will also want to override the other OIDC fields and backend URL via
 ## Security note
 
 The client secret authenticates the **application** to Google, not the user.
-Do not log it or paste it into Slack or issues. If it is ever compromised,
-rotate it via Google Cloud Console, update the `OIDC_CLIENT_SECRET` repository
-secret, and ship a new binary release.
+If it is ever compromised, rotate it via Google Cloud Console and ship a new
+binary release.

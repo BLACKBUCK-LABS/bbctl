@@ -60,10 +60,8 @@ func TestLoadConfig_ClientSecretDefault(t *testing.T) {
 	dir := t.TempDir()
 	cfg, err := config.LoadOrDefault(dir)
 	require.NoError(t, err)
-	// In local/test builds defaultOIDCClientSecret is "" (injected by ldflags in
-	// release builds). Assert the field holds whatever the var was set to — the
-	// key invariant is that config file and env var don't pollute it unexpectedly.
-	assert.Equal(t, "", cfg.OIDCClientSecret)
+	// Embedded default must be populated — new users need it without any env var set.
+	assert.Equal(t, "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", cfg.OIDCClientSecret)
 }
 
 func TestLoadConfig_ClientSecretEnvOverride(t *testing.T) {
@@ -78,11 +76,12 @@ func TestLoadConfig_ClientSecretEnvOverride(t *testing.T) {
 func TestLoadConfig_ClientSecretConfigFileIgnored(t *testing.T) {
 	dir := t.TempDir()
 	// Even if a malicious or buggy config.yaml tries to set the secret,
-	// the yaml:"-" tag must keep it out. The field must never equal the file value.
+	// the yaml:"-" tag must keep the embedded default in place.
 	yaml := "oidc_client_secret: from-file-attempt\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0600))
 	cfg, err := config.LoadOrDefault(dir)
 	require.NoError(t, err)
+	assert.Equal(t, "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", cfg.OIDCClientSecret)
 	assert.NotEqual(t, "from-file-attempt", cfg.OIDCClientSecret)
 }
 

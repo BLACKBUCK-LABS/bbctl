@@ -10,6 +10,10 @@ import (
 var commandsCmd = &cobra.Command{
 	Use:   "commands",
 	Short: "Show all safe, restricted, and denied commands",
+	Example: `  bbctl run i-0abc123 -- ls /tmp
+  bbctl run i-0abc123 -a divum -- ls /tmp
+  bbctl shell i-0abc123 -a finserv
+  bbctl run i-0abc123 -a tzf --ticket REQ-123 -- curl https://api.internal.com`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println(shell.SafeCommandsTable)
 		fmt.Println(`

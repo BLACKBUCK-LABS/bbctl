@@ -55,6 +55,9 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	if err := config.SaveToken(configDir, idToken); err != nil {
 		return fmt.Errorf("save token: %w", err)
 	}
+	if err := config.WriteDefaultConfig(configDir); err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not write config.yaml: %v\n", err)
+	}
 
 	email := emailFromIDToken(idToken)
 	if email != "" {

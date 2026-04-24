@@ -99,6 +99,7 @@ Available slash commands:
   /classify <command>    — preview command classification without executing
   /history               — show readline history
   /whoami                — show your identity
+  /account               — show current AWS account
 
 Tips:
   - Safe commands run immediately.

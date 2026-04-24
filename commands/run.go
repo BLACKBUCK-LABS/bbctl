@@ -26,7 +26,7 @@ var runCmd = &cobra.Command{
 
 func init() {
 	runCmd.Flags().StringVar(&runTicket, "ticket", "", "Jira ticket ID for restricted commands")
-	runCmd.Flags().StringVar(&runAccount, "account", "", "AWS account ID (overrides default_account_id in config)")
+	runCmd.Flags().StringVarP(&runAccount, "account", "a", "", "AWS account name or ID (overrides default_account_id in config)")
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -57,6 +57,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if accountID == "" {
 		accountID = cfg.DefaultAccountID
 	}
+	accountID = cfg.ResolveAccount(accountID)
 	if accountID == "" {
 		return fmt.Errorf("AWS account ID is required: pass --account 123456789012 or set default_account_id in ~/.bbctl/config.yaml")
 	}

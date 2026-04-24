@@ -21,7 +21,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "396628175360-g90ptoadcl2coqrtk09oa2625a0k4ppf.apps.googleusercontent.com", cfg.OIDCClientID)
 	assert.Equal(t, "https://accounts.google.com/o/oauth2/v2/auth", cfg.OIDCAuthEndpoint)
 	assert.Equal(t, "https://oauth2.googleapis.com/token", cfg.OIDCTokenEndpoint)
-	assert.Equal(t, "735317561518", cfg.DefaultAccountID)
+	assert.Equal(t, "", cfg.DefaultAccountID)
 }
 
 func TestLoadConfig_EmptyFile(t *testing.T) {
@@ -33,7 +33,7 @@ func TestLoadConfig_EmptyFile(t *testing.T) {
 	assert.Equal(t, "https://bbctl.blackbuck.com", cfg.BackendURL)
 	assert.Equal(t, "https://accounts.google.com", cfg.OIDCIssuer)
 	assert.Equal(t, "396628175360-g90ptoadcl2coqrtk09oa2625a0k4ppf.apps.googleusercontent.com", cfg.OIDCClientID)
-	assert.Equal(t, "735317561518", cfg.DefaultAccountID)
+	assert.Equal(t, "", cfg.DefaultAccountID)
 }
 
 func TestLoadConfig_BackendURLEnvOverride(t *testing.T) {

@@ -30,7 +30,7 @@ var shellCmd = &cobra.Command{
 }
 
 func init() {
-	shellCmd.Flags().StringVar(&shellAccount, "account", "", "AWS account ID (overrides default_account_id in config)")
+	shellCmd.Flags().StringVarP(&shellAccount, "account", "a", "", "AWS account name or ID (overrides default_account_id in config)")
 	rootCmd.AddCommand(shellCmd)
 }
 
@@ -57,6 +57,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 	if accountID == "" {
 		accountID = cfg.DefaultAccountID
 	}
+	accountID = cfg.ResolveAccount(accountID)
 	if accountID == "" {
 		return fmt.Errorf("AWS account ID is required: pass --account 123456789012 or set default_account_id in ~/.bbctl/config.yaml")
 	}
@@ -185,6 +186,19 @@ func runShell(cmd *cobra.Command, args []string) error {
 				fmt.Printf("Email:  %s\n", email)
 				if activeTicket != "" {
 					fmt.Printf("Ticket: %s\n", activeTicket)
+				}
+			case "account":
+				if accountID != "" {
+					label := accountID
+					for alias, id := range cfg.AccountAliases {
+						if id == accountID {
+							label = fmt.Sprintf("%s%s (%s)", strings.ToUpper(alias[:1]), alias[1:], accountID)
+							break
+						}
+					}
+					fmt.Fprintf(os.Stdout, "Account: %s\n", label)
+				} else {
+					fmt.Fprintln(os.Stdout, "No account set")
 				}
 			default:
 				fmt.Fprintf(os.Stderr, "Unknown command: /%s — type /help\n", name)

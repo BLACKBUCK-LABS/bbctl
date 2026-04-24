@@ -2,6 +2,7 @@ package shell
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -22,8 +23,8 @@ func ParseSlashCommand(input string) (name, arg string) {
 }
 
 // FormatPrompt builds the shell prompt string.
-// hasTicket indicates whether a Jira ticket is currently active.
-func FormatPrompt(email, instanceID string, hasTicket bool) string {
+// currentDir is the locally tracked directory ("" means home/~).
+func FormatPrompt(email, instanceID string, hasTicket bool, currentDir string) string {
 	user := email
 	if idx := strings.Index(email, "@"); idx >= 0 {
 		user = email[:idx]
@@ -32,7 +33,16 @@ func FormatPrompt(email, instanceID string, hasTicket bool) string {
 	if hasTicket {
 		mode = " [approved]"
 	}
-	return fmt.Sprintf("%s@%s:~%s$ ", user, instanceID, mode)
+	dir := "~"
+	if currentDir != "" {
+		dir = currentDir
+	}
+	return fmt.Sprintf("%s@%s:%s%s$ ", user, instanceID, dir, mode)
+}
+
+// CleanPath normalises a path for use in FormatPrompt (exported for tests).
+func CleanPath(p string) string {
+	return filepath.Clean(p)
 }
 
 // SafeCommandsTable is the formatted safe-commands reference, shared between

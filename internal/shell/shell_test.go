@@ -29,18 +29,29 @@ func TestParseSlashCommand(t *testing.T) {
 }
 
 func TestFormatPrompt_NoTicket(t *testing.T) {
-	p := shell.FormatPrompt("alice@org.com", "i-abc123", false)
+	p := shell.FormatPrompt("alice@org.com", "i-abc123", false, "")
 	assert.Contains(t, p, "alice")
 	assert.Contains(t, p, "i-abc123")
 	assert.NotContains(t, p, "approved")
 }
 
 func TestFormatPrompt_WithTicket(t *testing.T) {
-	p := shell.FormatPrompt("alice@org.com", "i-abc123", true)
+	p := shell.FormatPrompt("alice@org.com", "i-abc123", true, "")
 	assert.Contains(t, p, "approved")
 }
 
 func TestFormatPrompt_EmailWithoutAt(t *testing.T) {
-	p := shell.FormatPrompt("alice", "i-abc123", false)
+	p := shell.FormatPrompt("alice", "i-abc123", false, "")
 	assert.Contains(t, p, "alice")
+}
+
+func TestFormatPrompt_CurrentDir(t *testing.T) {
+	p := shell.FormatPrompt("alice@org.com", "i-abc123", false, "/var/log")
+	assert.Contains(t, p, "/var/log")
+	assert.NotContains(t, p, "~")
+}
+
+func TestFormatPrompt_HomeDir(t *testing.T) {
+	p := shell.FormatPrompt("alice@org.com", "i-abc123", false, "")
+	assert.Contains(t, p, "~")
 }

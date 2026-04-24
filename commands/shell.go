@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -65,8 +66,10 @@ func runShell(cmd *cobra.Command, args []string) error {
 
 	var activeTicket string
 	var history []string
+	var currentDir string // "" = home (~)
+	var prevDir string
 
-	rl, err := readline.New(shell.FormatPrompt(email, instanceID, activeTicket != ""))
+	rl, err := readline.New(shell.FormatPrompt(email, instanceID, activeTicket != "", currentDir))
 	if err != nil {
 		return err
 	}
@@ -103,7 +106,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 	}()
 
 	for {
-		rl.SetPrompt(shell.FormatPrompt(email, instanceID, activeTicket != ""))
+		rl.SetPrompt(shell.FormatPrompt(email, instanceID, activeTicket != "", currentDir))
 		line, err := rl.Readline()
 		if err != nil {
 			if err == io.EOF {
@@ -122,6 +125,22 @@ func runShell(cmd *cobra.Command, args []string) error {
 		if line == "exit" || line == "quit" {
 			fmt.Println("Bye.")
 			return nil
+		}
+
+		// Local cd — never sent to backend, never audited.
+		if isCd(line) {
+			fields := strings.Fields(line)
+			arg := ""
+			if len(fields) >= 2 {
+				arg = fields[1]
+			}
+			if arg == "-" {
+				currentDir, prevDir = prevDir, currentDir
+			} else {
+				prevDir = currentDir
+				currentDir = resolveCd(currentDir, line)
+			}
+			continue
 		}
 
 		// Slash commands — handle locally.
@@ -194,7 +213,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 		resp, err := c.RunCommand(ctx, client.CommandRequest{
 			InstanceID:   instanceID,
 			AccountID:    accountID,
-			Command:      line,
+			Command:      resolvePaths(line, currentDir),
 			JiraTicketID: activeTicket,
 		})
 		cancelFn()
@@ -228,11 +247,12 @@ func runShell(cmd *cobra.Command, args []string) error {
 		state.requestID = resp.RequestID
 
 		if resp.TicketKey != "" {
-			fmt.Fprintf(os.Stdout, "\nJira ticket created: %s\n", resp.TicketKey)
+			fmt.Fprintf(os.Stdout, "\n✅ Jira ticket created: %s\n", resp.TicketKey)
 			fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
-			fmt.Fprintln(os.Stdout, "Waiting for manager approval.")
-			fmt.Fprintf(os.Stdout, "   Once approved:\n     /ticket %s\n     %s\n",
-				resp.TicketKey, line)
+			fmt.Fprintln(os.Stdout, "⏳ Waiting for manager approval.")
+			fmt.Fprintln(os.Stdout, "   Once approved, run these in order:")
+			fmt.Fprintf(os.Stdout, "     1. /ticket %s\n", resp.TicketKey)
+			fmt.Fprintf(os.Stdout, "     2. %s\n\n", line)
 			continue
 		}
 
@@ -252,6 +272,59 @@ func runShell(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(os.Stderr, "[output truncated — use tail/head to narrow]")
 		}
 	}
+}
+
+func isCd(line string) bool {
+	fields := strings.Fields(line)
+	return len(fields) >= 1 && fields[0] == "cd"
+}
+
+func resolveCd(currentDir, line string) string {
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return "" // cd with no args → home
+	}
+	arg := fields[1]
+	switch arg {
+	case "~":
+		return ""
+	case "..":
+		if currentDir == "" || currentDir == "/" {
+			return ""
+		}
+		return filepath.Dir(currentDir)
+	default:
+		if filepath.IsAbs(arg) {
+			return arg
+		}
+		if currentDir == "" {
+			return "/" + arg
+		}
+		return filepath.Join(currentDir, arg)
+	}
+}
+
+// resolvePaths rewrites relative arguments in a command to absolute paths
+// based on the locally tracked currentDir. Flags and absolute paths are
+// passed through unchanged. The command name itself is never modified.
+func resolvePaths(line, currentDir string) string {
+	if currentDir == "" {
+		return line
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return line
+	}
+	result := make([]string, len(fields))
+	result[0] = fields[0]
+	for i, arg := range fields[1:] {
+		if !strings.HasPrefix(arg, "-") && !filepath.IsAbs(arg) {
+			result[i+1] = filepath.Join(currentDir, arg)
+		} else {
+			result[i+1] = arg
+		}
+	}
+	return strings.Join(result, " ")
 }
 
 // extractEmailFromJWT decodes the JWT payload and returns the email claim.

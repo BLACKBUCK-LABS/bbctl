@@ -128,6 +128,16 @@ func runShell(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
+		// Local pwd — print tracked dir without a backend round-trip.
+		if strings.Fields(line)[0] == "pwd" {
+			if currentDir != "" {
+				fmt.Println(currentDir)
+			} else {
+				fmt.Println("~")
+			}
+			continue
+		}
+
 		// Local cd — never sent to backend, never audited.
 		if isCd(line) {
 			fields := strings.Fields(line)
@@ -318,6 +328,16 @@ func resolveCd(currentDir, line string) string {
 	}
 }
 
+// defaultsToCwd is the set of commands that operate on currentDir when
+// called with no positional arguments.
+var defaultsToCwd = map[string]bool{
+	"ls":   true,
+	"ll":   true,
+	"la":   true,
+	"du":   true,
+	"find": true,
+}
+
 // resolvePaths rewrites relative arguments in a command to absolute paths
 // based on the locally tracked currentDir. Flags and absolute paths are
 // passed through unchanged. The command name itself is never modified.
@@ -329,14 +349,19 @@ func resolvePaths(line, currentDir string) string {
 	if len(fields) == 0 {
 		return line
 	}
-	result := make([]string, len(fields))
-	result[0] = fields[0]
-	for i, arg := range fields[1:] {
+	result := make([]string, 0, len(fields)+1)
+	result = append(result, fields[0])
+	hasPositional := false
+	for _, arg := range fields[1:] {
 		if !strings.HasPrefix(arg, "-") && !filepath.IsAbs(arg) {
-			result[i+1] = filepath.Join(currentDir, arg)
+			result = append(result, filepath.Join(currentDir, arg))
+			hasPositional = true
 		} else {
-			result[i+1] = arg
+			result = append(result, arg)
 		}
+	}
+	if !hasPositional && defaultsToCwd[fields[0]] {
+		result = append(result, currentDir)
 	}
 	return strings.Join(result, " ")
 }

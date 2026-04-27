@@ -35,6 +35,56 @@ type CommandResponse struct {
 	Message          string `json:"message,omitempty"`
 }
 
+// UploadRequest is the body for POST /v1/upload.
+type UploadRequest struct {
+	InstanceID string `json:"instance_id"`
+	AccountID  string `json:"account_id"`
+	DestPath   string `json:"dest_path"`
+	Filename   string `json:"filename"`
+	ContentB64 string `json:"content_b64"`
+	SHA256     string `json:"sha256"`
+	TicketID   string `json:"ticket_id,omitempty"`
+}
+
+// DownloadRequest is the body for POST /v1/download.
+type DownloadRequest struct {
+	InstanceID string `json:"instance_id"`
+	AccountID  string `json:"account_id"`
+	SrcPath    string `json:"src_path"`
+	TicketID   string `json:"ticket_id,omitempty"`
+}
+
+// DownloadResponse is the response from POST /v1/download.
+type DownloadResponse struct {
+	RequestID    string `json:"request_id"`
+	Status       string `json:"status"`
+	ContentB64   string `json:"content_b64,omitempty"`
+	PresignedURL string `json:"presigned_url,omitempty"`
+	Filename     string `json:"filename,omitempty"`
+	SizeBytes    int    `json:"size_bytes,omitempty"`
+	TicketKey    string `json:"ticket_key,omitempty"`
+	TicketURL    string `json:"ticket_url,omitempty"`
+	Message      string `json:"message,omitempty"`
+}
+
+// Upload calls POST /v1/upload.
+func (c *Client) Upload(ctx context.Context, req UploadRequest) (*CommandResponse, error) {
+	var resp CommandResponse
+	if err := c.postJSON(ctx, "/v1/upload", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Download calls POST /v1/download.
+func (c *Client) Download(ctx context.Context, req DownloadRequest) (*DownloadResponse, error) {
+	var resp DownloadResponse
+	if err := c.postJSON(ctx, "/v1/download", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // ClassifyResponse is the response from POST /v1/classify.
 type ClassifyResponse struct {
 	Tier        string   `json:"tier"`

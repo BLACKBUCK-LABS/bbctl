@@ -13,7 +13,9 @@ var commandsCmd = &cobra.Command{
 	Example: `  bbctl run i-0abc123 -- ls /tmp
   bbctl run i-0abc123 -a divum -- ls /tmp
   bbctl shell i-0abc123 -a finserv
-  bbctl run i-0abc123 -a tzf --ticket REQ-123 -- curl https://api.internal.com`,
+  bbctl run i-0abc123 -a tzf --ticket REQ-123 -- curl https://api.internal.com
+  bbctl upload i-0abc123 ./dump.sql /tmp/dump.sql
+  bbctl download i-0abc123 /var/log/app.log ./app.log`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println(shell.SafeCommandsTable)
 		fmt.Println(`

@@ -15,6 +15,7 @@ import (
 
 	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
+	ec2picker "github.com/blackbuck/bbctl/internal/ec2"
 	"github.com/blackbuck/bbctl/internal/shell"
 	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
@@ -23,9 +24,9 @@ import (
 var shellAccount string
 
 var shellCmd = &cobra.Command{
-	Use:   "shell <instance-id>",
+	Use:   "shell [instance-id]",
 	Short: "Open an interactive shell session against an EC2 instance",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.ArbitraryArgs,
 	RunE:  runShell,
 }
 
@@ -35,8 +36,6 @@ func init() {
 }
 
 func runShell(cmd *cobra.Command, args []string) error {
-	instanceID := args[0]
-
 	configDir, err := config.DefaultConfigDir()
 	if err != nil {
 		return err
@@ -53,16 +52,43 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("backend_url not set in ~/.bbctl/config.yaml")
 	}
 
+	var instanceID string
+	if len(args) > 0 && strings.HasPrefix(args[0], "i-") {
+		instanceID = args[0]
+	}
+
 	accountID := shellAccount
 	if accountID == "" {
 		accountID = cfg.DefaultAccountID
 	}
 	accountID = cfg.ResolveAccount(accountID)
+
+	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+
+	if instanceID == "" {
+		instances, err := ec2picker.LoadAll(cmd.Context(), c, cfg, configDir, false)
+		if err != nil {
+			return fmt.Errorf("load instances: %w", err)
+		}
+		selected, err := ec2picker.Pick(instances)
+		if err != nil {
+			return err
+		}
+		if selected == nil {
+			fmt.Println("Cancelled.")
+			return nil
+		}
+		instanceID = selected.InstanceID
+		if shellAccount == "" {
+			accountID = selected.AccountID
+		}
+		fmt.Printf("→ %s (%s)\n", selected.Name, selected.InstanceID)
+	}
+
 	if accountID == "" {
 		return fmt.Errorf("AWS account ID is required: pass --account 123456789012 or set default_account_id in ~/.bbctl/config.yaml")
 	}
 
-	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
 	email := extractEmailFromJWT(token)
 
 	var activeTicket string

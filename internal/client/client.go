@@ -67,6 +67,32 @@ type DownloadResponse struct {
 	Message      string `json:"message,omitempty"`
 }
 
+// InstanceInfo describes a single EC2 instance returned by /v1/instances.
+type InstanceInfo struct {
+	Name         string `json:"name"`
+	InstanceID   string `json:"instance_id"`
+	PrivateIP    string `json:"private_ip"`
+	PublicIP     string `json:"public_ip"`
+	InstanceType string `json:"instance_type"`
+	State        string `json:"state"`
+	AZ           string `json:"az"`
+}
+
+// ListInstancesResponse is the response from POST /v1/instances.
+type ListInstancesResponse struct {
+	Instances []InstanceInfo `json:"instances"`
+}
+
+// ListInstances calls POST /v1/instances for the given account.
+func (c *Client) ListInstances(ctx context.Context, accountID string) ([]InstanceInfo, error) {
+	var resp ListInstancesResponse
+	if err := c.postJSON(ctx, "/v1/instances",
+		map[string]string{"account_id": accountID}, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Instances, nil
+}
+
 // Upload calls POST /v1/upload.
 func (c *Client) Upload(ctx context.Context, req UploadRequest) (*CommandResponse, error) {
 	var resp CommandResponse

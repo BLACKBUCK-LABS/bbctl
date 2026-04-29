@@ -11,6 +11,7 @@ import (
 
 	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
+	ec2picker "github.com/blackbuck/bbctl/internal/ec2"
 	"github.com/spf13/cobra"
 )
 
@@ -18,9 +19,9 @@ var runTicket string
 var runAccount string
 
 var runCmd = &cobra.Command{
-	Use:   "run <instance-id> -- <command> [args...]",
+	Use:   "run [instance-id] -- <command> [args...]",
 	Short: "Run a single command on an EC2 instance",
-	Args:  cobra.MinimumNArgs(1),
+	Args:  cobra.ArbitraryArgs,
 	RunE:  runRun,
 }
 
@@ -31,12 +32,6 @@ func init() {
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
-	instanceID := args[0]
-	command := strings.Join(args[1:], " ")
-	if command == "" {
-		return fmt.Errorf("usage: bbctl run <instance-id> -- <command> [args...]")
-	}
-
 	configDir, err := config.DefaultConfigDir()
 	if err != nil {
 		return err
@@ -53,16 +48,51 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("backend_url not set in ~/.bbctl/config.yaml")
 	}
 
+	// Split args into optional instance ID + command.
+	// If first arg starts with "i-" it's an instance ID; otherwise show picker.
+	var instanceID string
+	cmdArgs := args
+	if len(args) > 0 && strings.HasPrefix(args[0], "i-") {
+		instanceID = args[0]
+		cmdArgs = args[1:]
+	}
+
+	command := strings.Join(cmdArgs, " ")
+	if command == "" {
+		return fmt.Errorf("usage: bbctl run [instance-id] -- <command> [args...]")
+	}
+
 	accountID := runAccount
 	if accountID == "" {
 		accountID = cfg.DefaultAccountID
 	}
 	accountID = cfg.ResolveAccount(accountID)
+
+	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+
+	if instanceID == "" {
+		instances, err := ec2picker.LoadAll(cmd.Context(), c, cfg, configDir, false)
+		if err != nil {
+			return fmt.Errorf("load instances: %w", err)
+		}
+		selected, err := ec2picker.Pick(instances)
+		if err != nil {
+			return err
+		}
+		if selected == nil {
+			fmt.Println("Cancelled.")
+			return nil
+		}
+		instanceID = selected.InstanceID
+		if runAccount == "" {
+			accountID = selected.AccountID
+		}
+		fmt.Printf("→ %s (%s)\n", selected.Name, selected.InstanceID)
+	}
+
 	if accountID == "" {
 		return fmt.Errorf("AWS account ID is required: pass --account 123456789012 or set default_account_id in ~/.bbctl/config.yaml")
 	}
-
-	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

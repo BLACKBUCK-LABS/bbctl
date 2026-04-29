@@ -89,6 +89,11 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("AWS account ID is required: pass --account 123456789012 or set default_account_id in ~/.bbctl/config.yaml")
 	}
 
+	return runShellDirect(instanceID, accountID, cfg, token)
+}
+
+func runShellDirect(instanceID, accountID string, cfg *config.Config, token string) error {
+	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
 	email := extractEmailFromJWT(token)
 
 	var activeTicket string
@@ -144,6 +149,23 @@ func runShell(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Accumulate backslash-continued lines into one command.
+		for strings.HasSuffix(strings.TrimRight(line, " "), "\\") {
+			line = strings.TrimRight(line, " ")
+			line = line[:len(line)-1] // strip trailing backslash
+			rl.SetPrompt("> ")
+			nextLine, contErr := rl.Readline()
+			rl.SetPrompt(shell.FormatPrompt(email, instanceID, activeTicket != "", currentDir))
+			if contErr != nil {
+				line = ""
+				break
+			}
+			line = line + " " + strings.TrimSpace(nextLine)
+		}
 		if line == "" {
 			continue
 		}

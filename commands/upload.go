@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
@@ -37,6 +38,12 @@ func runUpload(cmd *cobra.Command, args []string) error {
 	localPath := args[1]
 	remotePath := args[2]
 
+	filename := filepath.Base(localPath)
+
+	if strings.HasSuffix(remotePath, "/") {
+		remotePath = remotePath + filename
+	}
+
 	content, err := os.ReadFile(localPath)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", localPath, err)
@@ -45,7 +52,6 @@ func runUpload(cmd *cobra.Command, args []string) error {
 	sum := sha256.Sum256(content)
 	sha256hex := fmt.Sprintf("%x", sum)
 	contentB64 := base64.StdEncoding.EncodeToString(content)
-	filename := filepath.Base(localPath)
 
 	configDir, err := config.DefaultConfigDir()
 	if err != nil {

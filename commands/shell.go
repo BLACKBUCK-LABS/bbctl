@@ -122,10 +122,29 @@ func runShell(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		// Bare exit/quit — treat same as /exit regardless of slash.
-		if line == "exit" || line == "quit" {
-			fmt.Println("Bye.")
-			return nil
+		// "clear" always handles locally — clears ticket if active, else clears screen.
+		if strings.Fields(line)[0] == "clear" {
+			if activeTicket != "" {
+				activeTicket = ""
+				fmt.Println("Ticket cleared. Back to safe mode.")
+				rl.SetPrompt(shell.FormatPrompt(email, instanceID, false, currentDir))
+			} else {
+				fmt.Print("\033[2J\033[H")
+			}
+			continue
+		}
+
+		// "exit"/"quit" — clear ticket if active, else exit shell.
+		if strings.Fields(line)[0] == "exit" || strings.Fields(line)[0] == "quit" {
+			if activeTicket != "" {
+				activeTicket = ""
+				fmt.Println("Ticket cleared. Back to safe mode.")
+				rl.SetPrompt(shell.FormatPrompt(email, instanceID, false, currentDir))
+			} else {
+				fmt.Println("Bye.")
+				return nil
+			}
+			continue
 		}
 
 		// Local pwd — print tracked dir without a backend round-trip.
@@ -164,11 +183,20 @@ func runShell(cmd *cobra.Command, args []string) error {
 			case "help":
 				fmt.Print(shell.HelpText)
 			case "ticket":
-				if arg == "" {
-					fmt.Fprintln(os.Stderr, "Usage: /ticket <jira-id>")
+				if arg == "clear" || arg == "none" {
+					activeTicket = ""
+					fmt.Println("Ticket cleared. Back to safe mode.")
+					rl.SetPrompt(shell.FormatPrompt(email, instanceID, false, currentDir))
+				} else if arg == "" {
+					if activeTicket != "" {
+						fmt.Printf("Active ticket: %s\n", activeTicket)
+					} else {
+						fmt.Println("No active ticket set.")
+					}
 				} else {
 					activeTicket = arg
 					fmt.Printf("Ticket %s set.\n", activeTicket)
+					rl.SetPrompt(shell.FormatPrompt(email, instanceID, true, currentDir))
 				}
 			case "classify":
 				if arg == "" {
@@ -278,6 +306,12 @@ func runShell(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stdout, "     1. /ticket %s\n", resp.TicketKey)
 			fmt.Fprintf(os.Stdout, "     2. %s\n\n", line)
 			continue
+		}
+
+		if resp.Status == "success" && resp.TicketKey == "" && activeTicket != "" {
+			fmt.Fprintf(os.Stdout, "\nTicket %s marked as Access Granted — cleared.\n", activeTicket)
+			activeTicket = ""
+			rl.SetPrompt(shell.FormatPrompt(email, instanceID, false, currentDir))
 		}
 
 		if resp.Stdout != "" {

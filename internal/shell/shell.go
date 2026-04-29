@@ -95,7 +95,9 @@ const HelpText = `
 Available slash commands:
   /help                  — show this help
   /exit, /quit           — exit the shell
-  /ticket <jira-id>      — set active Jira ticket for restricted commands
+  /ticket <id>           — set active Jira ticket for restricted commands
+  /ticket                — show current ticket
+  /ticket clear          — clear active ticket
   /classify <command>    — preview command classification without executing
   /history               — show readline history
   /whoami                — show your identity

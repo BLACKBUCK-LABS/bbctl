@@ -48,11 +48,11 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	idToken, err := runLoopbackFlow(ctx, cfg)
+	idToken, refreshToken, err := runLoopbackFlow(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	if err := config.SaveToken(configDir, idToken); err != nil {
+	if err := config.SaveToken(configDir, idToken, refreshToken); err != nil {
 		return fmt.Errorf("save token: %w", err)
 	}
 	if err := config.WriteDefaultConfig(configDir); err != nil {
@@ -68,10 +68,10 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runLoopbackFlow(ctx context.Context, cfg *config.Config) (string, error) {
+func runLoopbackFlow(ctx context.Context, cfg *config.Config) (idToken, refreshToken string, err error) {
 	ln, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
-		return "", fmt.Errorf("start local callback server: %w", err)
+		return "", "", fmt.Errorf("start local callback server: %w", err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://localhost:%d", port)
@@ -118,13 +118,13 @@ func runLoopbackFlow(ctx context.Context, cfg *config.Config) (string, error) {
 	case code := <-codeCh:
 		return exchangeCode(ctx, cfg, code, redirectURI)
 	case err := <-errCh:
-		return "", err
+		return "", "", err
 	case <-ctx.Done():
-		return "", errors.New("login timed out after 2 minutes — please try again")
+		return "", "", errors.New("login timed out after 2 minutes — please try again")
 	}
 }
 
-func exchangeCode(ctx context.Context, cfg *config.Config, code, redirectURI string) (string, error) {
+func exchangeCode(ctx context.Context, cfg *config.Config, code, redirectURI string) (idToken, refreshToken string, err error) {
 	data := url.Values{
 		"grant_type":   {"authorization_code"},
 		"code":         {code},
@@ -138,32 +138,33 @@ func exchangeCode(ctx context.Context, cfg *config.Config, code, redirectURI str
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.OIDCTokenEndpoint,
 		strings.NewReader(data.Encode()))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("token exchange: %w", err)
+		return "", "", fmt.Errorf("token exchange: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	var tok struct {
-		IDToken string `json:"id_token"`
-		Error   string `json:"error"`
-		Desc    string `json:"error_description"`
+		IDToken      string `json:"id_token"`
+		RefreshToken string `json:"refresh_token"`
+		Error        string `json:"error"`
+		Desc         string `json:"error_description"`
 	}
 	if err := json.Unmarshal(body, &tok); err != nil {
-		return "", fmt.Errorf("token exchange: parse response: %w", err)
+		return "", "", fmt.Errorf("token exchange: parse response: %w", err)
 	}
 	if tok.Error != "" {
-		return "", fmt.Errorf("token exchange failed: %s — %s", tok.Error, tok.Desc)
+		return "", "", fmt.Errorf("token exchange failed: %s — %s", tok.Error, tok.Desc)
 	}
 	if tok.IDToken == "" {
-		return "", fmt.Errorf("token exchange: no id_token in response: %s", string(body))
+		return "", "", fmt.Errorf("token exchange: no id_token in response: %s", string(body))
 	}
-	return tok.IDToken, nil
+	return tok.IDToken, tok.RefreshToken, nil
 }
 
 // emailFromIDToken extracts the email claim from the JWT payload without

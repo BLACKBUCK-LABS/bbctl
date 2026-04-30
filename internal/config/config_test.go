@@ -98,7 +98,7 @@ func TestLoadConfig_File(t *testing.T) {
 func TestTokenRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	tok := "eyJ.test.token"
-	require.NoError(t, config.SaveToken(dir, tok))
+	require.NoError(t, config.SaveToken(dir, tok, ""))
 
 	// File should exist with 0600 perms.
 	info, err := os.Stat(filepath.Join(dir, "token"))
@@ -118,7 +118,7 @@ func TestLoadToken_Missing(t *testing.T) {
 
 func TestDeleteToken(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, config.SaveToken(dir, "tok"))
+	require.NoError(t, config.SaveToken(dir, "tok", ""))
 	require.NoError(t, config.DeleteToken(dir))
 	_, err := config.LoadToken(dir)
 	assert.ErrorIs(t, err, config.ErrNotLoggedIn)

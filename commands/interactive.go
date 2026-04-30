@@ -97,7 +97,7 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 		return nil
 	}
 
-	return executeAction(cmd.Context(), actionKey, selected, c, cfg, token)
+	return executeAction(cmd.Context(), actionKey, selected, c, cfg, cfgDir, token)
 }
 
 func pickAction(inst *ec2picker.Instance) (string, error) {
@@ -123,11 +123,11 @@ func pickAction(inst *ec2picker.Instance) (string, error) {
 	return actions[idx].Key, nil
 }
 
-func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instance, c *client.Client, cfg *config.Config, token string) error {
+func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instance, c *client.Client, cfg *config.Config, cfgDir, token string) error {
 	scanner := bufio.NewScanner(os.Stdin)
 	switch actionKey {
 	case "shell":
-		return runShellDirect(inst.InstanceID, inst.AccountID, cfg, token)
+		return runShellDirect(inst.InstanceID, inst.AccountID, cfg, cfgDir, token)
 
 	case "run":
 		fmt.Print("Command: ")

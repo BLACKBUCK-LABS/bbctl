@@ -92,10 +92,10 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("AWS account ID is required: pass --account 123456789012 or set default_account_id in ~/.bbctl/config.yaml")
 	}
 
-	return runShellDirect(instanceID, accountID, cfg, token)
+	return runShellDirect(instanceID, accountID, cfg, configDir, token)
 }
 
-func runShellDirect(instanceID, accountID string, cfg *config.Config, token string) error {
+func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, token string) error {
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
 	email := extractEmailFromJWT(token)
 
@@ -171,6 +171,17 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, token stri
 		}
 		if line == "" {
 			continue
+		}
+
+		// Silently refresh token if expiring soon.
+		if config.IsTokenExpired(cfgDir) {
+			newToken, err := config.RefreshToken(cfgDir, cfg)
+			if err != nil {
+				fmt.Fprintln(os.Stdout, "\n⚠️  Session expired. Please run: bbctl login")
+				return nil
+			}
+			token = newToken
+			c = client.New(cfg.BackendURL, token, "bbctl/"+Version)
 		}
 
 		// Detect curl @file references and handle uploads if needed.

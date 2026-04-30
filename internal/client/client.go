@@ -11,11 +11,12 @@ import (
 
 // CommandRequest is the body for POST /v1/commands.
 type CommandRequest struct {
-	InstanceID    string `json:"instance_id"`
-	AccountID     string `json:"account_id"`
-	Command       string `json:"command"`
-	JiraTicketID  string `json:"jira_ticket_id,omitempty"`
-	ClientVersion string `json:"client_version,omitempty"`
+	InstanceID             string `json:"instance_id"`
+	AccountID              string `json:"account_id"`
+	Command                string `json:"command"`
+	JiraTicketID           string `json:"jira_ticket_id,omitempty"`
+	EffectiveForValidation string `json:"effective_for_validation,omitempty"`
+	ClientVersion          string `json:"client_version,omitempty"`
 }
 
 // CommandResponse is the response from POST /v1/commands.

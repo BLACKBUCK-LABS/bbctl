@@ -407,6 +407,45 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, to
 	}
 }
 
+func buildCombinedCurl(
+	ctx context.Context,
+	localRefs []shell.FileRef,
+	rewrites map[string]string,
+	rewritten string,
+	c *client.Client,
+) (combined string, ok bool) {
+	fmt.Fprintln(os.Stdout, "\n⬆️  Staging files to S3...")
+	var segments []string
+	for _, ref := range localRefs {
+		content, err := os.ReadFile(ref.Path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read %s: %v\n", ref.Path, err)
+			return "", false
+		}
+		sum := sha256.Sum256(content)
+		stageResp, err := c.StageFile(ctx, client.StageRequest{
+			Filename:   filepath.Base(ref.Path),
+			ContentB64: base64.StdEncoding.EncodeToString(content),
+			SHA256:     hex.EncodeToString(sum[:]),
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "stage %s: %v\n", ref.Path, err)
+			return "", false
+		}
+		fmt.Fprintf(os.Stdout, "   ✅ %s staged\n", filepath.Base(ref.Path))
+		ec2Path := rewrites[ref.Path]
+		if len(segments) == 0 {
+			segments = append(segments,
+				fmt.Sprintf("curl -sf '%s' -o '%s'", stageResp.PresignedURL, ec2Path))
+		} else {
+			segments = append(segments,
+				fmt.Sprintf("--next -sf '%s' -o '%s'", stageResp.PresignedURL, ec2Path))
+		}
+	}
+	segments = append(segments, "--next "+rewritten)
+	return strings.Join(segments, " "), true
+}
+
 func handleCurlFileRefs(
 	line *string,
 	instanceID, accountID, activeTicket string,
@@ -447,7 +486,6 @@ func handleCurlFileRefs(
 	fmt.Fprintln(os.Stdout, "\nThese files need to be on the EC2 instance first.")
 
 	rewrites := make(map[string]string)
-
 	for _, ref := range localRefs {
 		suggested := shell.SuggestEC2Path(ref.Path)
 		fmt.Fprintf(os.Stdout,
@@ -464,64 +502,49 @@ func handleCurlFileRefs(
 
 	rewritten := shell.RewriteCommand(*line, rewrites)
 
-	// Stage each local file to S3, collect presigned URLs.
-	fmt.Fprintln(os.Stdout, "\n⬆️  Staging files to S3...")
-	type stagedFile struct {
-		presignedURL string
-		ec2Path      string
-	}
-	var staged []stagedFile
-	for _, ref := range localRefs {
-		content, err := os.ReadFile(ref.Path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "read %s: %v\n", ref.Path, err)
-			return true, nil
-		}
-		sum := sha256.Sum256(content)
-		stageResp, err := c.StageFile(context.Background(), client.StageRequest{
-			Filename:   filepath.Base(ref.Path),
-			ContentB64: base64.StdEncoding.EncodeToString(content),
-			SHA256:     hex.EncodeToString(sum[:]),
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "stage %s: %v\n", ref.Path, err)
-			return true, nil
-		}
-		fmt.Fprintf(os.Stdout, "   ✅ %s staged\n", filepath.Base(ref.Path))
-		staged = append(staged, stagedFile{
-			presignedURL: stageResp.PresignedURL,
-			ec2Path:      rewrites[ref.Path],
-		})
-	}
-
-	// Build combined curl --next command:
-	//   curl -sf '<url>' -o '<ec2path>' [--next -sf '<url2>' -o '<ec2path2>'] --next <rewritten_main_curl>
-	combined := ""
-	for i, sf := range staged {
-		if i == 0 {
-			combined = fmt.Sprintf("curl -sf '%s' -o '%s'", sf.presignedURL, sf.ec2Path)
-		} else {
-			combined += fmt.Sprintf(" --next -sf '%s' -o '%s'", sf.presignedURL, sf.ec2Path)
-		}
-	}
-	combined += " --next " + rewritten
-
+	// TICKET ACTIVE: stage files fresh, build combined curl --next, execute directly.
 	if activeTicket != "" {
-		// Ticket active: replace line with combined command and fall through to execution.
-		*line = combined
-		return false, nil
+		combined, ok := buildCombinedCurl(context.Background(), localRefs, rewrites, rewritten, c)
+		if !ok {
+			return true, nil
+		}
+		resp, err := c.RunCommand(context.Background(), client.CommandRequest{
+			InstanceID:             instanceID,
+			AccountID:              accountID,
+			Command:                combined,
+			JiraTicketID:           activeTicket,
+			EffectiveForValidation: rewritten,
+		})
+		if err != nil {
+			return true, err
+		}
+		if resp.Stdout != "" {
+			fmt.Print(resp.Stdout)
+			if !strings.HasSuffix(resp.Stdout, "\n") {
+				fmt.Println()
+			}
+		}
+		if resp.Stderr != "" {
+			fmt.Fprint(os.Stderr, resp.Stderr)
+			if !strings.HasSuffix(resp.Stderr, "\n") {
+				fmt.Fprintln(os.Stderr)
+			}
+		}
+		if resp.Truncated {
+			fmt.Fprintln(os.Stderr, "[output truncated — use tail/head to narrow]")
+		}
+		return true, nil
 	}
 
-	// No ticket — submit combined command; backend auto-creates ticket for the full operation.
+	// NO TICKET: send main rewritten curl for auto-ticket creation (no staging yet).
 	resp, err := c.RunCommand(context.Background(), client.CommandRequest{
 		InstanceID: instanceID,
 		AccountID:  accountID,
-		Command:    combined,
+		Command:    rewritten,
 	})
 	if err != nil {
 		return true, err
 	}
-
 	if resp.TicketKey != "" {
 		fmt.Fprintf(os.Stdout, "\n✅ Jira ticket created: %s\n", resp.TicketKey)
 		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
@@ -529,7 +552,7 @@ func handleCurlFileRefs(
 		fmt.Fprintln(os.Stdout, "   Once approved, run these in order:")
 		fmt.Fprintf(os.Stdout, "     1. /ticket %s\n", resp.TicketKey)
 		fmt.Fprintf(os.Stdout, "     2. %s\n\n", *line)
-		fmt.Fprintln(os.Stdout, "📎 Re-running will re-stage the files and execute the curl chain automatically.")
+		fmt.Fprintln(os.Stdout, "📎 Re-running with the ticket will stage files and execute automatically.")
 	}
 	return true, nil
 }

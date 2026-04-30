@@ -157,12 +157,12 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		return runUploadDirect(ctx, inst.InstanceID, inst.AccountID, localPath, remotePath, "", c)
 
 	case "download":
-		fmt.Print("Remote path:              ")
+		fmt.Print("Remote file path: ")
 		if !scanner.Scan() {
 			return nil
 		}
 		remotePath := strings.TrimSpace(scanner.Text())
-		fmt.Print("Local path (- for stdout): ")
+		fmt.Print("Local path (or - for stdout): ")
 		if !scanner.Scan() {
 			return nil
 		}

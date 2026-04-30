@@ -186,9 +186,13 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, to
 
 		// Detect curl @file references and handle uploads if needed.
 		if strings.Fields(line)[0] == "curl" {
+			promptUpdater := func() {
+				rl.SetPrompt(shell.FormatPrompt(email, instanceID,
+					activeTicket != "", currentDir))
+			}
 			if handled, err := handleCurlFileRefs(
-				&line, instanceID, accountID, activeTicket,
-				cfg, token, c,
+				&line, instanceID, accountID, &activeTicket,
+				cfg, token, c, promptUpdater,
 			); err != nil {
 				fmt.Fprintln(os.Stderr, "error:", err)
 				continue
@@ -448,10 +452,12 @@ func buildCombinedCurl(
 
 func handleCurlFileRefs(
 	line *string,
-	instanceID, accountID, activeTicket string,
+	instanceID, accountID string,
+	activeTicket *string,
 	cfg *config.Config,
 	token string,
 	c *client.Client,
+	promptUpdater func(),
 ) (handled bool, err error) {
 	refs := shell.DetectFileRefs(*line)
 	if len(refs) == 0 {
@@ -503,7 +509,7 @@ func handleCurlFileRefs(
 	rewritten := shell.RewriteCommand(*line, rewrites)
 
 	// TICKET ACTIVE: stage files fresh, build combined curl --next, execute directly.
-	if activeTicket != "" {
+	if *activeTicket != "" {
 		combined, ok := buildCombinedCurl(context.Background(), localRefs, rewrites, rewritten, c)
 		if !ok {
 			return true, nil
@@ -512,7 +518,7 @@ func handleCurlFileRefs(
 			InstanceID:             instanceID,
 			AccountID:              accountID,
 			Command:                combined,
-			JiraTicketID:           activeTicket,
+			JiraTicketID:           *activeTicket,
 			EffectiveForValidation: stripQuotes(rewritten),
 		})
 		if err != nil {
@@ -533,6 +539,10 @@ func handleCurlFileRefs(
 		if resp.Truncated {
 			fmt.Fprintln(os.Stderr, "[output truncated — use tail/head to narrow]")
 		}
+		ticketKey := *activeTicket
+		*activeTicket = ""
+		promptUpdater()
+		fmt.Fprintf(os.Stdout, "\n✅ Ticket %s marked as Access Granted — cleared.\n", ticketKey)
 		return true, nil
 	}
 
@@ -548,7 +558,29 @@ func handleCurlFileRefs(
 	if resp.TicketKey != "" {
 		fmt.Fprintf(os.Stdout, "\n✅ Jira ticket created: %s\n", resp.TicketKey)
 		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
-		fmt.Fprintln(os.Stdout, "⏳ Waiting for manager approval.")
+
+		// Attach files to ticket for manager review
+		fmt.Fprintln(os.Stdout, "📎 Attaching files for manager review...")
+		for _, ref := range localRefs {
+			content, err := os.ReadFile(ref.Path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  ⚠️  Could not read %s: %v\n", ref.Path, err)
+				continue
+			}
+			attachErr := c.AttachToTicket(context.Background(), client.AttachRequest{
+				TicketKey:  resp.TicketKey,
+				Filename:   filepath.Base(ref.Path),
+				ContentB64: base64.StdEncoding.EncodeToString(content),
+			})
+			if attachErr != nil {
+				fmt.Fprintf(os.Stderr, "  ⚠️  Could not attach %s: %v\n",
+					filepath.Base(ref.Path), attachErr)
+			} else {
+				fmt.Fprintf(os.Stdout, "   ✅ %s attached\n", filepath.Base(ref.Path))
+			}
+		}
+
+		fmt.Fprintln(os.Stdout, "\n⏳ Waiting for manager approval.")
 		fmt.Fprintln(os.Stdout, "   Once approved, run these in order:")
 		fmt.Fprintf(os.Stdout, "     1. /ticket %s\n", resp.TicketKey)
 		fmt.Fprintf(os.Stdout, "     2. %s\n\n", *line)

@@ -126,6 +126,19 @@ func (c *Client) StageFile(ctx context.Context, req StageRequest) (*StageRespons
 	return &resp, nil
 }
 
+// AttachRequest is the body for POST /v1/attach.
+type AttachRequest struct {
+	TicketKey  string `json:"ticket_key"`
+	Filename   string `json:"filename"`
+	ContentB64 string `json:"content_b64"`
+}
+
+// AttachToTicket calls POST /v1/attach.
+func (c *Client) AttachToTicket(ctx context.Context, req AttachRequest) error {
+	var resp map[string]string
+	return c.postJSON(ctx, "/v1/attach", req, &resp)
+}
+
 // Download calls POST /v1/download.
 func (c *Client) Download(ctx context.Context, req DownloadRequest) (*DownloadResponse, error) {
 	var resp DownloadResponse

@@ -513,7 +513,7 @@ func handleCurlFileRefs(
 			AccountID:              accountID,
 			Command:                combined,
 			JiraTicketID:           activeTicket,
-			EffectiveForValidation: rewritten,
+			EffectiveForValidation: stripQuotes(rewritten),
 		})
 		if err != nil {
 			return true, err
@@ -555,6 +555,10 @@ func handleCurlFileRefs(
 		fmt.Fprintln(os.Stdout, "📎 Re-running with the ticket will stage files and execute automatically.")
 	}
 	return true, nil
+}
+
+func stripQuotes(cmd string) string {
+	return strings.ReplaceAll(cmd, "'", "")
 }
 
 func isCd(line string) bool {

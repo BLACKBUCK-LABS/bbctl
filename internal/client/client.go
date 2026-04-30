@@ -102,6 +102,29 @@ func (c *Client) Upload(ctx context.Context, req UploadRequest) (*CommandRespons
 	return &resp, nil
 }
 
+// StageRequest is the body for POST /v1/stage.
+type StageRequest struct {
+	Filename   string `json:"filename"`
+	ContentB64 string `json:"content_b64"`
+	SHA256     string `json:"sha256"`
+}
+
+// StageResponse is the response from POST /v1/stage.
+type StageResponse struct {
+	PresignedURL string `json:"presigned_url"`
+	S3Key        string `json:"s3_key"`
+	ExpiresInSec int    `json:"expires_in_seconds"`
+}
+
+// StageFile calls POST /v1/stage.
+func (c *Client) StageFile(ctx context.Context, req StageRequest) (*StageResponse, error) {
+	var resp StageResponse
+	if err := c.postJSON(ctx, "/v1/stage", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // Download calls POST /v1/download.
 func (c *Client) Download(ctx context.Context, req DownloadRequest) (*DownloadResponse, error) {
 	var resp DownloadResponse

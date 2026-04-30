@@ -3,7 +3,9 @@ package commands
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -434,7 +436,6 @@ func handleCurlFileRefs(
 	fmt.Fprintln(os.Stdout, "\nThese files need to be on the EC2 instance first.")
 
 	rewrites := make(map[string]string)
-	uploadPaths := make(map[string]string)
 
 	for _, ref := range localRefs {
 		suggested := shell.SuggestEC2Path(ref.Path)
@@ -448,36 +449,63 @@ func handleCurlFileRefs(
 			suggested = input
 		}
 		rewrites[ref.Path] = suggested
-		uploadPaths[ref.Path] = suggested
 	}
 
 	rewritten := shell.RewriteCommand(*line, rewrites)
 
-	// Ticket active: upload files now, then fall through to run.
-	if activeTicket != "" {
-		for localPath, ec2Path := range uploadPaths {
-			fmt.Fprintf(os.Stdout, "⬆️  Uploading %s → %s...\n",
-				filepath.Base(localPath), ec2Path)
-			if err := runUploadDirect(
-				context.Background(),
-				instanceID, accountID,
-				localPath, ec2Path,
-				activeTicket, c,
-			); err != nil {
-				fmt.Fprintf(os.Stderr, "upload failed: %v\n", err)
-				return true, nil
-			}
-			fmt.Fprintln(os.Stdout, "   ✅ Uploaded")
+	// Stage each local file to S3, collect presigned URLs.
+	fmt.Fprintln(os.Stdout, "\n⬆️  Staging files to S3...")
+	type stagedFile struct {
+		presignedURL string
+		ec2Path      string
+	}
+	var staged []stagedFile
+	for _, ref := range localRefs {
+		content, err := os.ReadFile(ref.Path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read %s: %v\n", ref.Path, err)
+			return true, nil
 		}
-		*line = rewritten
+		sum := sha256.Sum256(content)
+		stageResp, err := c.StageFile(context.Background(), client.StageRequest{
+			Filename:   filepath.Base(ref.Path),
+			ContentB64: base64.StdEncoding.EncodeToString(content),
+			SHA256:     hex.EncodeToString(sum[:]),
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "stage %s: %v\n", ref.Path, err)
+			return true, nil
+		}
+		fmt.Fprintf(os.Stdout, "   ✅ %s staged\n", filepath.Base(ref.Path))
+		staged = append(staged, stagedFile{
+			presignedURL: stageResp.PresignedURL,
+			ec2Path:      rewrites[ref.Path],
+		})
+	}
+
+	// Build combined curl --next command:
+	//   curl -sf '<url>' -o '<ec2path>' [--next -sf '<url2>' -o '<ec2path2>'] --next <rewritten_main_curl>
+	combined := ""
+	for i, sf := range staged {
+		if i == 0 {
+			combined = fmt.Sprintf("curl -sf '%s' -o '%s'", sf.presignedURL, sf.ec2Path)
+		} else {
+			combined += fmt.Sprintf(" --next -sf '%s' -o '%s'", sf.presignedURL, sf.ec2Path)
+		}
+	}
+	combined += " --next " + rewritten
+
+	if activeTicket != "" {
+		// Ticket active: replace line with combined command and fall through to execution.
+		*line = combined
 		return false, nil
 	}
 
-	// No ticket — submit rewritten command; backend will auto-create ticket.
+	// No ticket — submit combined command; backend auto-creates ticket for the full operation.
 	resp, err := c.RunCommand(context.Background(), client.CommandRequest{
 		InstanceID: instanceID,
 		AccountID:  accountID,
-		Command:    rewritten,
+		Command:    combined,
 	})
 	if err != nil {
 		return true, err
@@ -490,8 +518,7 @@ func handleCurlFileRefs(
 		fmt.Fprintln(os.Stdout, "   Once approved, run these in order:")
 		fmt.Fprintf(os.Stdout, "     1. /ticket %s\n", resp.TicketKey)
 		fmt.Fprintf(os.Stdout, "     2. %s\n\n", *line)
-		fmt.Fprintln(os.Stdout, "📎 Files will be uploaded automatically when you run")
-		fmt.Fprintln(os.Stdout, "   the command with the approved ticket.")
+		fmt.Fprintln(os.Stdout, "📎 Re-running will re-stage the files and execute the curl chain automatically.")
 	}
 	return true, nil
 }

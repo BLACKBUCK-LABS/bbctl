@@ -38,21 +38,6 @@ func runUpload(cmd *cobra.Command, args []string) error {
 	localPath := args[1]
 	remotePath := args[2]
 
-	filename := filepath.Base(localPath)
-
-	if strings.HasSuffix(remotePath, "/") {
-		remotePath = remotePath + filename
-	}
-
-	content, err := os.ReadFile(localPath)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", localPath, err)
-	}
-
-	sum := sha256.Sum256(content)
-	sha256hex := fmt.Sprintf("%x", sum)
-	contentB64 := base64.StdEncoding.EncodeToString(content)
-
 	configDir, err := config.DefaultConfigDir()
 	if err != nil {
 		return err
@@ -79,14 +64,32 @@ func runUpload(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
-	resp, err := c.Upload(context.Background(), client.UploadRequest{
+	return runUploadDirect(context.Background(), instanceID, accountID, localPath, remotePath, uploadTicket, c)
+}
+
+func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remotePath, ticketID string, c *client.Client) error {
+	filename := filepath.Base(localPath)
+	if strings.HasSuffix(remotePath, "/") {
+		remotePath = remotePath + filename
+	}
+
+	content, err := os.ReadFile(localPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", localPath, err)
+	}
+
+	sum := sha256.Sum256(content)
+	sha256hex := fmt.Sprintf("%x", sum)
+	contentB64 := base64.StdEncoding.EncodeToString(content)
+
+	resp, err := c.Upload(ctx, client.UploadRequest{
 		InstanceID: instanceID,
 		AccountID:  accountID,
 		DestPath:   remotePath,
 		Filename:   filename,
 		ContentB64: contentB64,
 		SHA256:     sha256hex,
-		TicketID:   uploadTicket,
+		TicketID:   ticketID,
 	})
 	if err != nil {
 		var apiErr *client.APIError

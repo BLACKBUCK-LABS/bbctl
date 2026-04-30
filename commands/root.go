@@ -15,6 +15,8 @@ var (
 	Date    = "unknown"
 )
 
+var refreshCache bool
+
 var rootCmd = &cobra.Command{
 	Use:   "bbctl",
 	Short: "Gated terminal access to prod EC2 instances via SSM",
@@ -34,6 +36,9 @@ the same command with the ticket ID to execute it.
 Use 'bbctl shell <instance-id>' for an interactive session.
 Use 'bbctl run <instance-id> -- <command>' for a single command.`,
 	Version: Version,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runInteractive(cmd, refreshCache)
+	},
 }
 
 // Execute is the entry point called from main.
@@ -45,6 +50,7 @@ func Execute() {
 }
 
 func init() {
+	rootCmd.Flags().BoolVarP(&refreshCache, "refresh", "r", false, "Force refresh instance cache")
 	rootCmd.AddCommand(loginCmd)
 	rootCmd.AddCommand(logoutCmd)
 }

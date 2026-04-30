@@ -64,11 +64,15 @@ func runDownload(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
-	resp, err := c.Download(context.Background(), client.DownloadRequest{
+	return runDownloadDirect(context.Background(), instanceID, accountID, remotePath, localPath, downloadTicket, c)
+}
+
+func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, localPath, ticketID string, c *client.Client) error {
+	resp, err := c.Download(ctx, client.DownloadRequest{
 		InstanceID: instanceID,
 		AccountID:  accountID,
 		SrcPath:    remotePath,
-		TicketID:   downloadTicket,
+		TicketID:   ticketID,
 	})
 	if err != nil {
 		var apiErr *client.APIError

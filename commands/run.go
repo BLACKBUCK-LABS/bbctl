@@ -96,24 +96,23 @@ func runRun(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var requestID string
-
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigs
 		cancel()
-		if requestID != "" {
-			_ = c.CancelCommand(context.Background(), requestID)
-		}
 		os.Exit(130)
 	}()
 
+	return runCommandDirect(ctx, instanceID, accountID, command, runTicket, c)
+}
+
+func runCommandDirect(ctx context.Context, instanceID, accountID, command, ticketID string, c *client.Client) error {
 	resp, err := c.RunCommand(ctx, client.CommandRequest{
 		InstanceID:   instanceID,
 		AccountID:    accountID,
 		Command:      command,
-		JiraTicketID: runTicket,
+		JiraTicketID: ticketID,
 	})
 	if err != nil {
 		var apiErr *client.APIError
@@ -126,9 +125,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 		return err
 	}
-	requestID = resp.RequestID
 
-	// Backend auto-created a Jira ticket — restricted command, no --ticket flag.
 	if resp.TicketKey != "" {
 		fmt.Fprintf(os.Stdout, "Jira ticket created: %s\n", resp.TicketKey)
 		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)

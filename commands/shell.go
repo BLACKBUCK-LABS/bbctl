@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -168,6 +169,19 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, token stri
 		}
 		if line == "" {
 			continue
+		}
+
+		// Detect curl @file references and handle uploads if needed.
+		if strings.Fields(line)[0] == "curl" {
+			if handled, err := handleCurlFileRefs(
+				&line, instanceID, accountID, activeTicket,
+				cfg, token, c,
+			); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				continue
+			} else if handled {
+				continue
+			}
 		}
 
 		// "clear" always handles locally — clears ticket if active, else clears screen.
@@ -378,6 +392,108 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, token stri
 			fmt.Fprintln(os.Stderr, "[output truncated — use tail/head to narrow]")
 		}
 	}
+}
+
+func handleCurlFileRefs(
+	line *string,
+	instanceID, accountID, activeTicket string,
+	cfg *config.Config,
+	token string,
+	c *client.Client,
+) (handled bool, err error) {
+	refs := shell.DetectFileRefs(*line)
+	if len(refs) == 0 {
+		return false, nil
+	}
+
+	for _, ref := range refs {
+		if ref.Location == "postman" {
+			fmt.Fprintf(os.Stderr,
+				"\n⚠️  Postman Cloud paths are not supported.\n"+
+					"   Replace %s with an actual file path.\n"+
+					"   Example: @\"/path/to/your/file\"\n\n",
+				ref.Original)
+			return true, nil
+		}
+	}
+
+	var localRefs []shell.FileRef
+	for _, ref := range refs {
+		if ref.Location == "local" {
+			localRefs = append(localRefs, ref)
+		}
+	}
+	if len(localRefs) == 0 {
+		return false, nil
+	}
+
+	fmt.Fprintln(os.Stdout, "\n💡 This command references local files:")
+	for _, ref := range localRefs {
+		fmt.Fprintf(os.Stdout, "   %s\n", ref.Original)
+	}
+	fmt.Fprintln(os.Stdout, "\nThese files need to be on the EC2 instance first.")
+
+	rewrites := make(map[string]string)
+	uploadPaths := make(map[string]string)
+
+	for _, ref := range localRefs {
+		suggested := shell.SuggestEC2Path(ref.Path)
+		fmt.Fprintf(os.Stdout,
+			"\n  Local:  %s\n  Remote: %s\n  Press Enter to confirm or type new path: ",
+			ref.Path, suggested)
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		if input != "" {
+			suggested = input
+		}
+		rewrites[ref.Path] = suggested
+		uploadPaths[ref.Path] = suggested
+	}
+
+	rewritten := shell.RewriteCommand(*line, rewrites)
+
+	// Ticket active: upload files now, then fall through to run.
+	if activeTicket != "" {
+		for localPath, ec2Path := range uploadPaths {
+			fmt.Fprintf(os.Stdout, "⬆️  Uploading %s → %s...\n",
+				filepath.Base(localPath), ec2Path)
+			if err := runUploadDirect(
+				context.Background(),
+				instanceID, accountID,
+				localPath, ec2Path,
+				activeTicket, c,
+			); err != nil {
+				fmt.Fprintf(os.Stderr, "upload failed: %v\n", err)
+				return true, nil
+			}
+			fmt.Fprintln(os.Stdout, "   ✅ Uploaded")
+		}
+		*line = rewritten
+		return false, nil
+	}
+
+	// No ticket — submit rewritten command; backend will auto-create ticket.
+	resp, err := c.RunCommand(context.Background(), client.CommandRequest{
+		InstanceID: instanceID,
+		AccountID:  accountID,
+		Command:    rewritten,
+	})
+	if err != nil {
+		return true, err
+	}
+
+	if resp.TicketKey != "" {
+		fmt.Fprintf(os.Stdout, "\n✅ Jira ticket created: %s\n", resp.TicketKey)
+		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
+		fmt.Fprintln(os.Stdout, "⏳ Waiting for manager approval.")
+		fmt.Fprintln(os.Stdout, "   Once approved, run these in order:")
+		fmt.Fprintf(os.Stdout, "     1. /ticket %s\n", resp.TicketKey)
+		fmt.Fprintf(os.Stdout, "     2. %s\n\n", *line)
+		fmt.Fprintln(os.Stdout, "📎 Files will be uploaded automatically when you run")
+		fmt.Fprintln(os.Stdout, "   the command with the approved ticket.")
+	}
+	return true, nil
 }
 
 func isCd(line string) bool {

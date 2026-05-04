@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
@@ -69,8 +70,8 @@ func runDownload(cmd *cobra.Command, args []string) error {
 }
 
 func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, localPath, ticketID string, c *client.Client) error {
-	if localPath == "." {
-		localPath = filepath.Base(remotePath)
+	if localPath == "." || strings.HasSuffix(localPath, "/") {
+		localPath = filepath.Join(localPath, filepath.Base(remotePath))
 	}
 	resp, err := c.Download(ctx, client.DownloadRequest{
 		InstanceID: instanceID,

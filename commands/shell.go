@@ -394,19 +394,21 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, to
 		}
 
 		if resp.Stdout != "" {
-			fmt.Print(resp.Stdout)
-			if !strings.HasSuffix(resp.Stdout, "\n") {
-				fmt.Println()
+			out := resp.Stdout
+			if !strings.HasSuffix(out, "\n") {
+				out += "\n"
 			}
+			rl.Write([]byte(out)) //nolint:errcheck
 		}
 		if resp.Stderr != "" {
-			fmt.Fprint(os.Stderr, resp.Stderr)
-			if !strings.HasSuffix(resp.Stderr, "\n") {
-				fmt.Fprintln(os.Stderr)
+			out := resp.Stderr
+			if !strings.HasSuffix(out, "\n") {
+				out += "\n"
 			}
+			rl.Stderr().Write([]byte(out)) //nolint:errcheck
 		}
 		if resp.Truncated {
-			fmt.Fprintln(os.Stderr, "[output truncated — use tail/head to narrow]")
+			rl.Stderr().Write([]byte("[output truncated — use tail/head to narrow]\n")) //nolint:errcheck
 		}
 	}
 }

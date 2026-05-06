@@ -387,10 +387,26 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, to
 			continue
 		}
 
-		if resp.Status == "success" && resp.TicketKey == "" && activeTicket != "" {
+		// Clear the active ticket on any completed execution — not just success.
+		// A ticket grants access; once the command ran (regardless of exit code)
+		// the ticket is spent. grep exiting 1 (no matches), diff exiting 1
+		// (files differ), test exiting 1 (false condition) all count as ran.
+		isExecutionComplete := resp.Status == "success" || resp.Status == "failed" ||
+			resp.Status == "cancelled"
+		if isExecutionComplete && resp.TicketKey == "" && activeTicket != "" {
 			fmt.Fprintf(os.Stdout, "\nTicket %s marked as Access Granted — cleared.\n", activeTicket)
 			activeTicket = ""
 			rl.SetPrompt(shell.FormatPrompt(email, instanceID, false, currentDir))
+		}
+
+		// Silent exit for failed commands with no output — the empty result IS
+		// the answer (grep no match, diff identical files, etc.). Only show a
+		// reason message if the backend sent one and there's no stdout/stderr.
+		if resp.Status == "failed" && resp.Stdout == "" && resp.Stderr == "" {
+			if resp.Reason != "" {
+				fmt.Fprintf(os.Stderr, "error: %s\n", resp.Reason)
+			}
+			continue
 		}
 
 		if resp.Stdout != "" {

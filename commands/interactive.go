@@ -209,24 +209,18 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 func emailFromToken(token string) string {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return "unknown"
+		return ""
 	}
-	payload := parts[1]
-	switch len(payload) % 4 {
-	case 2:
-		payload += "=="
-	case 3:
-		payload += "="
-	}
-	data, err := base64.RawURLEncoding.DecodeString(payload)
+	// base64.RawURLEncoding expects no padding — strip any that exists.
+	data, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
 	if err != nil {
-		return "unknown"
+		return ""
 	}
 	var claims struct {
 		Email string `json:"email"`
 	}
 	if err := json.Unmarshal(data, &claims); err != nil {
-		return "unknown"
+		return ""
 	}
 	return claims.Email
 }

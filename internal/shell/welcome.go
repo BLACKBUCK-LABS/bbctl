@@ -6,21 +6,21 @@ import (
 )
 
 const (
-	colorReset  = "\033[0m"
-	colorOrange = "\033[38;5;208m"
-	colorCyan   = "\033[38;5;51m"
-	colorWhite  = "\033[97m"
-	colorGray   = "\033[38;5;245m"
-	colorBold   = "\033[1m"
+	colorReset = "\033[0m"
+	colorRed   = "\033[38;5;196m"
+	colorCyan  = "\033[38;5;51m"
+	colorWhite = "\033[97m"
+	colorGray  = "\033[38;5;245m"
+	colorBold  = "\033[1m"
 )
 
 var bbctlASCII = []string{
-	` ██████╗ ██████╗  ██████╗████████╗██╗`,
-	` ██╔══██╗██╔══██╗██╔════╝╚══██╔══╝██║`,
-	` ██████╔╝██████╔╝██║        ██║   ██║`,
-	` ██╔══██╗██╔══██╗██║        ██║   ██║`,
-	` ██████╔╝██████╔╝╚██████╗   ██║   ███████╗`,
-	` ╚═════╝ ╚═════╝  ╚═════╝   ╚═╝   ╚══════╝`,
+	`██████╗ ██████╗  ██████╗████████╗██╗`,
+	`██╔══██╗██╔══██╗██╔════╝╚══██╔══╝██║`,
+	`██████╔╝██████╔╝██║        ██║   ██║`,
+	`██╔══██╗██╔══██╗██║        ██║   ██║`,
+	`██████╔╝██████╔╝╚██████╗   ██║   ███████╗`,
+	`╚═════╝ ╚═════╝  ╚═════╝   ╚═╝   ╚══════╝`,
 }
 
 type WelcomeInfo struct {
@@ -32,12 +32,12 @@ type WelcomeInfo struct {
 }
 
 func PrintWelcome(info WelcomeInfo) {
-	width := 60
+	width := 64
 
-	border  := colorOrange + "║" + colorReset
-	topBar  := colorOrange + "╔" + strings.Repeat("═", width-2) + "╗" + colorReset
-	botBar  := colorOrange + "╚" + strings.Repeat("═", width-2) + "╝" + colorReset
-	divider := colorOrange + "║" + colorGray + strings.Repeat("─", width-2) + colorOrange + "║" + colorReset
+	border  := colorRed + "║" + colorReset
+	topBar  := colorRed + "╔" + strings.Repeat("═", width-2) + "╗" + colorReset
+	botBar  := colorRed + "╚" + strings.Repeat("═", width-2) + "╝" + colorReset
+	divider := colorRed + "║" + colorGray + strings.Repeat("─", width-2) + colorRed + "║" + colorReset
 
 	emptyLine := func() {
 		fmt.Printf("%s%s%s\n", border, strings.Repeat(" ", width-2), border)
@@ -71,7 +71,7 @@ func PrintWelcome(info WelcomeInfo) {
 	fmt.Println(topBar)
 	emptyLine()
 	for _, line := range bbctlASCII {
-		padLine(line, colorOrange+colorBold)
+		padLine(line, colorRed+colorBold)
 	}
 	emptyLine()
 	padLine("Gated EC2 Access  —  Blackbuck Engineering", colorGray)
@@ -83,16 +83,13 @@ func PrintWelcome(info WelcomeInfo) {
 	leftLine(fmt.Sprintf("%-14s %s%s%s", "Version:", colorWhite, info.Version, colorReset), colorGray)
 
 	if info.InstanceCount > 0 {
-		cacheStr := fmt.Sprintf("%d instances across %d accounts", info.InstanceCount, info.AccountCount)
-		if info.CacheAge != "" {
-			cacheStr += colorGray + "  (" + info.CacheAge + ")" + colorReset
-		}
+		cacheStr := fmt.Sprintf("%d across %d accounts (%s)", info.InstanceCount, info.AccountCount, info.CacheAge)
 		leftLine(fmt.Sprintf("%-14s %s%s%s", "Instances:", colorWhite, cacheStr, colorReset), colorGray)
 	} else {
 		leftLine(fmt.Sprintf("%-14s %s%s", "Instances:", colorGray, "loading..."), colorGray)
 	}
 
-	leftLine("💬 Issues? Reach out to Krishna (#infra-devops)", colorGray)
+	leftLine("Issues? Reach out to Krishna (#infra-devops)", colorGray)
 
 	emptyLine()
 	fmt.Println(botBar)

@@ -87,6 +87,11 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 		accountSet[inst.AccountID] = true
 	}
 
+	// Ensure token is current — may have been refreshed during 401 re-login.
+	if latestToken, lerr := config.LoadToken(cfgDir); lerr == nil {
+		token = latestToken
+	}
+
 	fmt.Print("\033[2J\033[H") // clear screen
 	shell.PrintWelcome(shell.WelcomeInfo{
 		Email:         emailFromToken(token),

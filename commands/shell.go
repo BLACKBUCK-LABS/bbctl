@@ -635,9 +635,24 @@ var defaultsToCwd = map[string]bool{
 	"find": true,
 }
 
-// resolvePaths rewrites relative arguments in a command to absolute paths
-// based on the locally tracked currentDir. Flags and absolute paths are
-// passed through unchanged. The command name itself is never modified.
+// skipNextArg is the set of flags that consume the immediately following
+// argument as a value (never a path). The value is passed through unchanged.
+var skipNextArg = map[string]bool{
+	"-n": true, "--lines": true,
+	"-c": true, "--bytes": true,
+	"-f": true,
+	"--pid": true,
+	"--max-count": true, "-m": true,
+	"-A": true, "-B": true, "-C": true, // grep context lines
+	"--color": true,
+	"-e": true, "--regexp": true,
+	"--include": true, "--exclude": true, "--exclude-dir": true,
+}
+
+// resolvePaths rewrites relative path arguments in a command to absolute paths
+// based on the locally tracked currentDir. Flags, absolute paths, numeric
+// arguments, and quoted strings are passed through unchanged.
+// The command name itself is never modified.
 func resolvePaths(line, currentDir string) string {
 	if currentDir == "" {
 		return line
@@ -649,8 +664,21 @@ func resolvePaths(line, currentDir string) string {
 	result := make([]string, 0, len(fields)+1)
 	result = append(result, fields[0])
 	hasPositional := false
+	skipNext := false
 	for _, arg := range fields[1:] {
-		if !strings.HasPrefix(arg, "-") && !filepath.IsAbs(arg) {
+		if skipNext {
+			result = append(result, arg)
+			skipNext = false
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			result = append(result, arg)
+			if skipNextArg[arg] {
+				skipNext = true
+			}
+			continue
+		}
+		if !filepath.IsAbs(arg) && looksLikePath(arg) {
 			result = append(result, filepath.Join(currentDir, arg))
 			hasPositional = true
 		} else {
@@ -661,6 +689,46 @@ func resolvePaths(line, currentDir string) string {
 		result = append(result, currentDir)
 	}
 	return strings.Join(result, " ")
+}
+
+// looksLikePath reports whether arg should be treated as a filesystem path
+// for the purpose of relative-to-absolute resolution.
+func looksLikePath(arg string) bool {
+	// Pure integers are never paths (e.g. the 100 in "tail -n 100")
+	if isNumeric(arg) {
+		return false
+	}
+	// Quoted strings are shell literals, not paths
+	if strings.HasPrefix(arg, "'") || strings.HasPrefix(arg, "\"") {
+		return false
+	}
+	// Explicit path separator → definitely a path
+	if strings.Contains(arg, "/") {
+		return true
+	}
+	// Has a dot → likely a filename (e.g. app.log, schema.sql)
+	if strings.Contains(arg, ".") {
+		return true
+	}
+	// Starts with dot → relative path (./file or ../)
+	if strings.HasPrefix(arg, ".") {
+		return true
+	}
+	// Bare words (grep patterns, signal names, hostnames, etc.) are not paths
+	return false
+}
+
+// isNumeric reports whether s consists entirely of ASCII digits.
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // extractEmailFromJWT decodes the JWT payload and returns the email claim.

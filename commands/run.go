@@ -171,5 +171,13 @@ func handleAPIError(err *client.APIError) {
 	case 429:
 		fmt.Fprintln(os.Stderr, "Rate limit exceeded — slow down or wait a minute.")
 		os.Exit(1)
+	case 504:
+		fmt.Fprintln(os.Stderr, "⏱  Command timed out — the instance may be overloaded or the SSM agent may be unresponsive.")
+		os.Exit(1)
+	default:
+		if err.Message != "" || err.Reason != "" {
+			fmt.Fprintln(os.Stderr, "Error:", err.Error())
+		}
+		os.Exit(1)
 	}
 }

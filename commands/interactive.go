@@ -3,14 +3,18 @@ package commands
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
 	ec2picker "github.com/blackbuck/bbctl/internal/ec2"
+	"github.com/blackbuck/bbctl/internal/shell"
 	fuzzyfinder "github.com/ktr0731/go-fuzzyfinder"
 	"github.com/spf13/cobra"
 )
@@ -77,6 +81,20 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 		fmt.Fprintln(os.Stdout, "No instances found.")
 		return nil
 	}
+
+	accountSet := make(map[string]bool)
+	for _, inst := range instances {
+		accountSet[inst.AccountID] = true
+	}
+
+	fmt.Print("\033[2J\033[H") // clear screen
+	shell.PrintWelcome(shell.WelcomeInfo{
+		Email:         emailFromToken(token),
+		Version:       Version,
+		InstanceCount: len(instances),
+		AccountCount:  len(accountSet),
+		CacheAge:      cacheAgeStr(cfgDir, cfg),
+	})
 
 	selected, err := ec2picker.Pick(instances)
 	if err != nil {
@@ -178,6 +196,59 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 
 	default:
 		return nil
+	}
+}
+
+// emailFromToken extracts the email claim from a JWT without verifying the
+// signature — used only for display in the welcome screen.
+func emailFromToken(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "unknown"
+	}
+	payload := parts[1]
+	switch len(payload) % 4 {
+	case 2:
+		payload += "=="
+	case 3:
+		payload += "="
+	}
+	data, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return "unknown"
+	}
+	var claims struct {
+		Email string `json:"email"`
+	}
+	if err := json.Unmarshal(data, &claims); err != nil {
+		return "unknown"
+	}
+	return claims.Email
+}
+
+// cacheAgeStr returns a human-readable age of the newest instance cache file.
+func cacheAgeStr(cfgDir string, cfg *config.Config) string {
+	var newest time.Time
+	for _, accountID := range cfg.AccountAliases {
+		info, err := os.Stat(ec2picker.CachePath(cfgDir, accountID))
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+	}
+	if newest.IsZero() {
+		return "fresh"
+	}
+	age := time.Since(newest)
+	switch {
+	case age < time.Minute:
+		return "just now"
+	case age < time.Hour:
+		return fmt.Sprintf("%dm ago", int(age.Minutes()))
+	default:
+		return fmt.Sprintf("%dh ago", int(age.Hours()))
 	}
 }
 

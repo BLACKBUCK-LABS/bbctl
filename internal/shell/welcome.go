@@ -15,12 +15,17 @@ const (
 )
 
 var bbctlASCII = []string{
-	`██████╗ ██████╗  ██████╗████████╗██╗`,
-	`██╔══██╗██╔══██╗██╔════╝╚══██╔══╝██║`,
-	`██████╔╝██████╔╝██║        ██║   ██║`,
-	`██╔══██╗██╔══██╗██║        ██║   ██║`,
-	`██████╔╝██████╔╝╚██████╗   ██║   ███████╗`,
-	`╚═════╝ ╚═════╝  ╚═════╝   ╚═╝   ╚══════╝`,
+
+	                                                  
+ ` ▄▄▄▄▄▄    ▄▄▄▄▄▄       ▄▄▄▄   ▄▄▄▄▄▄▄▄  ▄▄        `,    
+ ` ██▀▀▀▀██  ██▀▀▀▀██   ██▀▀▀▀█  ▀▀▀██▀▀▀  ██       `,    
+ ` ██    ██  ██    ██  ██▀          ██     ██       `,    
+ ` ███████   ███████   ██           ██     ██       `,    
+ ` ██    ██  ██    ██  ██▄          ██     ██       `,    
+ ` ██▄▄▄▄██  ██▄▄▄▄██   ██▄▄▄▄█     ██     ██▄▄▄▄▄▄ `,    
+ ` ▀▀▀▀▀▀▀   ▀▀▀▀▀▀▀      ▀▀▀▀      ▀▀     ▀▀▀▀▀▀▀▀ `,    
+                                                  
+                                                          
 }
 
 type WelcomeInfo struct {
@@ -32,7 +37,7 @@ type WelcomeInfo struct {
 }
 
 func PrintWelcome(info WelcomeInfo) {
-	width := 58
+	width := 55
 
 	border  := colorRed + "║" + colorReset
 	topBar  := colorRed + "╔" + strings.Repeat("═", width-2) + "╗" + colorReset
@@ -96,18 +101,8 @@ func PrintWelcome(info WelcomeInfo) {
 	fmt.Println()
 }
 
-// isWideChar reports whether r occupies 2 terminal columns.
-// Block elements and box-drawing characters used in the ASCII art
-// are rendered as double-width by most terminal emulators.
-func isWideChar(r rune) bool {
-	return (r >= 0x2500 && r <= 0x257F) || // box drawing
-		(r >= 0x2580 && r <= 0x259F) || // block elements
-		r == 0x2588 || r == 0x2593 || r == 0x2592 || r == 0x2591 || // solid/shade blocks
-		(r >= 0xFF01 && r <= 0xFF60) // fullwidth forms
-}
-
 // visibleLen returns the number of terminal columns a string occupies,
-// stripping ANSI escape sequences and counting wide characters as 2.
+// stripping ANSI escape sequences. Standard ASCII only — one rune = one column.
 func visibleLen(s string) int {
 	inEsc := false
 	count := 0
@@ -122,11 +117,7 @@ func visibleLen(s string) int {
 			}
 			continue
 		}
-		if isWideChar(r) {
-			count += 2
-		} else {
-			count++
-		}
+		count++
 	}
 	return count
 }

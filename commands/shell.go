@@ -458,10 +458,10 @@ func buildCombinedCurl(
 		ec2Path := rewrites[ref.Path]
 		if len(segments) == 0 {
 			segments = append(segments,
-				fmt.Sprintf("curl -sf '%s' -o '%s'", stageResp.PresignedURL, ec2Path))
+				fmt.Sprintf(`curl -f "%s" -o '%s'`, stageResp.PresignedURL, ec2Path))
 		} else {
 			segments = append(segments,
-				fmt.Sprintf("--next -sf '%s' -o '%s'", stageResp.PresignedURL, ec2Path))
+				fmt.Sprintf(`--next -f "%s" -o '%s'`, stageResp.PresignedURL, ec2Path))
 		}
 	}
 	segments = append(segments, "--next "+rewritten)
@@ -608,7 +608,9 @@ func handleCurlFileRefs(
 }
 
 func stripQuotes(cmd string) string {
-	return strings.ReplaceAll(cmd, "'", "")
+	cmd = strings.ReplaceAll(cmd, "'", "")
+	cmd = strings.ReplaceAll(cmd, `\"`, `"`)
+	return cmd
 }
 
 func isCd(line string) bool {

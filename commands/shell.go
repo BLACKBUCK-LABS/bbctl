@@ -464,7 +464,11 @@ func buildCombinedCurl(
 				fmt.Sprintf(`--next -f "%s" -o '%s'`, stageResp.PresignedURL, ec2Path))
 		}
 	}
-	segments = append(segments, "--next "+rewritten)
+	mainArgs := strings.TrimSpace(rewritten)
+	if strings.HasPrefix(mainArgs, "curl ") {
+		mainArgs = mainArgs[len("curl "):]
+	}
+	segments = append(segments, "--next "+mainArgs)
 	return strings.Join(segments, " "), true
 }
 

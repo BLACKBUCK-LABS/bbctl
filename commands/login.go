@@ -56,9 +56,6 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	if err := config.SaveToken(configDir, idToken, refreshToken); err != nil {
 		return fmt.Errorf("save token: %w", err)
 	}
-	if err := config.WriteDefaultConfig(configDir); err != nil {
-		fmt.Fprintf(os.Stderr, "note: could not write config.yaml: %v\n", err)
-	}
 
 	// Sync account aliases from backend — non-fatal if the call fails.
 	{
@@ -70,6 +67,11 @@ func runLogin(cmd *cobra.Command, args []string) error {
 			}
 			if len(aliases) > 0 {
 				cfg.AccountAliases = aliases
+				if cfg.DefaultAccountID == "" {
+					if zinkaID, ok := aliases["zinka"]; ok {
+						cfg.DefaultAccountID = zinkaID
+					}
+				}
 				if saveErr := config.SaveConfig(configDir, cfg); saveErr != nil {
 					fmt.Fprintf(os.Stderr,
 						"note: could not save account aliases: %v\n", saveErr)

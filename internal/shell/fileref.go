@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -31,6 +32,8 @@ func DetectFileRefs(command string) []FileRef {
 		switch {
 		case strings.HasPrefix(path, "postman-cloud://"):
 			ref.Location = "postman"
+		case fileExistsLocally(path):
+			ref.Location = "local"
 		case isEC2Path(path):
 			ref.Location = "ec2"
 		case isLocalPath(path):
@@ -42,6 +45,18 @@ func DetectFileRefs(command string) []FileRef {
 		refs = append(refs, ref)
 	}
 	return refs
+}
+
+func fileExistsLocally(path string) bool {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false
+		}
+		path = filepath.Join(home, path[2:])
+	}
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func isEC2Path(path string) bool {

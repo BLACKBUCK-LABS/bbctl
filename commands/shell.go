@@ -566,9 +566,10 @@ func handleCurlFileRefs(
 
 	// NO TICKET: send main rewritten curl for auto-ticket creation (no staging yet).
 	resp, err := c.RunCommand(context.Background(), client.CommandRequest{
-		InstanceID: instanceID,
-		AccountID:  accountID,
-		Command:    rewritten,
+		InstanceID:             instanceID,
+		AccountID:              accountID,
+		Command:                rewritten,
+		EffectiveForValidation: stripQuotes(rewritten),
 	})
 	if err != nil {
 		return true, err

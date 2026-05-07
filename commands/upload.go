@@ -104,8 +104,8 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
 		fmt.Fprintln(os.Stdout, "Waiting for manager approval.")
 		fmt.Fprintln(os.Stdout, "   Once approved, run:")
-		fmt.Fprintf(os.Stdout, "     bbctl upload %s %s %s --ticket %s\n\n",
-			instanceID, localPath, remotePath, resp.TicketKey)
+		fmt.Fprintf(os.Stdout, "     bbctl upload %s -a %s %s %s --ticket %s\n\n",
+			instanceID, accountID, localPath, remotePath, resp.TicketKey)
 		return nil
 	}
 

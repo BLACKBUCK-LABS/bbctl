@@ -130,8 +130,8 @@ func runCommandDirect(ctx context.Context, instanceID, accountID, command, ticke
 		fmt.Fprintf(os.Stdout, "Jira ticket created: %s\n", resp.TicketKey)
 		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
 		fmt.Fprintln(os.Stdout, "Waiting for manager approval.")
-		fmt.Fprintf(os.Stdout, "   Once approved, run:\n     bbctl run %s --ticket %s -- %s\n",
-			instanceID, resp.TicketKey, command)
+		fmt.Fprintf(os.Stdout, "   Once approved, run:\n     bbctl run %s -a %s --ticket %s -- %s\n",
+			instanceID, accountID, resp.TicketKey, command)
 		return nil
 	}
 

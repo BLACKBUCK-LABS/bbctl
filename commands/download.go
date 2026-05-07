@@ -92,8 +92,8 @@ func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, l
 		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
 		fmt.Fprintln(os.Stdout, "Waiting for manager approval.")
 		fmt.Fprintln(os.Stdout, "   Once approved, run:")
-		fmt.Fprintf(os.Stdout, "     bbctl download %s --ticket %s %s %s\n\n",
-			instanceID, resp.TicketKey, remotePath, localPath)
+		fmt.Fprintf(os.Stdout, "     bbctl download %s -a %s --ticket %s %s %s\n\n",
+			instanceID, accountID, resp.TicketKey, remotePath, localPath)
 		return nil
 	}
 

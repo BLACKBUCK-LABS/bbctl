@@ -59,10 +59,8 @@ type DownloadRequest struct {
 type DownloadResponse struct {
 	RequestID    string `json:"request_id"`
 	Status       string `json:"status"`
-	ContentB64   string `json:"content_b64,omitempty"`
 	PresignedURL string `json:"presigned_url,omitempty"`
 	Filename     string `json:"filename,omitempty"`
-	SizeBytes    int    `json:"size_bytes,omitempty"`
 	TicketKey    string `json:"ticket_key,omitempty"`
 	TicketURL    string `json:"ticket_url,omitempty"`
 	Message      string `json:"message,omitempty"`

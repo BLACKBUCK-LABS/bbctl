@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -97,40 +96,25 @@ func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, l
 		return nil
 	}
 
+	if resp.PresignedURL == "" {
+		return fmt.Errorf("no download URL in response")
+	}
+
 	if localPath == "-" {
-		if resp.PresignedURL != "" {
-			httpResp, err := http.Get(resp.PresignedURL) //nolint:gosec,noctx
-			if err != nil {
-				return fmt.Errorf("fetch presigned URL: %w", err)
-			}
-			defer httpResp.Body.Close()
-			_, err = io.Copy(os.Stdout, httpResp.Body)
-			return err
-		}
-		data, err := base64.StdEncoding.DecodeString(resp.ContentB64)
+		httpResp, err := http.Get(resp.PresignedURL) //nolint:gosec,noctx
 		if err != nil {
-			return fmt.Errorf("decode file content: %w", err)
+			return fmt.Errorf("fetch presigned URL: %w", err)
 		}
-		_, err = os.Stdout.Write(data)
+		defer httpResp.Body.Close()
+		_, err = io.Copy(os.Stdout, httpResp.Body)
 		return err
 	}
 
-	if resp.PresignedURL != "" {
-		if err := downloadFromURL(resp.PresignedURL, localPath); err != nil {
-			return err
-		}
-	} else {
-		data, err := base64.StdEncoding.DecodeString(resp.ContentB64)
-		if err != nil {
-			return fmt.Errorf("decode file content: %w", err)
-		}
-		if err := os.WriteFile(localPath, data, 0644); err != nil {
-			return fmt.Errorf("write %s: %w", localPath, err)
-		}
+	fmt.Fprintf(os.Stdout, "Downloading %s...\n", resp.Filename)
+	if err := downloadFromURL(resp.PresignedURL, localPath); err != nil {
+		return err
 	}
-
-	fmt.Fprintf(os.Stdout, "Downloaded %s:%s → %s (%d bytes)\n",
-		instanceID, remotePath, localPath, resp.SizeBytes)
+	fmt.Fprintf(os.Stdout, "Downloaded %s:%s → %s\n", instanceID, remotePath, localPath)
 	return nil
 }
 

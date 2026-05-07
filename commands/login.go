@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -57,6 +58,26 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	}
 	if err := config.WriteDefaultConfig(configDir); err != nil {
 		fmt.Fprintf(os.Stderr, "note: could not write config.yaml: %v\n", err)
+	}
+
+	// Sync account aliases from backend — non-fatal if the call fails.
+	{
+		c := client.New(cfg.BackendURL, idToken, "bbctl/"+Version)
+		if accounts, aErr := c.ListAccounts(context.Background()); aErr == nil {
+			aliases := make(map[string]string, len(accounts))
+			for _, acc := range accounts {
+				aliases[strings.ToLower(acc.Label)] = acc.AccountID
+			}
+			if len(aliases) > 0 {
+				cfg.AccountAliases = aliases
+				if saveErr := config.SaveConfig(configDir, cfg); saveErr != nil {
+					fmt.Fprintf(os.Stderr,
+						"note: could not save account aliases: %v\n", saveErr)
+				} else {
+					fmt.Printf("✓ Synced %d account(s)\n", len(aliases))
+				}
+			}
+		}
 	}
 
 	email := emailFromIDToken(idToken)

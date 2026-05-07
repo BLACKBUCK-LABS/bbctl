@@ -155,6 +155,26 @@ type ClassifyResponse struct {
 	RewrittenTo []string `json:"rewritten_to,omitempty"`
 }
 
+// AccountInfo describes a single AWS account returned by /v1/accounts.
+type AccountInfo struct {
+	Label     string `json:"label"`
+	AccountID string `json:"account_id"`
+}
+
+// AccountsResponse is the response from GET /v1/accounts.
+type AccountsResponse struct {
+	Accounts []AccountInfo `json:"accounts"`
+}
+
+// ListAccounts calls GET /v1/accounts.
+func (c *Client) ListAccounts(ctx context.Context) ([]AccountInfo, error) {
+	var resp AccountsResponse
+	if err := c.getJSON(ctx, "/v1/accounts", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Accounts, nil
+}
+
 // APIError represents a non-2xx response from the backend.
 type APIError struct {
 	HTTPStatus int
@@ -224,6 +244,23 @@ func (c *Client) CancelCommand(ctx context.Context, requestID string) error {
 		return c.parseError(resp)
 	}
 	return nil
+}
+
+func (c *Client) getJSON(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	c.addAuth(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return c.parseError(resp)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, body, out any) error {

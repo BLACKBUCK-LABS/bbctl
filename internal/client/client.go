@@ -146,6 +146,28 @@ func (c *Client) Download(ctx context.Context, req DownloadRequest) (*DownloadRe
 	return &resp, nil
 }
 
+// CompleteRequest is the body for POST /v1/complete.
+type CompleteRequest struct {
+	InstanceID string `json:"instance_id"`
+	AccountID  string `json:"account_id"`
+	Partial    string `json:"partial"`
+	CurrentDir string `json:"current_dir"`
+}
+
+// CompleteResponse is the response from POST /v1/complete.
+type CompleteResponse struct {
+	Completions []string `json:"completions"`
+}
+
+// Complete calls POST /v1/complete.
+func (c *Client) Complete(ctx context.Context, req CompleteRequest) ([]string, error) {
+	var resp CompleteResponse
+	if err := c.postJSON(ctx, "/v1/complete", req, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Completions, nil
+}
+
 // ClassifyResponse is the response from POST /v1/classify.
 type ClassifyResponse struct {
 	Tier        string   `json:"tier"`

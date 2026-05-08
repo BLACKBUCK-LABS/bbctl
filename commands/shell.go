@@ -95,6 +95,19 @@ func runShell(cmd *cobra.Command, args []string) error {
 	return runShellDirect(instanceID, accountID, cfg, configDir, token)
 }
 
+type clientCompleterAdapter struct {
+	c *client.Client
+}
+
+func (a *clientCompleterAdapter) Complete(ctx context.Context, req shell.CompleteRequest) ([]string, error) {
+	return a.c.Complete(ctx, client.CompleteRequest{
+		InstanceID: req.InstanceID,
+		AccountID:  req.AccountID,
+		Partial:    req.Partial,
+		CurrentDir: req.CurrentDir,
+	})
+}
+
 func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, token string) error {
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
 	email := extractEmailFromJWT(token)
@@ -104,7 +117,17 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, to
 	var currentDir string // "" = home (~)
 	var prevDir string
 
-	rl, err := readline.New(shell.FormatPrompt(email, instanceID, activeTicket != "", currentDir))
+	completer := shell.NewRemoteCompleter(
+		instanceID, accountID,
+		&clientCompleterAdapter{c: c},
+		&currentDir,
+	)
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          shell.FormatPrompt(email, instanceID, false, currentDir),
+		AutoComplete:    completer,
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+	})
 	if err != nil {
 		return err
 	}

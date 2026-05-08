@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -73,7 +74,7 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 	if entry, ok := rc.cache[cacheKey]; ok && time.Since(entry.at) < cacheTTL {
 		completions := entry.completions
 		rc.mu.Unlock()
-		return toRuneSlices(completions), len([]rune(partial))
+		return toRuneSlices(completions, partial), utf8.RuneCountInString(partial)
 	}
 	rc.mu.Unlock()
 
@@ -98,7 +99,7 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 	rc.cache[cacheKey] = cacheEntry{completions: results, at: time.Now()}
 	rc.mu.Unlock()
 
-	slices := toRuneSlices(results)
+	slices := toRuneSlices(results, partial)
 	fmt.Fprintf(os.Stderr, "DEBUG rune slices: len=%d first=%q\n",
 		len(slices), func() string {
 			if len(slices) > 0 {
@@ -107,7 +108,7 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 			return ""
 		}())
 
-	return slices, len([]rune(partial))
+	return slices, utf8.RuneCountInString(partial)
 }
 
 func looksLikeCompletablePath(s string) bool {
@@ -117,10 +118,14 @@ func looksLikeCompletablePath(s string) bool {
 		strings.HasPrefix(s, "~")
 }
 
-func toRuneSlices(completions []string) [][]rune {
+func toRuneSlices(completions []string, partial string) [][]rune {
 	result := make([][]rune, 0, len(completions))
 	for _, c := range completions {
-		result = append(result, []rune(c))
+		if strings.HasPrefix(c, partial) {
+			result = append(result, []rune(c[len(partial):]))
+		} else {
+			result = append(result, []rune(c))
+		}
 	}
 	return result
 }

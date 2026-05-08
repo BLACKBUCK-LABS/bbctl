@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -74,11 +73,7 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 	if entry, ok := rc.cache[cacheKey]; ok && time.Since(entry.at) < cacheTTL {
 		completions := entry.completions
 		rc.mu.Unlock()
-		partialBase := filepath.Base(partial)
-		if partial == "" || strings.HasSuffix(partial, "/") {
-			partialBase = ""
-		}
-		return toRuneSlices(completions, partial), len([]rune(partialBase))
+		return toRuneSlices(completions), len([]rune(partial))
 	}
 	rc.mu.Unlock()
 
@@ -103,7 +98,7 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 	rc.cache[cacheKey] = cacheEntry{completions: results, at: time.Now()}
 	rc.mu.Unlock()
 
-	slices := toRuneSlices(results, partial)
+	slices := toRuneSlices(results)
 	fmt.Fprintf(os.Stderr, "DEBUG rune slices: len=%d first=%q\n",
 		len(slices), func() string {
 			if len(slices) > 0 {
@@ -112,11 +107,7 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 			return ""
 		}())
 
-	partialBase := filepath.Base(partial)
-	if partial == "" || strings.HasSuffix(partial, "/") {
-		partialBase = ""
-	}
-	return slices, len([]rune(partialBase))
+	return slices, len([]rune(partial))
 }
 
 func looksLikeCompletablePath(s string) bool {
@@ -126,10 +117,10 @@ func looksLikeCompletablePath(s string) bool {
 		strings.HasPrefix(s, "~")
 }
 
-func toRuneSlices(completions []string, _ string) [][]rune {
+func toRuneSlices(completions []string) [][]rune {
 	result := make([][]rune, 0, len(completions))
 	for _, c := range completions {
-		result = append(result, []rune(filepath.Base(c)))
+		result = append(result, []rune(c))
 	}
 	return result
 }

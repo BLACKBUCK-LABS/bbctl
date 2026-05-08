@@ -74,7 +74,11 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 	if entry, ok := rc.cache[cacheKey]; ok && time.Since(entry.at) < cacheTTL {
 		completions := entry.completions
 		rc.mu.Unlock()
-		return toRuneSlices(completions, partial), len([]rune(partial))
+		partialBase := filepath.Base(partial)
+		if partial == "" || strings.HasSuffix(partial, "/") {
+			partialBase = ""
+		}
+		return toRuneSlices(completions, partial), len([]rune(partialBase))
 	}
 	rc.mu.Unlock()
 
@@ -108,7 +112,11 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 			return ""
 		}())
 
-	return slices, len([]rune(partial))
+	partialBase := filepath.Base(partial)
+	if partial == "" || strings.HasSuffix(partial, "/") {
+		partialBase = ""
+	}
+	return slices, len([]rune(partialBase))
 }
 
 func looksLikeCompletablePath(s string) bool {
@@ -118,15 +126,10 @@ func looksLikeCompletablePath(s string) bool {
 		strings.HasPrefix(s, "~")
 }
 
-func toRuneSlices(completions []string, partial string) [][]rune {
+func toRuneSlices(completions []string, _ string) [][]rune {
 	result := make([][]rune, 0, len(completions))
-	base := filepath.Dir(partial)
 	for _, c := range completions {
-		suffix := c
-		if strings.HasPrefix(c, base+"/") {
-			suffix = c[len(base)+1:]
-		}
-		result = append(result, []rune(suffix))
+		result = append(result, []rune(filepath.Base(c)))
 	}
 	return result
 }

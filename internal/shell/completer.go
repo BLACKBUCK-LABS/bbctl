@@ -2,8 +2,6 @@ package shell
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +54,6 @@ func NewRemoteCompleter(instanceID, accountID string, client Completer, currentD
 
 // Do implements readline.AutoCompleter.
 func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
-	fmt.Fprintf(os.Stderr, "DEBUG completer called: line=%q pos=%d\n", string(line[:pos]), pos)
 	lineStr := string(line[:pos])
 	lastSpace := strings.LastIndex(lineStr, " ")
 	if lastSpace < 0 {
@@ -78,9 +75,6 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 	}
 	rc.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "DEBUG calling backend: instanceID=%s accountID=%s partial=%q currentDir=%q\n",
-		rc.instanceID, rc.accountID, partial, *rc.currentDir)
-
 	ctx, cancel := context.WithTimeout(context.Background(), completionTimeout)
 	defer cancel()
 
@@ -90,7 +84,6 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 		Partial:    partial,
 		CurrentDir: *rc.currentDir,
 	})
-	fmt.Fprintf(os.Stderr, "DEBUG complete results: err=%v results=%v\n", err, results)
 	if err != nil || len(results) == 0 {
 		return nil, 0
 	}
@@ -99,16 +92,7 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 	rc.cache[cacheKey] = cacheEntry{completions: results, at: time.Now()}
 	rc.mu.Unlock()
 
-	slices := toRuneSlices(results, partial)
-	fmt.Fprintf(os.Stderr, "DEBUG rune slices: len=%d first=%q\n",
-		len(slices), func() string {
-			if len(slices) > 0 {
-				return string(slices[0])
-			}
-			return ""
-		}())
-
-	return slices, utf8.RuneCountInString(partial)
+	return toRuneSlices(results, partial), utf8.RuneCountInString(partial)
 }
 
 func looksLikeCompletablePath(s string) bool {

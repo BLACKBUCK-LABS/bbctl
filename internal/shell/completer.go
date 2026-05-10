@@ -71,7 +71,7 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 	if entry, ok := rc.cache[cacheKey]; ok && time.Since(entry.at) < cacheTTL {
 		completions := entry.completions
 		rc.mu.Unlock()
-		return toRuneSlices(completions, partial), utf8.RuneCountInString(partial)
+		return toRuneSlices(completions, partial), menuLength(partial)
 	}
 	rc.mu.Unlock()
 
@@ -92,7 +92,18 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 	rc.cache[cacheKey] = cacheEntry{completions: results, at: time.Now()}
 	rc.mu.Unlock()
 
-	return toRuneSlices(results, partial), utf8.RuneCountInString(partial)
+	return toRuneSlices(results, partial), menuLength(partial)
+}
+
+// menuLength returns how many runes readline should show as the "already typed"
+// prefix in the completion menu. When partial ends with "/" the user has fully
+// typed a directory — show only filenames (length=0). Otherwise show the
+// partial token so the menu renders e.g. "/var/lo" + "g".
+func menuLength(partial string) int {
+	if strings.HasSuffix(partial, "/") {
+		return 0
+	}
+	return utf8.RuneCountInString(partial)
 }
 
 func looksLikeCompletablePath(s string) bool {

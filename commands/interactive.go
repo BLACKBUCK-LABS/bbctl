@@ -150,7 +150,7 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 	scanner := bufio.NewScanner(os.Stdin)
 	switch actionKey {
 	case "shell":
-		return runShellDirect(inst.InstanceID, inst.AccountID, cfg, cfgDir, token)
+		return runShellDirect(inst.InstanceID, inst.AccountID, cfg, cfgDir, token, inst.PrivateIP)
 
 	case "run":
 		fmt.Print("Command: ")
@@ -161,7 +161,7 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		if command == "" {
 			return nil
 		}
-		return runCommandDirect(ctx, inst.InstanceID, inst.AccountID, command, "", c)
+		return runCommandDirect(ctx, inst.InstanceID, inst.AccountID, command, "", inst.PrivateIP, c)
 
 	case "upload":
 		fmt.Print("Local path:  ")

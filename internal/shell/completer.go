@@ -24,6 +24,7 @@ type CompleteRequest struct {
 	AccountID  string
 	Partial    string
 	CurrentDir string
+	PrivateIP  string
 }
 
 type cacheEntry struct {
@@ -35,6 +36,7 @@ type cacheEntry struct {
 type RemoteCompleter struct {
 	instanceID string
 	accountID  string
+	privateIP  string
 	client     Completer
 	currentDir *string // pointer so updates in the shell loop are visible here
 
@@ -42,10 +44,11 @@ type RemoteCompleter struct {
 	cache map[string]cacheEntry
 }
 
-func NewRemoteCompleter(instanceID, accountID string, client Completer, currentDir *string) *RemoteCompleter {
+func NewRemoteCompleter(instanceID, accountID, privateIP string, client Completer, currentDir *string) *RemoteCompleter {
 	return &RemoteCompleter{
 		instanceID: instanceID,
 		accountID:  accountID,
+		privateIP:  privateIP,
 		client:     client,
 		currentDir: currentDir,
 		cache:      make(map[string]cacheEntry),
@@ -83,6 +86,7 @@ func (rc *RemoteCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 		AccountID:  rc.accountID,
 		Partial:    partial,
 		CurrentDir: *rc.currentDir,
+		PrivateIP:  rc.privateIP,
 	})
 	if err != nil || len(results) == 0 {
 		return nil, 0

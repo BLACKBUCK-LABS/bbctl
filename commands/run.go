@@ -104,15 +104,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 		os.Exit(130)
 	}()
 
-	return runCommandDirect(ctx, instanceID, accountID, command, runTicket, c)
+	return runCommandDirect(ctx, instanceID, accountID, command, runTicket, "", c)
 }
 
-func runCommandDirect(ctx context.Context, instanceID, accountID, command, ticketID string, c *client.Client) error {
+func runCommandDirect(ctx context.Context, instanceID, accountID, command, ticketID, privateIP string, c *client.Client) error {
 	resp, err := c.RunCommand(ctx, client.CommandRequest{
 		InstanceID:   instanceID,
 		AccountID:    accountID,
 		Command:      command,
 		JiraTicketID: ticketID,
+		PrivateIP:    privateIP,
 	})
 	if err != nil {
 		var apiErr *client.APIError

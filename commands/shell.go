@@ -92,7 +92,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("AWS account ID is required: pass --account 123456789012 or set default_account_id in ~/.bbctl/config.yaml")
 	}
 
-	return runShellDirect(instanceID, accountID, cfg, configDir, token)
+	return runShellDirect(instanceID, accountID, cfg, configDir, token, "")
 }
 
 type clientCompleterAdapter struct {
@@ -105,10 +105,11 @@ func (a *clientCompleterAdapter) Complete(ctx context.Context, req shell.Complet
 		AccountID:  req.AccountID,
 		Partial:    req.Partial,
 		CurrentDir: req.CurrentDir,
+		PrivateIP:  req.PrivateIP,
 	})
 }
 
-func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, token string) error {
+func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, token, privateIP string) error {
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
 	email := extractEmailFromJWT(token)
 
@@ -118,7 +119,7 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, to
 	var prevDir string
 
 	completer := shell.NewRemoteCompleter(
-		instanceID, accountID,
+		instanceID, accountID, privateIP,
 		&clientCompleterAdapter{c: c},
 		&currentDir,
 	)
@@ -215,7 +216,7 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, to
 			}
 			if handled, err := handleCurlFileRefs(
 				&line, instanceID, accountID, &activeTicket,
-				cfg, token, c, promptUpdater,
+				privateIP, cfg, token, c, promptUpdater,
 			); err != nil {
 				fmt.Fprintln(os.Stderr, "error:", err)
 				continue
@@ -369,6 +370,7 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, to
 			AccountID:    accountID,
 			Command:      resolvePaths(line, currentDir),
 			JiraTicketID: activeTicket,
+			PrivateIP:    privateIP,
 		})
 		cancelFn()
 		inFlight = nil
@@ -499,6 +501,7 @@ func handleCurlFileRefs(
 	line *string,
 	instanceID, accountID string,
 	activeTicket *string,
+	privateIP string,
 	cfg *config.Config,
 	token string,
 	c *client.Client,
@@ -565,6 +568,7 @@ func handleCurlFileRefs(
 			Command:                combined,
 			JiraTicketID:           *activeTicket,
 			EffectiveForValidation: stripQuotes(rewritten),
+			PrivateIP:              privateIP,
 		})
 		if err != nil {
 			return true, err
@@ -597,6 +601,7 @@ func handleCurlFileRefs(
 		AccountID:              accountID,
 		Command:                rewritten,
 		EffectiveForValidation: stripQuotes(rewritten),
+		PrivateIP:              privateIP,
 	})
 	if err != nil {
 		return true, err

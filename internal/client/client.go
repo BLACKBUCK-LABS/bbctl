@@ -17,6 +17,7 @@ type CommandRequest struct {
 	JiraTicketID           string `json:"jira_ticket_id,omitempty"`
 	EffectiveForValidation string `json:"effective_for_validation,omitempty"`
 	ClientVersion          string `json:"client_version,omitempty"`
+	PrivateIP              string `json:"private_ip,omitempty"`
 }
 
 // CommandResponse is the response from POST /v1/commands.
@@ -152,6 +153,7 @@ type CompleteRequest struct {
 	AccountID  string `json:"account_id"`
 	Partial    string `json:"partial"`
 	CurrentDir string `json:"current_dir"`
+	PrivateIP  string `json:"private_ip,omitempty"`
 }
 
 // CompleteResponse is the response from POST /v1/complete.

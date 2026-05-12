@@ -193,6 +193,17 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, to
 			}
 			line = line + " " + strings.TrimSpace(nextLine)
 		}
+		// Accumulate lines when quotes are unclosed (e.g. multiline -d '{ ... }').
+		for line != "" && hasUnclosedQuotes(line) {
+			rl.SetPrompt("> ")
+			nextLine, contErr := rl.Readline()
+			rl.SetPrompt(shell.FormatPrompt(email, instanceID, activeTicket != "", currentDir))
+			if contErr != nil {
+				line = ""
+				break
+			}
+			line = line + "\n" + nextLine
+		}
 		if line == "" {
 			continue
 		}
@@ -767,6 +778,26 @@ func looksLikePath(arg string) bool {
 	}
 	// Bare words (grep patterns, signal names, hostnames, etc.) are not paths
 	return false
+}
+
+// hasUnclosedQuotes reports whether s contains an unclosed single or double
+// quote, used to detect multiline arguments like -d '{ ... }'.
+func hasUnclosedQuotes(s string) bool {
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' && !inSingle && i+1 < len(s) {
+			i++ // skip escaped char
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+		} else if c == '"' && !inSingle {
+			inDouble = !inDouble
+		}
+	}
+	return inSingle || inDouble
 }
 
 // isNumeric reports whether s consists entirely of ASCII digits.

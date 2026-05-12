@@ -65,7 +65,7 @@ func runUpload(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
-	return runUploadDirect(context.Background(), instanceID, accountID, localPath, remotePath, uploadTicket, c)
+	return runUploadSession(context.Background(), instanceID, accountID, localPath, remotePath, uploadTicket, c)
 }
 
 func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remotePath, ticketID string, c *client.Client) error {
@@ -111,7 +111,14 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 	}
 
 	fmt.Fprintf(os.Stdout, "Uploaded %s → %s:%s\n", localPath, instanceID, remotePath)
+	return nil
+}
 
+// runUploadSession runs one upload then loops asking for more files.
+func runUploadSession(ctx context.Context, instanceID, accountID, localPath, remotePath, ticketID string, c *client.Client) error {
+	if err := runUploadDirect(ctx, instanceID, accountID, localPath, remotePath, ticketID, c); err != nil {
+		return err
+	}
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Fprint(os.Stdout, "\nUpload another file? [y/N]: ")

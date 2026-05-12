@@ -66,7 +66,7 @@ func runDownload(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
-	return runDownloadDirect(context.Background(), instanceID, accountID, remotePath, localPath, downloadTicket, c)
+	return runDownloadSession(context.Background(), instanceID, accountID, remotePath, localPath, downloadTicket, c)
 }
 
 func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, localPath, ticketID string, c *client.Client) error {
@@ -116,7 +116,14 @@ func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, l
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "Downloaded %s:%s → %s\n", instanceID, remotePath, localPath)
+	return nil
+}
 
+// runDownloadSession runs one download then loops asking for more files.
+func runDownloadSession(ctx context.Context, instanceID, accountID, remotePath, localPath, ticketID string, c *client.Client) error {
+	if err := runDownloadDirect(ctx, instanceID, accountID, remotePath, localPath, ticketID, c); err != nil {
+		return err
+	}
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Fprint(os.Stdout, "\nDownload another file? [y/N]: ")

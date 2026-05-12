@@ -177,7 +177,7 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		if localPath == "" || remotePath == "" {
 			return nil
 		}
-		return runUploadDirect(ctx, inst.InstanceID, inst.AccountID, localPath, remotePath, "", c)
+		return runUploadSession(ctx, inst.InstanceID, inst.AccountID, localPath, remotePath, "", c)
 
 	case "download":
 		fmt.Print("Remote file path: ")
@@ -193,7 +193,7 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		if remotePath == "" || localPath == "" {
 			return nil
 		}
-		return runDownloadDirect(ctx, inst.InstanceID, inst.AccountID, remotePath, localPath, "", c)
+		return runDownloadSession(ctx, inst.InstanceID, inst.AccountID, remotePath, localPath, "", c)
 
 	case "details":
 		printInstanceDetails(inst)

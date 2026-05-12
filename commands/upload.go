@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -110,5 +111,33 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 	}
 
 	fmt.Fprintf(os.Stdout, "Uploaded %s → %s:%s\n", localPath, instanceID, remotePath)
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Fprint(os.Stdout, "\nUpload another file? [y/N]: ")
+		if !scanner.Scan() {
+			break
+		}
+		if strings.ToLower(strings.TrimSpace(scanner.Text())) != "y" {
+			break
+		}
+		fmt.Fprint(os.Stdout, "Local path: ")
+		if !scanner.Scan() {
+			break
+		}
+		newLocalPath := strings.TrimSpace(scanner.Text())
+		fmt.Fprint(os.Stdout, "Remote path: ")
+		if !scanner.Scan() {
+			break
+		}
+		newRemotePath := strings.TrimSpace(scanner.Text())
+		if newLocalPath == "" || newRemotePath == "" {
+			fmt.Fprintln(os.Stdout, "Paths cannot be empty.")
+			continue
+		}
+		if err := runUploadDirect(ctx, instanceID, accountID, newLocalPath, newRemotePath, ticketID, c); err != nil {
+			fmt.Fprintf(os.Stdout, "Error: %v\n", err)
+		}
+	}
 	return nil
 }

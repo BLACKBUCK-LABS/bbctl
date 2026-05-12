@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -115,6 +116,37 @@ func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, l
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "Downloaded %s:%s → %s\n", instanceID, remotePath, localPath)
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Fprint(os.Stdout, "\nDownload another file? [y/N]: ")
+		if !scanner.Scan() {
+			break
+		}
+		if strings.ToLower(strings.TrimSpace(scanner.Text())) != "y" {
+			break
+		}
+		fmt.Fprint(os.Stdout, "Remote path: ")
+		if !scanner.Scan() {
+			break
+		}
+		newRemotePath := strings.TrimSpace(scanner.Text())
+		fmt.Fprint(os.Stdout, "Local path [. for current dir]: ")
+		if !scanner.Scan() {
+			break
+		}
+		newLocalPath := strings.TrimSpace(scanner.Text())
+		if newLocalPath == "" {
+			newLocalPath = "."
+		}
+		if newRemotePath == "" {
+			fmt.Fprintln(os.Stdout, "Remote path cannot be empty.")
+			continue
+		}
+		if err := runDownloadDirect(ctx, instanceID, accountID, newRemotePath, newLocalPath, ticketID, c); err != nil {
+			fmt.Fprintf(os.Stdout, "Error: %v\n", err)
+		}
+	}
 	return nil
 }
 

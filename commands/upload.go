@@ -29,7 +29,7 @@ var uploadCmd = &cobra.Command{
 }
 
 func init() {
-	uploadCmd.Flags().StringVar(&uploadTicket, "ticket", "", "Jira ticket ID (required for restricted paths)")
+	uploadCmd.Flags().StringVar(&uploadTicket, "ticket", "", "Access request ID (required for restricted paths)")
 	uploadCmd.Flags().StringVarP(&uploadAccount, "account", "a", "", "AWS account name or ID")
 	rootCmd.AddCommand(uploadCmd)
 }
@@ -68,7 +68,10 @@ func runUpload(cmd *cobra.Command, args []string) error {
 	return runUploadSession(context.Background(), instanceID, accountID, localPath, remotePath, uploadTicket, c)
 }
 
-func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remotePath, ticketID string, c *client.Client) error {
+// runUploadDirect performs a single upload. Returns (true, nil) when the file
+// was actually transferred, (false, nil) when an access request was created and
+// is pending approval (no loop should follow), or (false, err) on failure.
+func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remotePath, ticketID string, c *client.Client) (bool, error) {
 	filename := filepath.Base(localPath)
 	if strings.HasSuffix(remotePath, "/") {
 		remotePath = remotePath + filename
@@ -76,7 +79,7 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 
 	content, err := os.ReadFile(localPath)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", localPath, err)
+		return false, fmt.Errorf("read %s: %w", localPath, err)
 	}
 
 	sum := sha256.Sum256(content)
@@ -97,27 +100,32 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 		if errors.As(err, &apiErr) {
 			handleAPIError(apiErr)
 		}
-		return err
+		return false, err
 	}
 
 	if resp.TicketKey != "" {
-		fmt.Fprintf(os.Stdout, "\nJira ticket created: %s\n", resp.TicketKey)
+		fmt.Fprintf(os.Stdout, "\nAccess request created: %s\n", resp.TicketKey)
 		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
 		fmt.Fprintln(os.Stdout, "Waiting for manager approval.")
 		fmt.Fprintln(os.Stdout, "   Once approved, run:")
 		fmt.Fprintf(os.Stdout, "     bbctl upload %s -a %s %s %s --ticket %s\n\n",
 			instanceID, accountID, localPath, remotePath, resp.TicketKey)
-		return nil
+		return false, nil
 	}
 
 	fmt.Fprintf(os.Stdout, "Uploaded %s → %s:%s\n", localPath, instanceID, remotePath)
-	return nil
+	return true, nil
 }
 
-// runUploadSession runs one upload then loops asking for more files.
+// runUploadSession runs one upload then, only if the file was transferred
+// (not just ticketed for approval), loops asking for more files.
 func runUploadSession(ctx context.Context, instanceID, accountID, localPath, remotePath, ticketID string, c *client.Client) error {
-	if err := runUploadDirect(ctx, instanceID, accountID, localPath, remotePath, ticketID, c); err != nil {
+	transferred, err := runUploadDirect(ctx, instanceID, accountID, localPath, remotePath, ticketID, c)
+	if err != nil {
 		return err
+	}
+	if !transferred {
+		return nil
 	}
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -142,8 +150,10 @@ func runUploadSession(ctx context.Context, instanceID, accountID, localPath, rem
 			fmt.Fprintln(os.Stdout, "Paths cannot be empty.")
 			continue
 		}
-		if err := runUploadDirect(ctx, instanceID, accountID, newLocalPath, newRemotePath, "", c); err != nil {
+		if transferred, err := runUploadDirect(ctx, instanceID, accountID, newLocalPath, newRemotePath, "", c); err != nil {
 			fmt.Fprintf(os.Stdout, "Error: %v\n", err)
+		} else if !transferred {
+			break
 		}
 	}
 	return nil

@@ -16,7 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var downloadTicket string
 var downloadAccount string
 
 var downloadCmd = &cobra.Command{
@@ -24,13 +23,12 @@ var downloadCmd = &cobra.Command{
 	Short: "Download a file from an EC2 instance to local machine",
 	Example: `  bbctl download i-0abc123 /var/log/app.log ./app.log
   bbctl download i-0abc123 /var/log/app.log -    # stream to stdout
-  bbctl download i-0abc123 -a divum /tmp/heap.hprof ./heap.hprof --ticket REQ-456`,
+  bbctl download i-0abc123 -a divum /tmp/heap.hprof ./heap.hprof`,
 	Args: cobra.ExactArgs(3),
 	RunE: runDownload,
 }
 
 func init() {
-	downloadCmd.Flags().StringVar(&downloadTicket, "ticket", "", "Jira ticket ID (required for restricted paths)")
 	downloadCmd.Flags().StringVarP(&downloadAccount, "account", "a", "", "AWS account name or ID")
 	rootCmd.AddCommand(downloadCmd)
 }
@@ -66,10 +64,10 @@ func runDownload(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
-	return runDownloadSession(context.Background(), instanceID, accountID, remotePath, localPath, downloadTicket, c)
+	return runDownloadSession(context.Background(), instanceID, accountID, remotePath, localPath, c)
 }
 
-func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, localPath, ticketID string, c *client.Client) error {
+func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, localPath string, c *client.Client) error {
 	if localPath == "." || strings.HasSuffix(localPath, "/") {
 		localPath = filepath.Join(localPath, filepath.Base(remotePath))
 	}
@@ -77,7 +75,6 @@ func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, l
 		InstanceID: instanceID,
 		AccountID:  accountID,
 		SrcPath:    remotePath,
-		TicketID:   ticketID,
 	})
 	if err != nil {
 		var apiErr *client.APIError
@@ -85,16 +82,6 @@ func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, l
 			handleAPIError(apiErr)
 		}
 		return err
-	}
-
-	if resp.TicketKey != "" {
-		fmt.Fprintf(os.Stdout, "\nJira ticket created: %s\n", resp.TicketKey)
-		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
-		fmt.Fprintln(os.Stdout, "Waiting for manager approval.")
-		fmt.Fprintln(os.Stdout, "   Once approved, run:")
-		fmt.Fprintf(os.Stdout, "     bbctl download %s -a %s --ticket %s %s %s\n\n",
-			instanceID, accountID, resp.TicketKey, remotePath, localPath)
-		return nil
 	}
 
 	if resp.PresignedURL == "" {
@@ -120,8 +107,8 @@ func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, l
 }
 
 // runDownloadSession runs one download then loops asking for more files.
-func runDownloadSession(ctx context.Context, instanceID, accountID, remotePath, localPath, ticketID string, c *client.Client) error {
-	if err := runDownloadDirect(ctx, instanceID, accountID, remotePath, localPath, ticketID, c); err != nil {
+func runDownloadSession(ctx context.Context, instanceID, accountID, remotePath, localPath string, c *client.Client) error {
+	if err := runDownloadDirect(ctx, instanceID, accountID, remotePath, localPath, c); err != nil {
 		return err
 	}
 	scanner := bufio.NewScanner(os.Stdin)
@@ -150,7 +137,7 @@ func runDownloadSession(ctx context.Context, instanceID, accountID, remotePath, 
 			fmt.Fprintln(os.Stdout, "Remote path cannot be empty.")
 			continue
 		}
-		if err := runDownloadDirect(ctx, instanceID, accountID, newRemotePath, newLocalPath, "", c); err != nil {
+		if err := runDownloadDirect(ctx, instanceID, accountID, newRemotePath, newLocalPath, c); err != nil {
 			fmt.Fprintf(os.Stdout, "Error: %v\n", err)
 		}
 	}

@@ -193,7 +193,7 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		if remotePath == "" || localPath == "" {
 			return nil
 		}
-		return runDownloadSession(ctx, inst.InstanceID, inst.AccountID, remotePath, localPath, "", c)
+		return runDownloadSession(ctx, inst.InstanceID, inst.AccountID, remotePath, localPath, c)
 
 	case "details":
 		printInstanceDetails(inst)

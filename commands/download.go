@@ -143,7 +143,7 @@ func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, l
 			fmt.Fprintln(os.Stdout, "Remote path cannot be empty.")
 			continue
 		}
-		if err := runDownloadDirect(ctx, instanceID, accountID, newRemotePath, newLocalPath, ticketID, c); err != nil {
+		if err := runDownloadDirect(ctx, instanceID, accountID, newRemotePath, newLocalPath, "", c); err != nil {
 			fmt.Fprintf(os.Stdout, "Error: %v\n", err)
 		}
 	}

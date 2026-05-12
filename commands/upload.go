@@ -135,7 +135,7 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 			fmt.Fprintln(os.Stdout, "Paths cannot be empty.")
 			continue
 		}
-		if err := runUploadDirect(ctx, instanceID, accountID, newLocalPath, newRemotePath, ticketID, c); err != nil {
+		if err := runUploadDirect(ctx, instanceID, accountID, newLocalPath, newRemotePath, "", c); err != nil {
 			fmt.Fprintf(os.Stdout, "Error: %v\n", err)
 		}
 	}

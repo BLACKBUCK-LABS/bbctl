@@ -38,7 +38,7 @@ def triggerRcaWebhook() {
         try {
             result = postWebhook(rcaUrl, payload, sig)
         } catch (Exception e) {
-            echo "[bbctl-rca] webhook transport error (non-fatal): ${e.message}"
+            echo "[BB-AI] webhook transport error (non-fatal): ${e.message}"
             return null
         }
         if (result?.status == 200) {
@@ -47,12 +47,12 @@ def triggerRcaWebhook() {
                 renderRca(rca)
                 return rca
             } catch (Exception e) {
-                echo "[bbctl-rca] JSON parse error: ${e.message}"
-                echo "[bbctl-rca] raw body: ${result.body?.take(500)}"
+                echo "[BB-AI] JSON parse error: ${e.message}"
+                echo "[BB-AI] raw body: ${result.body?.take(500)}"
                 return null
             }
         } else {
-            echo "[bbctl-rca] HTTP ${result?.status}: ${result?.body?.take(300)}"
+            echo "[BB-AI] HTTP ${result?.status}: ${result?.body?.take(300)}"
             return null
         }
     }
@@ -117,7 +117,7 @@ def renderRca(Map rca) {
     def lines = []
     lines << ''
     lines << '╔══════════════════════════════════════════════════════════════════╗'
-    lines << '║                      bbctl-rca — Auto RCA                        ║'
+    lines << '║               Jenkins Build RCA — Powered by BB-AI               ║'
     lines << '╚══════════════════════════════════════════════════════════════════╝'
     lines << "  class:       ${cls}"
     lines << "  failed_stage:${stage}"
@@ -159,7 +159,7 @@ def renderRca(Map rca) {
         lines << ''
     }
     lines << "  request_id: ${reqId}"
-    lines << "  full audit: /var/log/bbctl-rca/${reqId}.json on bbctl-ec2"
+    lines << "  audit log: request_id ${reqId} (full JSON stored on BB-AI server)"
     lines << ''
 
     echo lines.join('\n')

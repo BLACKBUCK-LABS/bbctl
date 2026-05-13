@@ -37,16 +37,19 @@ Class-specific runbooks may appear under `docs.<NAME>.md`. Treat as authoritativ
 
 When `jira.tickets[].custom_fields` or `sha_like_fields` is present, USE those values directly. Don't ask the operator to "check the ticket" — they already know it failed. State which field has which value.
 
-For compliance / commit mismatch errors — operator intent is ambiguous and you MUST surface both:
+For compliance / commit mismatch errors — operator intent is ambiguous. Surface BOTH options. Per JiraDetailsCompliance.md Issues 6 & 7 (leading-space COMMIT_ID, JFrog version mistaken for SHA), the typical cause is a bad param value, so Option A is recommended first; Option B is for genuine re-signs.
 
 ```
 Action:
-  Option A — Build was wrong (operator passed wrong param):
+  Option A (RECOMMENDED — operator passed wrong param):
     Re-run the pipeline with COMMIT_ID/TAG param resolving to <SIGNED_OFF_SHA>.
-    Use this when the signed-off commit is what should ship.
-  Option B — Jira sign-off is stale (new commit is intended):
-    Update Jira <TICKET> 'Signed Off Commit ID' custom field to <RESOLVED_SHA>
-    AND ensure the merged PR title contains the ticket ID. Then re-run.
+    Check for: leading/trailing spaces, JFrog artifact version vs git SHA,
+    wrong branch/tag name. Per runbook: trim COMMIT_ID before submit.
+    Use this when the original signed-off commit is what should ship.
+  Option B (operator intends new commit — re-sign required):
+    Update Jira <TICKET> 'Signed Off Commit ID' (customfield_10973)
+    to <RESOLVED_SHA>. ALSO ensure the merged PR title contains the
+    ticket ID (per Lesson #4). Then re-run.
     Use this when the new commit is the desired release content.
 ```
 

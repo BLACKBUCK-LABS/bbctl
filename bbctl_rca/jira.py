@@ -42,7 +42,13 @@ def _auth_header() -> dict:
     return {"Authorization": "Basic " + base64.b64encode(creds).decode(), "Accept": "application/json"}
 
 
-# Substring matchers for surfacing org-specific custom fields by name.
+# Known org-specific custom field IDs (from JiraDetailsCompliance.md Lessons).
+# Always surfaced regardless of name match.
+KNOWN_CUSTOM_FIELDS = {
+    "customfield_10973": "Signed Off Commit ID",
+}
+
+# Substring matchers for surfacing org-specific custom fields by human name.
 # Jira custom fields are returned as customfield_NNNNN; we get human names via
 # expand=names. These substrings match against the human name (lower-cased).
 _INTERESTING_FIELD_KEYWORDS = (
@@ -115,8 +121,11 @@ async def fetch_ticket(key: str) -> dict:
         "description": (f.get("description") or "")[:800],
     }
 
-    # Surface custom fields by human name match. Also scan for SHA-like values
-    # anywhere — the actual "signed off commit id" might be named differently.
+    # Surface custom fields. Priority:
+    # 1. Known org-specific field IDs (from runbook): always included with
+    #    canonical name.
+    # 2. Fields whose human name matches commit/tag/approval keywords.
+    # 3. Fields whose VALUE looks like a SHA — catches mis-named fields.
     custom = {}
     sha_fields = {}
     for fid, fval in f.items():
@@ -124,14 +133,19 @@ async def fetch_ticket(key: str) -> dict:
             continue
         if fval in (None, "", [], {}):
             continue
-        human = (names.get(fid) or "").lower()
         flat = _flatten_field_value(fval)
-        # If name matches keywords, include
+
+        # 1. Known field — use canonical name
+        if fid in KNOWN_CUSTOM_FIELDS:
+            custom[KNOWN_CUSTOM_FIELDS[fid]] = flat
+            continue
+
+        human = (names.get(fid) or "").lower()
+        # 2. Name keyword match
         if any(kw in human for kw in _INTERESTING_FIELD_KEYWORDS):
             custom[names.get(fid, fid)] = flat
             continue
-        # Even if name doesn't match keywords, surface fields whose value looks
-        # like a commit SHA — covers cases where the org uses a generic name.
+        # 3. Value looks like a SHA
         flat_str = str(flat)
         if _SHA_LIKE_RE.search(flat_str):
             sha_fields[names.get(fid, fid)] = flat

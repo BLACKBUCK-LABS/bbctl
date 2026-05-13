@@ -58,8 +58,9 @@ def docs_get(name: str) -> str:
 
 
 _SLIM_FIELDS = (
-    "name", "service_name", "env", "aws_account", "region",
-    "deploy_type", "infra_type", "is_non_web",
+    "name", "service_name", "service_identifier", "env",
+    "aws_account", "region", "aws_region",
+    "deploy_type", "infra_type", "is_non_web", "service_type",
     "instance_class", "ami", "target_group_name", "rule_arn",
     "health_check_path", "health_check_port", "canary_threshold", "traffic_values",
     "auto_scaling_group", "min_capacity", "max_capacity", "desired_capacity",
@@ -69,6 +70,12 @@ _SLIM_FIELDS = (
     "slack_channel",
     # Surfaced for health_check class so LLM can tell operator where to look
     "log_path", "service_port", "port", "app_port", "container_port",
+    # Real-world field names used in this org's config.json (alternatives to
+    # the canonical names above). `target_port` is the ALB target group port,
+    # `filebeat_log_path` is the service log file path, `key_name` is the SSH
+    # key name (operator builds `.pem` path from it), `server_command` is the
+    # full `java ...` startup command (contains `-Dlog.dir=` hint).
+    "target_port", "filebeat_log_path", "key_name", "server_command",
 )
 
 

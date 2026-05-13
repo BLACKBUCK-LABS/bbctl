@@ -384,8 +384,25 @@ LLM is instructed to **never** cite SSH host-key warnings or NewRelic `Applicati
 
 - **Phase A (LIVE)** — Auto-RCA prints to console + build description on failure. Webhook is non-fatal; nothing about the existing alert flow changed.
 - **Phase B (LIVE)** — VictorOps incident `message` field now includes `buildAlertMessage(rca)` so on-call sees the RCA summary inside the page itself. RCA fields (`rcaErrorClass`, `rcaFailedStage`, `rcaConfidence`, `rcaSummary`, `rcaRequestId`) also injected into the VictorOps `details` panel for structured access. Base message still leads — existing VictorOps filters / dashboards keep working.
-- **Phase C (later)** — Slack notification with RCA + suggested commands; "deep" mode triggered from a Slack button.
+- **Phase C (next — test 2026-05-14)** — Slack notification with RCA + suggested commands; "deep" mode triggered from a Slack button. The infra hooks (`slack.post(result, job, build)` is already invoked at the end of `_run_rca` in `main.py`) — needs a webhook URL configured in Secrets Manager + message-block formatting.
 - **Future** — fetch real Kayenta canary scores via Kayenta API for `canary_fail` class instead of inferring from build log alone.
+
+### Phase C dry-run plan (for 2026-05-14)
+
+Pre-reqs to validate before testing:
+
+1. **Secrets Manager** — add `BBCTL_SLACK_WEBHOOK_URL` (incoming webhook URL of the target channel, e.g. `#devops-alerts-rca` or `#prod-deployment-failures`). Update `bbctl_rca/secrets.py` to export it as env var.
+2. **`bbctl_rca/slack.py`** — `post(result, job, build)` is currently a stub. Wire it to:
+   - Build a Slack [Block Kit](https://api.slack.com/block-kit) message with: header (class/stage/confidence), section (summary), divider, section (suggested_fix), section (suggested_commands as `mrkdwn` code blocks).
+   - POST to the webhook URL.
+   - Non-blocking — wrap in try/except so a Slack failure never breaks the RCA response to Jenkins.
+3. **Deep-mode trigger** — add a Slack interactive button "🔍 Deep analyze". On click, the Slack message posts to a new `/v1/rca/deep` endpoint with `{job, build, deep: true}`. Returns updated RCA into the same thread.
+4. **Rate / cost guard** — Phase C will produce one Slack message per failed pipeline (already cached 24h). Deep-mode click can multiply cost — gate behind a "are you sure?" Slack confirmation or limit one deep call per build.
+
+Test flow:
+- Trigger a known-failing build (e.g. retrigger `stagger-prod-plus-devops-test#25`)
+- Confirm Slack message lands in the channel within ~60s
+- Click "Deep analyze" — confirm a follow-up message with `deep:true` RCA arrives in the thread
 
 ### Phase B — VictorOps message shape
 
@@ -417,6 +434,15 @@ If `suggested_fix` is a single String (some classes use this shape), only the fi
 8. **Live verification** — build 25 (`stagger-prod-plus-devops-test`) re-RCA'd cleanly: `error_class=health_check`, `failed_stage=Deploy`, cites instance `i-02fc813e939bb2b39` + 50 iterations + concrete `ssh ... tail /var/log/blackbuck/<svc>.log` / `ss -tlnp | grep <port>` / `curl /admin/version` commands. Cost: $0.003 / 18K input tokens / 60s latency.
 9. **Phase B shipped** — VictorOps incident `message` now carries `buildAlertMessage(rca)` (class/stage/confidence + summary + Finding/Action), and `details` panel adds structured `rcaErrorClass / rcaFailedStage / rcaConfidence / rcaSummary / rcaRequestId`. On-call sees the RCA inside the page itself — no need to click through to Jenkins console to know what failed.
 10. **`buildAlertMessage` hardened** — handles both `suggested_fix` shapes (Map with Finding/Action keys, or plain String). Previously String-shaped fixes produced an empty alert body.
+11. **Real config field resolution for health_check** — first live RCA emitted `<your-key.pem>`, `<instance-ip>`, `<log_path>`, `<health_check_port>` placeholders because `config.json` for `test-supply-wrapper-nonweb` had every canonical field (`log_path`, `service_port`, `health_check_port`) set to `null`. Root cause: the org uses different field names (`target_port`, `filebeat_log_path`, `key_name`, `server_command`). Fixed by:
+    - `_SLIM_FIELDS` extended with the real-world names so `service_lookup` surfaces them.
+    - `llm.py` `health_check.service_config` block resolves canonical → actual (`port` ← `target_port`; `log_path` ← `filebeat_log_path`; etc.), parses `-Dlog.dir=` out of `server_command` as a log-location hint, and derives `pem_path_hint = /var/lib/jenkins/.ssh/<key_name>.pem` from `key_name`. Any unresolved field shows as `NOT_IN_CONFIG` so the LLM SEES the absence rather than fabricating.
+    - `prompts/rca_system.md` adds STRICT rule: NEVER emit `<placeholder>` strings; if `NOT_IN_CONFIG`, write a concrete discovery command (`ls /var/log/blackbuck/`, `ss -tlnp | grep java`, `aws elbv2 describe-target-groups`, `aws ssm start-session ...`) instead.
+12. **BBCTL is the org-standard instance access tool** — RCA action items now use `bbctl shell <instance-id>` (interactive) and `bbctl run <instance-id> -- '<cmd>'` (one-shot, preferred for `suggested_commands`) instead of raw `ssh -i <key>.pem ubuntu@<ip>`. Wired into:
+    - `prompts/rca_system.md` — STRICT BBCTL command rules (substitute real `instance_id` from `health_check.target`, never emit `<instance-id>` placeholders; `bbctl run` for one-shots, `bbctl shell` for interactive; SSM and raw ssh = fallback only).
+    - `bbctl_rca/llm.py` — `health_check.guide` injects the org access pattern into the LLM prompt at runtime.
+    - `docops/HealthCheckFailure.md` — new "Access pattern — use BBCTL" lead section + all verify commands rewritten to use `bbctl run`.
+13. **Live verification (round 2)** — same build 25 re-RCA'd cleanly. Output now contains real values everywhere: `bbctl shell i-02fc813e939bb2b39`, port `7005` (resolved from `target_port`), log path `/var/log/blackbuck/test-supply-wrapper-nonweb.log` (org-standard pattern), health endpoint `/admin/version`. All `suggested_commands` tier `safe`. No raw `ssh`, no `<placeholder>`. Cost: $0.003 / 19K input tokens / 62s latency.
 
 ---
 

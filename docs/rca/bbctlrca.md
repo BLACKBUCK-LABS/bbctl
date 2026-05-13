@@ -129,9 +129,37 @@ sudo git fetch && sudo git reset --hard origin/master   # or relevant branch
 
 ### Cache & dedup
 
-- 24h RCA result cache: same `(job, build)` returns prior RCA without re-calling LLM. Marked `from_cache: true` in response.
+- 24h RCA result cache (diskcache) lives in `/var/cache/bbctl-rca/`. Same `(job, build)` returns prior RCA without re-calling LLM. Marked `from_cache: true` in response.
 - 60s dedup cache for in-flight requests.
 - To force fresh RCA: call `/v1/rca` directly with `{"deep": true}`.
+
+### Force fresh RCA — full cache wipe
+
+When testing prompt/classifier/sanitizer changes against a *previously-analyzed* build, the 24h cache returns the stale RCA even with `deep:true` in some paths (deep bypasses `get_rca` but not all `is_duplicate` short-circuits). For a guaranteed clean run:
+
+```bash
+# Clean restart with cache wipe
+sudo systemctl stop bbctl-rca && \
+  sudo rm -rf /var/cache/bbctl-rca/* && \
+  sudo systemctl start bbctl-rca
+sleep 2
+curl -sf http://127.0.0.1:7070/healthz && echo " OK"
+
+# Payload-file pattern — easier to edit/reuse than inline -d
+echo '{"job":"stagger-prod-plus-devops-test","build":25,"deep":true}' > /tmp/payload_dt25.json
+curl -X POST http://localhost:7070/v1/rca \
+  -H 'Content-Type: application/json' \
+  -d @/tmp/payload_dt25.json | jq
+```
+
+Typical latency: 30-60s (Jenkins log fetch + sanitize + LLM call). Typical cost: $0.002-0.005 with `gpt-4o-mini`.
+
+To inspect specific fields without scrolling the whole JSON:
+```bash
+curl ... | jq '.evidence, .root_cause'
+curl ... | jq '.suggested_fix, .suggested_commands'
+curl ... | jq '.error_class, .failed_stage, .confidence, .tokens_used, .cost_usd'
+```
 
 ---
 
@@ -145,12 +173,12 @@ In the `post.failure` block, after `rollbackMain(...)`:
 script {
     rollbackMain("Single Job Rollback", params.SERVICE)
 
-    // ============ bbctl-rca auto-RCA (Phase A — console + build description only) ============
+    // ============ BB-AI auto-RCA (Phase A — console + build description only) ============
     // Non-fatal: any error here must not affect rollback or VictorOps alert below.
     try {
         triggerRcaWebhook()
     } catch (Exception e) {
-        echo "[bbctl-rca] non-fatal error: ${e.message}"
+        echo "[BB-AI] non-fatal error: ${e.message}"
     }
     // ========================================================================================
 
@@ -177,10 +205,10 @@ Posts the signed webhook using raw `HttpURLConnection` (no `httpRequest` plugin 
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
-║                      bbctl-rca — Auto RCA                        ║
+║               Jenkins Build RCA — Powered by BB-AI               ║
 ╚══════════════════════════════════════════════════════════════════╝
-  class:       compliance
-  failed_stage:Build
+  class:       health_check
+  failed_stage:Deploy
   confidence:  0.9
 
   Summary:    <one-line>
@@ -190,7 +218,7 @@ Posts the signed webhook using raw `HttpURLConnection` (no `httpRequest` plugin 
   Commands:   [safe|restricted] cmd → rationale
   Evidence:   [✓/✗] source: snippet
   request_id: <uuid>
-  full audit: /var/log/bbctl-rca/<uuid>.json
+  audit log:  request_id <uuid> (full JSON stored on BB-AI server)
 ```
 
 Build description (sidebar) also shows a one-line `RCA: <summary>` so the failure is triagable from the job list.
@@ -310,12 +338,61 @@ curl -X POST http://127.0.0.1:7070/v1/rca \
 
 ---
 
+## Error classes — current behavior
+
+| Class | Trigger pattern | Tool context fetched | Runbook |
+| --- | --- | --- | --- |
+| `compliance` | `Signed Off commit id` / `Compliance:` / `COMMIT_ID does not match` | Jira ticket (incl. `customfield_10973` Signed Off Commit ID) + GitHub commits for both SHAs | `JiraDetailsCompliance.md` |
+| `canary_script_error` | `Traceback...canary.py` / `TypeError ... round ... NoneType` | `canary.py:LINE±10` from deepest traceback frame + NewRelic-data hint | `StaggerProdPlusOneDeploy.md` |
+| `canary_fail` | `Rollout back as Canary failed` / `Rolling Back as Result !=0` / `canary_run_status: "Fail"` | canary stage-by-stage analysis (5/20/50/100% pass/fail) + canary.groovy + judge logic + NR slow tx | `StaggerProdPlusOneDeploy.md` |
+| `health_check` | `Health Status failed to move to healthy` / `iterations: unhealthy` / `Error in Deploy_i-` | Parsed TG ARN/name + instance ID + region from `healthy.sh` line + service `log_path`/port/health endpoint + NR slow tx (if any) | `HealthCheckFailure.md` |
+| `aws_limit` | `TooMany*` / `LimitExceeded` / `QuotaExceeded` | — | `AwsLimitTroubleshoot.md` |
+| `parse_error` | `parse error:` / `jq: error` / `Invalid numeric literal` | `createGreenInfra.groovy:330-345` | `ConfigJsonParseError.md` |
+| `java_runtime` | `java.lang.*Exception/Error` (must have full FQN — bare `OutOfMemoryError` no longer matches JVM startup flags) | source.trace hits | — |
+| `scm` | `git fetch failed` / `Authentication failed.*github` / `fatal: repository` | GitHub commits | `SCMTroubleshoot.md` |
+| `health_check`, `network`, `ssm`, `dependency`, `timeout`, `unknown` | various | source.trace + jira (if ticket keys in log) | — |
+
+Classifier rule order matters — first match wins. `health_check` is above `java_runtime` so ALB-probe failures aren't masked by stray Java class references.
+
+### `health_check` class specifics
+
+When Jenkins `Deploy` stage runs `healthy.sh <tg-arn> <region> <instance-id> <env>` and the ALB target group probe stays unhealthy for the full poll window (typically 50 × ~6s = 5 min), pipeline aborts with:
+
+```
+Health Status failed to move to healthy within the time limit
+Error in Deploy_i-<instance-id>: script returned exit code 1
+```
+
+Tool context auto-populated for the LLM:
+- `health_check.target`: `target_group_name`, `target_group_arn`, `instance_id`, `region`, `env`, `failed_iterations`
+- `health_check.service_config`: `log_path`, `service_port` / `port`, `health_check_path`, `health_check_port` from `config.json`
+- `newrelic.slow_transactions`: NR app-name candidates for the deploy window (if empty → service never reported a single txn → likely never started)
+- `health_check.guide`: 6 ordered likely causes (service didn't start / port mismatch / health endpoint 5xx / SG block / slow boot vs threshold / dependency unreachable)
+- `docs.HealthCheckFailure.md` runbook content
+
+LLM is instructed to **never** cite SSH host-key warnings or NewRelic `Application X does not exist` as root cause — both are non-fatal upstream noise the pipeline tolerates via SSM fallback / unregistered apps.
+
+---
+
 ## Phase roadmap
 
 - **Phase A (LIVE)** — Auto-RCA prints to console + build description on failure. Webhook is non-fatal; nothing about the existing alert flow changed.
 - **Phase B (planned, after ~10 clean Phase A runs)** — enrich the existing VictorOps incident `message` field with `buildAlertMessage(rca)` so on-call sees the RCA summary inside the page itself.
 - **Phase C (later)** — Slack notification with RCA + suggested commands; "deep" mode triggered from a Slack button.
 - **Future** — fetch real Kayenta canary scores via Kayenta API for `canary_fail` class instead of inferring from build log alone.
+
+---
+
+## Recent improvements (May 2026)
+
+1. **Rebrand to BB-AI** — operator-visible heading changed from `bbctl-rca — Auto RCA` to `Jenkins Build RCA — Powered by BB-AI`. Log prefixes `[bbctl-rca]` → `[BB-AI]`. Internal infra names (URL, credential ID, secret ID) unchanged.
+2. **`health_check` error class added** — ALB target-group probe failures (`healthy.sh` 50-iteration loop) now classified correctly instead of falling through to `java_runtime` via the `OutOfMemoryError` flag false-match.
+3. **Sanitizer: drop SSH host-key + NewRelic appName-404 + JVM flags** — these noise blocks no longer reach the LLM, so RCAs don't incorrectly cite "SSH key mismatch" as the root cause when SSM fallback is present.
+4. **Iteration-spam collapse** — runs of `Health Status for  after N iterations: unhealthy` collapse to first + last + `[N-2 more iterations elided, all unhealthy]`. Cuts ~50 nearly-identical lines per failed deploy.
+5. **Stage extractor rewrite** — Strategy A (first stage containing `Error in` / `script returned exit code` / `BUILD FAILED`) with Strategy B fallback (last non-skipped stage). Fixes the misclassification where `Stage "Rollout" skipped due to earlier failure` led the extractor to report `Rollout` instead of the real failed stage `Deploy`.
+6. **`HealthCheckFailure.md` runbook + wiring** — new docops/ runbook with 6 ordered likely causes + verify commands; wired into `CLASS_DOCS["health_check"]` so the LLM gets it in the prompt automatically.
+7. **`log_path` / `service_port` / `health_check_port` surfaced** — `_SLIM_FIELDS` in `mcp_tools.py` now exposes these so the LLM can give the operator EXACT instance-side paths/ports to check.
+8. **Live verification** — build 25 (`stagger-prod-plus-devops-test`) re-RCA'd cleanly: `error_class=health_check`, `failed_stage=Deploy`, cites instance `i-02fc813e939bb2b39` + 50 iterations + concrete `ssh ... tail /var/log/blackbuck/<svc>.log` / `ss -tlnp | grep <port>` / `curl /admin/version` commands. Cost: $0.003 / 18K input tokens / 60s latency.
 
 ---
 

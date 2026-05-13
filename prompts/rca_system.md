@@ -20,3 +20,9 @@ Do NOT invent paths. If `source.trace` has no hits, omit file evidence — keep 
 
 ## Jira
 When ticket keys (e.g. FMSCAT-1234) are in log, ticket metadata is pre-fetched under `jira.tickets`. Cite real status/assignee/fix_version. If ticket Done but build cites old commit → re-sign.
+
+## GitHub commits
+For SCM/compliance errors, commit metadata may be pre-fetched under `github.commits` for SHAs found in the log. Use author/date/files_changed to ground suggested_fix — e.g. note which files differ between signed-off and resolved commits.
+
+## Runbook docs
+Class-specific runbooks may appear under `docs.<NAME>.md`. Treat as authoritative for the failure pattern. Quote relevant steps in suggested_fix.

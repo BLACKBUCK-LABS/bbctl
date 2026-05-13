@@ -4,6 +4,21 @@ from pathlib import Path
 from . import mcp_tools
 from . import jira
 from . import source_trace
+from . import github as gh
+
+
+# Class-specific runbook docs (in /opt/bbctl-rca/docops/). If file present,
+# loaded into prompt when error_class matches. Keep doc short — it's prompted.
+CLASS_DOCS = {
+    "compliance": "JiraDetailsCompliance.md",
+    "scm": "SCMTroubleshoot.md",
+    "canary_fail": "CanaryRollback.md",
+    "aws_limit": "AwsLimitTroubleshoot.md",
+    "parse_error": "ConfigJsonParseError.md",
+}
+
+# Classes for which we fetch git commit metadata from GitHub
+GIT_CLASSES = {"compliance", "scm"}
 
 
 SONNET = "claude-sonnet-4-6"
@@ -50,11 +65,26 @@ async def _build_tool_context(service: str, error_class: str, log_window: str) -
             lines.extend(t["hits"][:3])  # cap hits per query
         parts.append("\n".join(lines))
 
+    # Class-specific runbook doc (added by ops; loaded only when relevant)
+    doc_name = CLASS_DOCS.get(error_class)
+    if doc_name:
+        doc = mcp_tools.docs_get(doc_name)
+        if doc and not doc.startswith("doc not found"):
+            parts.append(f"## docs.{doc_name}\n{doc.strip()[:2000]}")
+
     # Jira tickets — already slim from fetch_ticket
     ticket_keys = jira.extract_tickets(log_window)
     if ticket_keys:
         tickets = await jira.fetch_all(ticket_keys)
         parts.append(f"## jira.tickets\n```json\n{json.dumps(tickets)}\n```")
+
+    # Git commits — for compliance/scm classes, fetch commit metadata from
+    # GitHub for any SHA-looking strings in the log (helps RCA understand
+    # what changed between signed-off and resolved commits).
+    if error_class in GIT_CLASSES:
+        commits_info = await gh.fetch_commits_from_log(log_window, service)
+        if commits_info:
+            parts.append(f"## github.commits\n```json\n{json.dumps(commits_info)}\n```")
 
     return '\n\n'.join(parts)
 

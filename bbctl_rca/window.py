@@ -1,18 +1,18 @@
 """Build a sanitized, compressed log window for LLM consumption.
 
-Strategy (cheapest path first):
-1. Tier 1 (default): tail-only — last TAIL_LINES after noise filtering.
-   Most Jenkins failures put the error at the end (pipeline exits on first
-   failure). If the tail contains at least one error marker → return that.
-2. Tier 2 (fallback): error-anchored — ±CONTEXT_LINES around each hit + last
-   50 lines, capped at MAX_LINES. Used when tail has no error marker (rare:
-   error then post-cleanup noise).
-3. Tier 3 (deep=true): same as Tier 2 but with larger limits.
+Strategy:
+- Always scan the FULL log (post noise-filter) for error markers, NOT just the
+  tail. Real causes are often buried before retry noise / cleanup blocks.
+- For each marker, include ±CONTEXT_LINES of surrounding context.
+- Always include the last 50 lines (final state / exit reason).
+- Cap at MAX_LINES; if exceeded, keep last MAX_LINES (most recent errors win).
+- deep=true uses wider context (DEEP_CONTEXT_LINES) and higher cap.
 
-Also performed unconditionally:
-- ANSI stripping
-- Drop INFO / DEBUG / Pipeline noise lines
-- Dedupe consecutive identical lines
+Unconditional pre-window cleaning:
+- ANSI escape strip
+- Drop low-signal noise: INFO/DEBUG/[Pipeline] markers, Maven Downloaded from,
+  Progress percent lines, blank lines
+- Dedupe consecutive identical lines (retry-spam compression)
 """
 import re
 
@@ -38,12 +38,10 @@ NOISE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# Tier configuration
-TAIL_LINES = 200            # Tier 1: how many tail lines after filtering
-CONTEXT_LINES = 50          # Tier 2: ±N around each error hit
-MAX_LINES = 300             # Tier 2 cap
-DEEP_CONTEXT_LINES = 100    # Tier 3
-DEEP_MAX_LINES = 500
+CONTEXT_LINES = 50          # default ±N around each error hit
+MAX_LINES = 400             # default cap (raised from 300 — see all errors)
+DEEP_CONTEXT_LINES = 100    # deep mode
+DEEP_MAX_LINES = 800        # deep cap
 
 
 def _strip_and_filter(raw_log: str) -> list[str]:
@@ -84,18 +82,11 @@ def _anchored_window(lines: list[str], context: int, cap: int) -> str:
 
 
 def extract_window(raw_log: str, deep: bool = False) -> str:
-    """Return sanitized + compressed log window. Progressive tiers per docstring."""
+    """Return sanitized + compressed log window. Scans FULL log for errors."""
     lines = _strip_and_filter(raw_log)
     if not lines:
         return ""
 
     if deep:
         return _anchored_window(lines, DEEP_CONTEXT_LINES, DEEP_MAX_LINES)
-
-    # Tier 1: tail-only
-    tail = lines[-TAIL_LINES:]
-    if any(ERROR_PATTERNS.search(l) for l in tail):
-        return '\n'.join(tail)
-
-    # Tier 2: error-anchored fallback
     return _anchored_window(lines, CONTEXT_LINES, MAX_LINES)

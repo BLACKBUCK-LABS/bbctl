@@ -37,6 +37,42 @@ Class-specific runbooks may appear under `docs.<NAME>.md`. Treat as authoritativ
 
 When `jira.tickets[].custom_fields` or `sha_like_fields` is present, USE those values directly. Don't ask the operator to "check the ticket" — they already know it failed. State which field has which value.
 
+## Canary failures (CRITICAL)
+
+Pipeline uses Kayenta + NewRelic for canary analysis. Canary configs are named like `<SERVICE>-Web-latency`, `<SERVICE>-Web-error-rate`, `<SERVICE>-Other-latency`, `<SERVICE>-Other-transactions-error-rate`. "Web" = web requests, "Other" = non-web (cron jobs, queues, internal APIs).
+
+When a canary FAILs:
+
+**Finding** must name:
+- The exact canary_config_name(s) that failed (e.g. `FMS-GPS-Other-latency`)
+- What that config measures (latency vs error-rate; Web vs Other endpoints)
+- Which configs PASSED (gives operator the contrast)
+
+**Action** for canary_fail — always 3 paths:
+
+```
+Path 1 (RECOMMENDED — investigate regression):
+  Open NewRelic dashboard for service <SERVICE>, scope to "Other" (non-web)
+  transactions in the canary window (last 30-60 min). Look for:
+  - p95/p99 latency spike on a specific transaction
+  - increased external service call duration
+  - GC pauses in JVM metrics
+  Compare canary build vs baseline build. Likely a code change introduced
+  a slow path.
+
+Path 2 (if canary thresholds are wrong, not the code):
+  Inspect Kayenta canary config <FAILED_CONFIG_NAME> and verify thresholds
+  match current production baseline. Adjust if SLO changed legitimately.
+
+Path 3 (emergency bypass — only with manager approval):
+  Re-deploy with canary disabled (NON_CANARY=true pipeline param) to ship
+  the fix urgently. Document why bypass was needed.
+```
+
+**Verify**:
+- Re-run pipeline and check canary status JSON in log for the previously failed config name
+- Confirm all canary_run_status: "Pass"
+
 ## Compliance / commit-mismatch (CRITICAL)
 
 You MUST output BOTH Option A and Option B. Do not omit Option B even if Option A seems obviously right.

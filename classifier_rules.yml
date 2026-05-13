@@ -1,4 +1,34 @@
 rules:
+  # Order matters — first match wins. Put SPECIFIC pipeline-stage failures
+  # before generic language-level errors (java.lang.*, Exception) which can
+  # appear incidentally (NewRelic NRQL refs, etc.).
+
+  - class: compliance
+    patterns:
+      - 'Signed Off commit id'
+      - 'Compliance:'
+      - 'COMMIT_ID.*does not match'
+      - 'sign.?off.*missing'
+    description: "Compliance check failure — Jira sign-off / commit ID mismatch"
+
+  - class: canary_fail
+    patterns:
+      - 'Rollout back as Canary failed'
+      - 'Rolling Back as Result !=0'
+      - 'Canary Failed'
+      - 'Canary run failed for canary run id'
+      - '"canary_run_status":\s*"Fail"'
+    description: "Canary analysis failed — Kayenta canary config did not pass threshold"
+
+  - class: aws_limit
+    patterns:
+      - 'TooMany[A-Z][a-zA-Z]+'
+      - 'LimitExceeded'
+      - 'QuotaExceeded'
+      - 'ResourceLimitExceeded'
+      - 'maximum number of'
+    description: "AWS service limit hit — bump quota or clean up unused resources"
+
   - class: parse_error
     patterns:
       - 'parse error:'
@@ -8,20 +38,16 @@ rules:
     description: "jq/JSON parse failure in config.json — check config.json for malformed numeric fields"
 
   - class: java_runtime
+    # Require BOTH a java class name AND exception/error context to avoid
+    # false-matching on NewRelic NRQL or log lines that just reference
+    # java.lang.* in passing.
     patterns:
-      - 'java\.lang\.'
-      - 'Exception in thread'
-      - 'Caused by:'
+      - 'java\.lang\.\S+Exception'
+      - 'java\.lang\.\S+Error'
+      - 'Exception in thread "[^"]+"'
       - 'OutOfMemoryError'
-      - 'StackOverflow'
+      - 'StackOverflowError'
     description: "Java runtime exception in application"
-
-  - class: canary_fail
-    patterns:
-      - 'Rollout back as Canary failed'
-      - 'Rolling Back as Result !=0'
-      - 'Canary Failed'
-    description: "Canary analysis failed — health check or error rate too high post-deploy"
 
   - class: health_check
     patterns:
@@ -45,23 +71,6 @@ rules:
       - 'Authentication failed.*github'
       - 'fatal: repository'
     description: "Git/SCM failure — likely PAT expired or repo access issue"
-
-  - class: compliance
-    patterns:
-      - 'Signed Off commit id'
-      - 'Compliance:'
-      - 'COMMIT_ID.*does not match'
-      - 'sign.?off.*missing'
-    description: "Compliance check failure — Jira sign-off / commit ID mismatch"
-
-  - class: aws_limit
-    patterns:
-      - 'TooMany[A-Z][a-zA-Z]+'
-      - 'LimitExceeded'
-      - 'QuotaExceeded'
-      - 'ResourceLimitExceeded'
-      - 'maximum number of'
-    description: "AWS service limit hit — bump quota or clean up unused resources"
 
   - class: network
     patterns:

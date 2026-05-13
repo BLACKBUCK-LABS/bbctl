@@ -57,6 +57,12 @@ async def _build_tool_context(service: str, error_class: str, log_window: str) -
         snippet = mcp_tools.repo_read_file("jenkins_pipeline", "vars/createGreenInfra.groovy", 330, 345)
         parts.append(f"## createGreenInfra.groovy:330-345\n```\n{snippet}\n```")
 
+    # if canary_fail: load canary.py + canary.groovy snippets so LLM knows
+    # the canary config / threshold logic
+    if error_class == "canary_fail":
+        groovy = mcp_tools.repo_read_file("jenkins_pipeline", "vars/canary.groovy", 1, 80)
+        parts.append(f"## canary.groovy:1-80\n```groovy\n{groovy[:1500]}\n```")
+
     # Trace error strings → source code. Only include queries with hits.
     traces = [t for t in source_trace.trace(log_window) if t.get("hits")]
     if traces:

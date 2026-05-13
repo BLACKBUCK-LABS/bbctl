@@ -34,7 +34,22 @@ NOISE_PATTERNS = re.compile(
     r'\[INFO\]|\[DEBUG\]|'
     r'Downloading from|Downloaded from|'
     r'Progress \(\d+\):|'
-    r'\d+/\d+ KB)\b',
+    r'\d+/\d+ KB|'
+    # Canary / Kayenta polling spam (often 100s of repeats per build)
+    r'Got canary run result successfully\.|'
+    r'Canary run triggered successfully\.|'
+    r'Response from Kayenta\{|'
+    r'triggering canary run for canary|'
+    # Generic poll/wait spam
+    r'Waiting for|'
+    r'Polling for|'
+    # Maven / gradle download chatter
+    r'Resolved \S+ in \d+(\.\d+)? s|'
+    r'^\s*\.{3,}\s*$|'
+    # Terraform plan refresh noise
+    r'Refreshing state\.\.\.|'
+    r'Reading\.\.\.|'
+    r'Read complete after)\b',
     re.IGNORECASE,
 )
 

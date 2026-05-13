@@ -19,7 +19,7 @@ SECRETS_OUTPUT=$("$VENV/bin/python" -m bbctl_rca.secrets) || {
 eval "$SECRETS_OUTPUT"
 
 exec "$VENV/bin/uvicorn" bbctl_rca.main:app \
-  --host 127.0.0.1 \
+  --host 0.0.0.0 \
   --port 7070 \
   --workers 2 \
   --log-level info \

@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .models import WebhookPayload, RCARequest, RCAResponse
 from .jenkins import get_console_log, get_build_meta
-from .window import extract_window
+from .window import extract_window, extract_failed_stage
 from .sanitize import sanitize
 from .classifier import classify
 from .llm import run_rca
@@ -103,6 +103,12 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     window = extract_window(raw_log, deep=deep)
     clean_window, redactions = sanitize(window)
     error_class = classify(clean_window)
+    # Annotate build_meta with the actual last-entered stage from the log so
+    # LLM doesn't guess between similarly-named stages (Prod+1 vs Prod, etc.).
+    detected_stage = extract_failed_stage(raw_log)
+    if detected_stage:
+        build_meta = dict(build_meta)
+        build_meta["detected_failed_stage"] = detected_stage
 
     result = await run_rca(
         LLM_PROVIDER,

@@ -59,8 +59,15 @@ DEEP_CONTEXT_LINES = 100    # deep mode
 DEEP_MAX_LINES = 800        # deep cap
 
 
+MAX_LINE_LEN = 250  # truncate long lines (config dumps, large JSON blobs)
+# Single-line dict/JSON dumps: 3+ key=value pairs separated by commas →
+# drop entirely. These are big config dumps that bloat tokens but rarely
+# hold the failure cause.
+_BIG_DICT_RE = re.compile(r"=\S+\s*,\s*\S+=\S+\s*,\s*\S+=\S+\s*,")
+
+
 def _strip_and_filter(raw_log: str) -> list[str]:
-    """ANSI strip, drop noise lines, dedupe consecutive duplicates."""
+    """ANSI strip, drop noise lines, dedupe consecutive duplicates, truncate long lines."""
     out = []
     prev = None
     for line in raw_log.splitlines():
@@ -71,9 +78,32 @@ def _strip_and_filter(raw_log: str) -> list[str]:
             continue
         if line == prev:
             continue
+        # Drop massive single-line dict/JSON dumps (service config snapshots, etc.)
+        if len(line) > 400 and _BIG_DICT_RE.search(line):
+            continue
+        # Truncate any remaining long lines (large JSON values, command output)
+        if len(line) > MAX_LINE_LEN:
+            line = line[:MAX_LINE_LEN] + " …[truncated]"
         out.append(line)
         prev = line
     return out
+
+
+# Stage markers: "[Pipeline] { (Build)", "[Pipeline] { (Rollout)", etc.
+_STAGE_RE = re.compile(r"\[Pipeline\] \{ \(([^)]+)\)")
+
+
+def extract_failed_stage(raw_log: str) -> str | None:
+    """Find the LAST stage that was entered before pipeline failure.
+
+    Stage list gets emitted as the pipeline enters each stage. The last one
+    before failure markers is where the failure actually occurred. Useful
+    when the log mentions multiple stages by name (Prod+1, Prod, Rollout, etc.).
+    """
+    stages = _STAGE_RE.findall(raw_log)
+    if not stages:
+        return None
+    return stages[-1]
 
 
 def _anchored_window(lines: list[str], context: int, cap: int) -> str:

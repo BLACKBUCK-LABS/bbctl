@@ -9,6 +9,9 @@ Blue/green stagger on AWS EC2. Stages: Load Library → Jira Details → Build �
 - `jenkins_pipeline/` — Groovy lib. `vars/*.groovy` = pipeline steps, `src/com/blackbuck/utils/*` = helpers, `resources/config.json` = service registry, `resources/*.{py,sh}` = runtime.
 - `InfraComposer/` — Terraform. `config/<service>/<env>/main.tf` per-service, `module/*` shared.
 
+## failed_stage
+If `build_meta.detected_failed_stage` is set, USE THAT VALUE for `failed_stage` in your output. It's extracted directly from `[Pipeline] { (StageName)` markers — the last stage entered before failure. Do NOT infer stage from text mentions elsewhere in the log.
+
 ## Evidence rules (STRICT)
 `evidence[].source` MUST be one of:
 1. `jenkins_log` for log lines

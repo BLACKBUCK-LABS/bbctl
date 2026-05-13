@@ -65,20 +65,26 @@ async def _build_tool_context(service: str, error_class: str, log_window: str) -
         parts.append(
             "## canary.thresholds\n"
             "Kayenta scores canary 0-100. Per resources/canary.py: pass=80, marginal=80. "
-            "A canary_run_status of 'Fail' means score < 80 — new build's metrics "
-            "(latency / error rate) regressed vs baseline beyond tolerance."
+            "FAIL = score < 80 → new build's metrics regressed vs baseline beyond tolerance."
         )
 
-        # Extract canary window timestamps + NewRelic top slow transactions
-        window = nr.extract_canary_window(log_window)
-        if window:
-            start, end = window
-            # service name often matches NewRelic appName — try as-is + common variants
-            for app in (service, service.replace("-", "_"), service.replace("_", "-")):
-                slow = await nr.slow_transactions(app, start, end, limit=5)
+        # Window from Jenkins build_meta timestamps (build start/end approximates
+        # canary window; canary typically runs in last 30-60 min of build).
+        ts = build_meta.get("timestamp")
+        dur = build_meta.get("duration") or build_meta.get("estimatedDuration") or 0
+        if ts and dur:
+            from datetime import datetime, timezone
+            end_dt = datetime.fromtimestamp((ts + dur) / 1000, tz=timezone.utc)
+            # Canary runs in last ~30 min before failure — use that as window
+            start_dt = datetime.fromtimestamp(max(ts, ts + dur - 30 * 60 * 1000) / 1000, tz=timezone.utc)
+            start_iso = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+            end_iso = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+            for app in (service, service.replace("-", "_"), service.replace("_", "-"),
+                        service.replace("prod-", "")):
+                slow = await nr.slow_transactions(app, start_iso, end_iso, limit=5)
                 if slow:
                     parts.append(
-                        f"## newrelic.slow_transactions ({app}, {start} → {end})\n"
+                        f"## newrelic.slow_transactions ({app}, {start_iso} → {end_iso} UTC)\n"
                         f"```json\n{json.dumps(slow, indent=2)}\n```"
                     )
                     break
@@ -127,12 +133,16 @@ def _build_user_msg(
         ex = _load_prompt("rca_examples.md")
         if ex:
             parts.append(ex)
+    stage_line = (
+        f"\n- detected_failed_stage: {build_meta['detected_failed_stage']}"
+        if build_meta.get("detected_failed_stage") else ""
+    )
     parts.append(
         f"## Build context\n"
         f"- job: {build_meta.get('fullDisplayName', '')}\n"
         f"- result: {build_meta.get('result', '')}\n"
         f"- error_class: {error_class}\n"
-        f"- service: {service}"
+        f"- service: {service}{stage_line}"
     )
     parts.append(tool_ctx)
     parts.append(f"## Log window (sanitized)\n```\n{log_window}\n```")

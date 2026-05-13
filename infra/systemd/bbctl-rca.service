@@ -17,7 +17,7 @@ SyslogIdentifier=bbctl-rca
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/cache/bbctl-rca /tmp
+ReadWritePaths=/var/cache/bbctl-rca /var/log/bbctl-rca /tmp
 
 [Install]
 WantedBy=multi-user.target

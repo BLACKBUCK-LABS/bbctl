@@ -30,5 +30,8 @@ rules:
     pattern: 'ghp_[A-Za-z0-9]{36}'
     replace: '<github_pat>'
   - name: jenkins_token
-    pattern: '[0-9a-f]{32}'
+    # Match only exact 32-char hex tokens with word boundaries; avoids matching
+    # git commit SHA prefixes (7-12 chars) or 40-char full SHAs which are common
+    # in build logs. Real Jenkins API tokens are exactly 32 hex chars.
+    pattern: '\b[0-9a-f]{32}\b(?![0-9a-f])'
     replace: '<jenkins_token>'

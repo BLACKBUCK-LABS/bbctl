@@ -14,6 +14,9 @@ from .sanitize import sanitize
 from .classifier import classify
 from .llm import run_rca
 from .cache import is_duplicate, mark_processed, over_daily_cap, add_spend
+from .evidence import verify as verify_evidence
+from .audit import record as audit_record
+from .slack import post as slack_post
 import subprocess
 import yaml
 from pathlib import Path
@@ -109,8 +112,29 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         # gemini-2.0-flash: $0.075/1M input, $0.30/1M output
         cost = (tokens_in / 1_000_000 * 0.075) + (tokens_out / 1_000_000 * 0.30)
     add_spend(cost)
+    result["cost_usd"] = round(cost, 6)
+
+    # Verify each evidence citation against repos on disk
+    if "evidence" in result:
+        result["evidence"] = verify_evidence(result["evidence"])
 
     mark_processed(job, build, request_id)
+
+    # Audit log + Slack notify (non-blocking, best-effort)
+    audit_record({
+        "request_id": request_id,
+        "job": job,
+        "build": build,
+        "service": service,
+        "error_class": error_class,
+        "provider": LLM_PROVIDER,
+        "cost_usd": cost,
+        "redactions": redactions,
+        "log_window_chars": len(clean_window),
+        "rca": result,
+    })
+    await slack_post(result, job, build)
+
     return result
 
 

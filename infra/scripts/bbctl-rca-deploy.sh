@@ -7,14 +7,15 @@ REPO_DIR="${1:-$(cd "$(dirname "$0")/../.." && pwd)}"
 APP_DIR="/opt/bbctl-rca"
 VENV="$APP_DIR/.venv"
 CACHE_DIR="/var/cache/bbctl-rca"
+AUDIT_DIR="/var/log/bbctl-rca"
 SYSTEMD_DEST="/etc/systemd/system"
 
 echo "==> source: $REPO_DIR"
 echo "==> target: $APP_DIR"
 
 # 1. Create dirs
-sudo mkdir -p "$APP_DIR" "$CACHE_DIR"
-sudo chown -R ubuntu:ubuntu "$APP_DIR" "$CACHE_DIR"
+sudo mkdir -p "$APP_DIR" "$CACHE_DIR" "$AUDIT_DIR"
+sudo chown -R ubuntu:ubuntu "$APP_DIR" "$CACHE_DIR" "$AUDIT_DIR"
 
 # 2. Sync package + supporting files.
 # NO --delete: preserves repos/, docops/, .venv/ which are populated by other

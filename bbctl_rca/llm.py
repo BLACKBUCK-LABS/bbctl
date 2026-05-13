@@ -3,6 +3,7 @@ import google.generativeai as genai
 from pathlib import Path
 from . import mcp_tools
 from . import jira
+from . import source_trace
 
 
 SONNET = "claude-sonnet-4-6"
@@ -39,6 +40,19 @@ async def _build_tool_context(service: str, error_class: str, log_window: str) -
     if error_class == "parse_error":
         snippet = mcp_tools.repo_read_file("jenkins_pipeline", "vars/createGreenInfra.groovy", 330, 345)
         parts.append(f"## createGreenInfra.groovy:330-345\n```groovy\n{snippet}\n```")
+
+    # Trace error strings back to their source files via ripgrep.
+    # Gives LLM real file:line citations to use in evidence[] instead of guesses.
+    traces = source_trace.trace(log_window)
+    if traces:
+        parts.append("## source.trace (ripgrep error strings → pipeline code)")
+        for t in traces:
+            block = f"### query: {t['query']}\n"
+            if t["hits"]:
+                block += "\n".join(t["hits"])
+            else:
+                block += "(no matches)"
+            parts.append(block)
 
     # Jira tickets referenced in log: fetch live status + summary
     ticket_keys = jira.extract_tickets(log_window)

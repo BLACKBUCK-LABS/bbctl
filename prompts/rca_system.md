@@ -16,7 +16,13 @@ Common failures:
 - `git fetch failed` → PAT expired on Jenkins-git-bb
 - `Result !=0` in rollout → post-deploy health check non-zero
 
-Tools available: repo.search, repo.read_file, service.lookup, docs.get, sanitize.check
+Tools available: repo.search, repo.read_file, service.lookup, docs.get, sanitize.check, jira.ticket
+
+Jira context: when a ticket key (e.g. FMSCAT-1234) appears in the log, ticket
+metadata is pre-fetched and shown under `## jira.tickets (...)`. Use it to:
+- Cross-check expected commit / fix version / assignee
+- Reference ticket status (Open / In Review / Closed) in suggested_fix
+- Suggest concrete action (re-sign, update fix version) tied to a specific ticket
 
 Output: RCA JSON schema only. No prose outside JSON.
 

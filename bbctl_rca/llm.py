@@ -2,6 +2,7 @@ import json
 import google.generativeai as genai
 from pathlib import Path
 from . import mcp_tools
+from . import jira
 
 
 SONNET = "claude-sonnet-4-6"
@@ -26,7 +27,7 @@ def _load_prompt(name: str) -> str:
     return p.read_text() if p.exists() else ""
 
 
-def _build_tool_context(service: str, error_class: str) -> str:
+async def _build_tool_context(service: str, error_class: str, log_window: str) -> str:
     """Eagerly fetch key context before calling LLM."""
     parts = []
 
@@ -38,6 +39,12 @@ def _build_tool_context(service: str, error_class: str) -> str:
     if error_class == "parse_error":
         snippet = mcp_tools.repo_read_file("jenkins_pipeline", "vars/createGreenInfra.groovy", 330, 345)
         parts.append(f"## createGreenInfra.groovy:330-345\n```groovy\n{snippet}\n```")
+
+    # Jira tickets referenced in log: fetch live status + summary
+    ticket_keys = jira.extract_tickets(log_window)
+    if ticket_keys:
+        tickets = await jira.fetch_all(ticket_keys)
+        parts.append(f"## jira.tickets ({', '.join(ticket_keys)})\n```json\n{json.dumps(tickets, indent=2)}\n```")
 
     return '\n\n'.join(parts)
 
@@ -55,7 +62,7 @@ async def run_rca_gemini(
 
     system = _load_prompt("rca_system.md")
     examples = _load_prompt("rca_examples.md")
-    tool_ctx = _build_tool_context(service, error_class)
+    tool_ctx = await _build_tool_context(service, error_class, log_window)
 
     prompt = f"""{system}
 
@@ -109,7 +116,7 @@ async def run_rca_openai(
 
     system = _load_prompt("rca_system.md")
     examples = _load_prompt("rca_examples.md")
-    tool_ctx = _build_tool_context(service, error_class)
+    tool_ctx = await _build_tool_context(service, error_class, log_window)
 
     user_msg = f"""{examples}
 

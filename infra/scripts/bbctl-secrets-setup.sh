@@ -26,7 +26,7 @@ SECRET_ID="${BBCTL_SECRET_ID:-bbctl-rca/prod}"
 
 PAYLOAD=$(python3 -c '
 import json, os
-print(json.dumps({
+out = {
     "jenkins_url": os.environ["JENKINS_URL"],
     "jenkins_user": os.environ["JENKINS_USER"],
     "jenkins_token": os.environ["JENKINS_TOKEN"],
@@ -34,7 +34,12 @@ print(json.dumps({
     "llm_provider": os.environ["LLM_PROVIDER"],
     "llm_api_key": os.environ["LLM_API_KEY"],
     "github_pat": os.environ["GITHUB_PAT"],
-}))')
+}
+# Optional fields — only include if set
+for k in ("JIRA_URL", "JIRA_USER", "JIRA_API_TOKEN", "SLACK_WEBHOOK_URL"):
+    if os.environ.get(k):
+        out[k.lower()] = os.environ[k]
+print(json.dumps(out))')
 
 # Create or update
 if aws secretsmanager describe-secret --secret-id "$SECRET_ID" --region "$REGION" >/dev/null 2>&1; then

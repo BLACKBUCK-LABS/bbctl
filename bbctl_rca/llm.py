@@ -14,7 +14,7 @@ from . import newrelic as nr
 CLASS_DOCS = {
     "compliance": "JiraDetailsCompliance.md",
     "scm": "SCMTroubleshoot.md",
-    "canary_fail": "CanaryRollback.md",
+    "canary_fail": "StaggerProdPlusOneDeploy.md",
     "aws_limit": "AwsLimitTroubleshoot.md",
     "parse_error": "ConfigJsonParseError.md",
 }

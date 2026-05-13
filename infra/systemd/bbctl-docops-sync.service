@@ -1,0 +1,7 @@
+[Unit]
+Description=bbctl docops S3 sync
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/usr/local/bin/bbctl-docops-sync.sh

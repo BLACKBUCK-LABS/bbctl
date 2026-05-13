@@ -1,0 +1,34 @@
+rules:
+  - name: aws_account_id
+    pattern: '\b(735317561518|597070799581|075903075452|476114138058)\b'
+    replace: '<account>'
+  - name: aws_access_key
+    pattern: '\bA(K|S)IA[0-9A-Z]{16}\b'
+    replace: '<aws_key>'
+  - name: google_oauth_secret
+    pattern: 'GOCSPX-[A-Za-z0-9_-]{28}'
+    replace: '<gcp_secret>'
+  - name: anthropic_key
+    pattern: 'sk-ant-[A-Za-z0-9_-]+'
+    replace: '<anthropic_key>'
+  - name: gemini_key
+    pattern: 'AIzaSy[A-Za-z0-9_-]{33}'
+    replace: '<gemini_key>'
+  - name: bearer_token
+    pattern: 'Bearer\s+[A-Za-z0-9._~+/-]+=*'
+    replace: 'Bearer <redacted>'
+  - name: presigned_signature
+    pattern: 'X-Amz-Signature=[A-Fa-f0-9]+'
+    replace: 'X-Amz-Signature=<redacted>'
+  - name: pii_email
+    pattern: '\b[A-Za-z0-9._%+-]+@(?!blackbuck\.com\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
+    replace: '<external_email>'
+  - name: ssh_private_key
+    pattern: '-----BEGIN [A-Z]+ PRIVATE KEY-----[\s\S]+?-----END [A-Z]+ PRIVATE KEY-----'
+    replace: '<private_key>'
+  - name: github_pat
+    pattern: 'ghp_[A-Za-z0-9]{36}'
+    replace: '<github_pat>'
+  - name: jenkins_token
+    pattern: '[0-9a-f]{32}'
+    replace: '<jenkins_token>'

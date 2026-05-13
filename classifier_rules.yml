@@ -1,0 +1,74 @@
+rules:
+  - class: parse_error
+    patterns:
+      - 'parse error:'
+      - 'Invalid numeric literal'
+      - 'jq: error'
+      - 'Unexpected token'
+    description: "jq/JSON parse failure in config.json — check config.json for malformed numeric fields"
+
+  - class: java_runtime
+    patterns:
+      - 'java\.lang\.'
+      - 'Exception in thread'
+      - 'Caused by:'
+      - 'OutOfMemoryError'
+      - 'StackOverflow'
+    description: "Java runtime exception in application"
+
+  - class: canary_fail
+    patterns:
+      - 'Rollout back as Canary failed'
+      - 'Rolling Back as Result !=0'
+      - 'Canary Failed'
+    description: "Canary analysis failed — health check or error rate too high post-deploy"
+
+  - class: health_check
+    patterns:
+      - 'health.*fail'
+      - 'healthz.*[45][0-9][0-9]'
+      - 'curl.*Connection refused'
+      - 'supervisorctl.*FATAL'
+    description: "Service health check failed post-deploy"
+
+  - class: ssm
+    patterns:
+      - 'SSM command failed'
+      - 'ssm:SendCommand'
+      - 'Failed to execute SSH'
+    description: "SSM command execution failure"
+
+  - class: scm
+    patterns:
+      - 'git fetch failed'
+      - 'Could not read from remote'
+      - 'Authentication failed.*github'
+      - 'fatal: repository'
+    description: "Git/SCM failure — likely PAT expired or repo access issue"
+
+  - class: network
+    patterns:
+      - 'Connection refused'
+      - 'Connection timed out'
+      - 'No route to host'
+      - 'UnknownHostException'
+    description: "Network connectivity failure"
+
+  - class: dependency
+    patterns:
+      - 'Could not resolve'
+      - 'BUILD FAILED.*dependencies'
+      - 'Download failed'
+      - 'artifact not found'
+    description: "Build dependency resolution failure"
+
+  - class: timeout
+    patterns:
+      - 'Timeout waiting'
+      - 'timed out after'
+      - 'deadline exceeded'
+    description: "Operation timeout"
+
+  - class: unknown
+    patterns: []
+    description: "Could not classify — send full log window to Claude"

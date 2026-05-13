@@ -1,0 +1,23 @@
+[Unit]
+Description=bbctl RCA service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+ExecStart=/opt/bbctl-rca/infra/scripts/bbctl-rca-start.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bbctl-rca
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/cache/bbctl-rca /tmp
+
+[Install]
+WantedBy=multi-user.target

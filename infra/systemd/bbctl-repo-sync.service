@@ -1,0 +1,7 @@
+[Unit]
+Description=bbctl repo sync (jenkins_pipeline + InfraComposer)
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/usr/local/bin/bbctl-repo-sync.sh

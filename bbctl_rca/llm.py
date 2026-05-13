@@ -5,6 +5,7 @@ from . import mcp_tools
 from . import jira
 from . import source_trace
 from . import github as gh
+from . import runbook
 
 
 # Class-specific runbook docs (in /opt/bbctl-rca/docops/). If file present,
@@ -65,14 +66,14 @@ async def _build_tool_context(service: str, error_class: str, log_window: str) -
             lines.extend(t["hits"][:3])  # cap hits per query
         parts.append("\n".join(lines))
 
-    # Class-specific runbook doc (added by ops; loaded only when relevant).
-    # Truncated to 6000 chars (~1500 tokens) to fit substantive runbook content
-    # while staying within budget.
+    # Class-specific runbook doc — load only the sections most relevant to
+    # the current error class (intro + failure/remediation sections).
     doc_name = CLASS_DOCS.get(error_class)
     if doc_name:
         doc = mcp_tools.docs_get(doc_name)
         if doc and not doc.startswith("doc not found"):
-            parts.append(f"## docs.{doc_name}\n{doc.strip()[:6000]}")
+            extract = runbook.extract_relevant(doc, error_class, budget_chars=6000)
+            parts.append(f"## docs.{doc_name}\n{extract}")
 
     # Jira tickets — already slim from fetch_ticket
     ticket_keys = jira.extract_tickets(log_window)

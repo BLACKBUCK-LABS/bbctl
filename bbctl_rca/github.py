@@ -15,6 +15,7 @@ import os
 import re
 import httpx
 from . import cache
+from . import mcp_tools
 
 
 SHA_RE = re.compile(r"\b([0-9a-f]{40})\b")
@@ -38,16 +39,37 @@ def _extract_shas(text: str) -> list[str]:
 
 
 def _candidate_repos(service: str) -> list[str]:
-    """Guess likely repo names for a service. First match wins on GitHub."""
+    """Guess likely repo names for a service. First match wins on GitHub.
+
+    Priority:
+      1. Explicit git_repo / repo field in config.json (from service.lookup)
+      2. Service name as-is
+      3. Underscore ↔ hyphen variants
+    """
+    cands: list[str] = []
+
+    # 1. Authoritative from service config
+    try:
+        svc = mcp_tools.service_lookup(service) or {}
+        for key in ("git_repo", "github_repo", "repo", "repo_name", "service_repo"):
+            v = svc.get(key) if isinstance(svc, dict) else None
+            if isinstance(v, str) and v:
+                # Strip org prefix if present (e.g. "BLACKBUCK-LABS/foo" -> "foo")
+                cands.append(v.split("/")[-1])
+    except Exception:
+        pass
+
+    # 2. Service name as-is
     s = service.strip()
-    cands = [s]
-    # Common BlackBuck transforms
+    cands.append(s)
+
+    # 3. Common BlackBuck transforms
     if "_" in s:
         cands.append(s.replace("_", "-"))
     if "-" in s:
         cands.append(s.replace("-", "_"))
-    # de-dup preserving order
-    return list(dict.fromkeys(cands))
+
+    return list(dict.fromkeys(c for c in cands if c))
 
 
 async def fetch_commit(repo: str, sha: str) -> dict | None:

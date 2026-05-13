@@ -63,6 +63,8 @@ _SLIM_FIELDS = (
     "instance_class", "ami", "target_group_name", "rule_arn",
     "health_check_path", "canary_threshold", "traffic_values",
     "auto_scaling_group", "min_capacity", "max_capacity", "desired_capacity",
+    "git_repo", "github_repo", "repo", "repo_name", "service_repo",
+    "branch", "default_branch",
 )
 
 

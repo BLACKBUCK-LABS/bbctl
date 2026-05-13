@@ -188,16 +188,45 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
             )
 
         # Surface service log path + port from config.json so LLM can tell
-        # operator EXACTLY where to look on the instance.
+        # operator EXACTLY where to look on the instance. Real-world config
+        # uses different field names per service (this org uses `target_port`,
+        # `filebeat_log_path`, `key_name`, `server_command` instead of the
+        # canonical `health_check_port` / `log_path` / `service_port`).
+        # Resolve canonical → actual; mark unresolved as NOT_IN_CONFIG so the
+        # LLM SEES the absence rather than fabricating `<placeholder>` strings.
         if isinstance(svc, dict):
-            useful = {k: svc[k] for k in (
-                "log_path", "service_port", "port", "app_port",
-                "health_check_path", "health_check_port",
-            ) if k in svc and svc[k] not in (None, "")}
-            if useful:
-                parts.append(
-                    f"## health_check.service_config\n```json\n{json.dumps(useful, indent=2)}\n```"
-                )
+            def _first(*keys):
+                for k in keys:
+                    v = svc.get(k)
+                    if v not in (None, "", [], {}):
+                        return v
+                return None
+
+            log_path = _first("log_path", "filebeat_log_path")
+            port = _first("service_port", "port", "app_port", "container_port", "target_port", "health_check_port")
+            hc_path = _first("health_check_path")
+            key_name = _first("key_name")
+            server_cmd = _first("server_command")
+
+            # Parse `-Dlog.dir=...` from the java startup command — for services
+            # that lack `filebeat_log_path` but include a `-Dlog.dir` JVM arg.
+            log_dir_hint = None
+            if server_cmd:
+                m = re.search(r"-Dlog\.dir=(\S+)", server_cmd)
+                if m:
+                    log_dir_hint = m.group(1).rstrip("/")
+
+            resolved = {
+                "log_path": log_path or "NOT_IN_CONFIG",
+                "log_dir_hint_from_server_command": log_dir_hint or "NOT_IN_CONFIG",
+                "port": port or "NOT_IN_CONFIG",
+                "health_check_path": hc_path or "NOT_IN_CONFIG",
+                "key_name": key_name or "NOT_IN_CONFIG",
+                "pem_path_hint": f"/var/lib/jenkins/.ssh/{key_name}.pem" if key_name else "NOT_IN_CONFIG",
+            }
+            parts.append(
+                f"## health_check.service_config\n```json\n{json.dumps(resolved, indent=2)}\n```"
+            )
 
         # NewRelic transactions during deploy window — if the service is
         # registered with NR but reports zero transactions, that proves it
@@ -237,6 +266,10 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
             "  4. Security group blocks ALB → instance on the TG port\n"
             "  5. Slow boot vs threshold — service takes longer to come up than TG `healthy_threshold * interval`\n"
             "  6. Dependency unreachable — service starts but health endpoint depends on DB/Redis/Kafka which is down/blocked\n"
+            "ORG ACCESS PATTERN: use `bbctl` (org-standard CLI) to reach the instance — NOT raw ssh.\n"
+            "  `bbctl shell <instance_id>` opens an interactive shell.\n"
+            "  `bbctl run <instance_id> -- '<cmd>'` runs a one-shot command (preferred for suggested_commands).\n"
+            "  Substitute the real instance_id from `health_check.target`. Never emit `<instance-id>` placeholders.\n"
             "DO NOT cite SSH host-key warnings or NewRelic `Application X does not exist` as the cause — both are non-fatal upstream noise."
         )
 

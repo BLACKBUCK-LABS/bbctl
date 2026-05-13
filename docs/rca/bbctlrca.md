@@ -356,6 +356,12 @@ Classifier rule order matters — first match wins. `health_check` is above `jav
 
 ### `health_check` class specifics
 
+**Org access pattern**: instance access goes through `bbctl` (org-standard CLI), NOT raw `ssh`. RCA action items are templated to use:
+- `bbctl shell <instance-id>` — interactive shell on the failing instance
+- `bbctl run <instance-id> -- '<cmd>'` — one-shot command (preferred for `suggested_commands` array)
+
+The LLM is instructed to substitute the real instance_id from `health_check.target` and never emit `<instance-id>` placeholders. SSM and raw ssh are mentioned only as fallbacks.
+
 When Jenkins `Deploy` stage runs `healthy.sh <tg-arn> <region> <instance-id> <env>` and the ALB target group probe stays unhealthy for the full poll window (typically 50 × ~6s = 5 min), pipeline aborts with:
 
 ```

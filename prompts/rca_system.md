@@ -198,25 +198,57 @@ When `error_class` is `health_check`, the ALB target group probe never returned 
 **Action** template (use values from `health_check.target` and `health_check.service_config`):
 
 ```
-RECOMMENDED — diagnose on the instance:
-  1. SSH/SSM into <instance_id> in <region>. Tail the service log:
+RECOMMENDED — diagnose on the instance via BBCTL (org-standard CLI):
+  1. Open a shell on the failing instance:
+       bbctl shell <instance_id>
+     Then tail the service log:
        sudo tail -n 500 <log_path>
      Look for a stack trace / "Failed to start" / "port already in use".
-  2. Verify the service is listening on the expected port:
-       sudo ss -tlnp | grep <service_port|health_check_port>
-  3. Hit the health endpoint locally:
-       curl -i http://localhost:<health_check_port><health_check_path>
+
+  2. One-shot port check (no shell):
+       bbctl run <instance_id> -- 'sudo ss -tlnp | grep <port>'
+
+  3. One-shot health endpoint check:
+       bbctl run <instance_id> -- 'curl -i http://localhost:<port><health_check_path>'
      Expect HTTP/1.1 200.
 
 If service is up + health endpoint returns 200:
-  - Check ALB target-group health from the AWS console
+  - Check ALB target-group health from AWS console (or `aws elbv2 describe-target-health --target-group-arn <tg_arn>`)
   - Check security group ingress from ALB SG → instance on the TG port
+
+Fallback (only if BBCTL unavailable): `aws ssm start-session --target <instance_id> --region <region>` or raw `ssh -i <pem_path_hint> ubuntu@<private_ip>`.
 ```
+
+**BBCTL command rules (STRICT):**
+- BBCTL is the org's standard CLI for EC2 access — ALWAYS prefer it over raw `ssh` or `aws ssm` in suggested_commands.
+- Use `bbctl shell <instance_id>` for interactive login (long debug sessions).
+- Use `bbctl run <instance_id> -- '<cmd>'` for one-shot commands (preferred for `suggested_commands` array — keeps each command self-contained for the operator to copy-paste).
+- Substitute the REAL `instance_id` from `health_check.target.instance_id`. Never emit `<instance-id>` or `<instance_ip>` placeholders.
+- Tier: `bbctl run ... 'sudo tail ...'` and `'curl ...'` are `safe`. Interactive `bbctl shell` is `safe`. Writes (`systemctl restart`, file edits) are `restricted`.
 
 **`newrelic.slow_transactions` semantics for health_check:**
 If the block is **empty/absent**, that's a strong signal the service never reported a single transaction during the deploy window — i.e. service never started OR never bound the expected port. Cite this directly in Finding.
 
 If the block has data, the service DID report transactions but ALB probe still failed → probably port mismatch or health endpoint path returns non-2xx.
+
+**STRICT — NEVER emit `<placeholder>` style strings.**
+
+Use ONLY real values from `health_check.target` and `health_check.service_config`. Specifically:
+- Replace `<instance_id>` with `health_check.target.instance_id` (e.g. `i-02fc813e939bb2b39`)
+- Replace `<region>` with `health_check.target.region` (e.g. `ap-south-1`)
+- Replace `<log_path>` with `service_config.log_path` (or `log_dir_hint_from_server_command` if log_path is `NOT_IN_CONFIG`)
+- Replace `<port>` / `<health_check_port>` with `service_config.port`
+- Replace `<health_check_path>` with `service_config.health_check_path`
+- Replace `<your-key.pem>` / `<key>` with `service_config.pem_path_hint` (the resolved path)
+
+When a `service_config` field shows `NOT_IN_CONFIG`, do NOT emit the placeholder. Instead write a concrete discovery command. Examples:
+- log_path `NOT_IN_CONFIG` AND log_dir_hint_from_server_command set → `sudo ls -lh <hint>/` then `sudo tail -n 500 <hint>/*.log`
+- log_path AND log_dir_hint both `NOT_IN_CONFIG` → `sudo ls /var/log/blackbuck/` (org-standard log dir) and tail the file whose name matches the service
+- port `NOT_IN_CONFIG` → `sudo ss -tlnp | grep java` (lists all Java listeners)
+- health_check_path `NOT_IN_CONFIG` → check the ALB target group health-check config: `aws elbv2 describe-target-groups --target-group-arns <tg_arn> --query 'TargetGroups[0].HealthCheckPath'`
+- pem_path_hint `NOT_IN_CONFIG` → suggest SSM Session Manager: `aws ssm start-session --target <instance_id> --region <region>`
+
+If a real value IS available, USE it verbatim — do not wrap in angle brackets.
 
 **Confidence guidance for health_check:**
 - 0.9+ if `health_check.target` is populated AND a clear cause (port/path/log evidence) is in the window

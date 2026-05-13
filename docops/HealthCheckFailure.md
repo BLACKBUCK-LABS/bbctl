@@ -13,24 +13,40 @@ This error occurred in the nonwebdeploy.groovy script
 
 **This is NOT** a Java runtime error, NewRelic error, or SSH error. The ALB simply never saw a 2xx from the new instance.
 
+## Access pattern — use BBCTL
+
+Org-standard CLI for EC2 access is `bbctl`. Do NOT raw-ssh.
+
+```bash
+bbctl shell <instance-id>                       # interactive login
+bbctl run   <instance-id> -- 'sudo tail -n 500 /var/log/blackbuck/<svc>.log'
+bbctl run   <instance-id> -- 'sudo ss -tlnp | grep <port>'
+bbctl run   <instance-id> -- 'curl -i http://localhost:<port>/<health-path>'
+```
+
+`<instance-id>` comes from the failing `Error in Deploy_i-<id>` line or the `health_check.target` block in the RCA.
+
 ## Likely root causes (in priority order)
 
 1. **Service didn't start on the instance.**
    - Crash in main(), missing config, port already in use, JVM OOM at startup.
-   - **Verify:** SSH/SSM into the instance, tail the service log at `log_path` from `config.json`. Look for a stack trace at the end.
+   - **Verify:** `bbctl shell <instance-id>` then tail the service log at `log_path` from `config.json`. Look for a stack trace at the end.
 
 2. **Port mismatch between service and target group.**
    - Service listens on port X, but TG `health_check_port` (or `port`) is set to Y.
    - **Verify:**
      ```bash
-     # On instance
-     sudo ss -tlnp | grep -E "<service_port>|<health_check_port>"
+     bbctl run <instance-id> -- 'sudo ss -tlnp | grep -E "<service_port>|<health_check_port>"'
      ```
      Plus: `aws elbv2 describe-target-groups --target-group-arns <tg-arn> --query 'TargetGroups[0].[HealthCheckPort,Port]'`
 
 3. **Health endpoint path returns non-2xx.**
    - Service is up, listening on the right port, but `/health` (or `health_check_path` from config.json) returns 5xx or 4xx.
-   - **Verify:** from the instance: `curl -i http://localhost:<health_check_port><health_check_path>`. Expect HTTP/1.1 200.
+   - **Verify:**
+     ```bash
+     bbctl run <instance-id> -- 'curl -i http://localhost:<health_check_port><health_check_path>'
+     ```
+     Expect `HTTP/1.1 200`.
 
 4. **Security group blocks ALB → instance on the TG port.**
    - Instance SG doesn't allow inbound from the ALB SG on the TG port.

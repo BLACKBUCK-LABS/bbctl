@@ -1,4 +1,5 @@
 import json
+import re
 import google.generativeai as genai
 from pathlib import Path
 from . import mcp_tools
@@ -16,6 +17,7 @@ CLASS_DOCS = {
     "compliance": "JiraDetailsCompliance.md",
     "scm": "SCMTroubleshoot.md",
     "canary_fail": "StaggerProdPlusOneDeploy.md",
+    "canary_script_error": "StaggerProdPlusOneDeploy.md",
     "aws_limit": "AwsLimitTroubleshoot.md",
     "parse_error": "ConfigJsonParseError.md",
 }
@@ -58,6 +60,27 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
     if error_class == "parse_error":
         snippet = mcp_tools.repo_read_file("jenkins_pipeline", "vars/createGreenInfra.groovy", 330, 345)
         parts.append(f"## createGreenInfra.groovy:330-345\n```\n{snippet}\n```")
+
+    # if canary_script_error: load canary.py around the crash line
+    if error_class == "canary_script_error":
+        # Try to extract line number from traceback in log_window
+        m = re.search(r'canary\.py", line (\d+), in', log_window)
+        line_no = int(m.group(1)) if m else 80
+        snippet = mcp_tools.repo_read_file(
+            "jenkins_pipeline", "resources/canary.py",
+            max(1, line_no - 10), line_no + 10
+        )
+        parts.append(f"## canary.py:{line_no}±10\n```python\n{snippet}\n```")
+        parts.append(
+            "## canary.script_error.context\n"
+            "This is a SCRIPT CRASH in canary.py, NOT a service performance regression. "
+            "The Jenkins build failed because canary.py exited non-zero — but the service being deployed "
+            "may be perfectly fine. Common root causes:\n"
+            "  1. NewRelic has no transactions for the configured appName in last 7 days (NRQL returns null)\n"
+            "  2. NewRelic appName in config.json's new_relic_name doesn't match what the service actually reports\n"
+            "  3. canary.py lacks None handling at the failing line\n"
+            "Action focus: verify NewRelic appName has data; fix canary.py defensive coding."
+        )
 
     # if canary_fail: pre-compute stage-level pass/fail + load info + slow tx
     if error_class == "canary_fail":

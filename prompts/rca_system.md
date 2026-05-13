@@ -78,6 +78,35 @@ Action recommendation MUST adjust based on stage:
 
 **NEVER suggest NON_CANARY=true bypass or disabling canary checks.** Per org runbook (`docs.StaggerProdPlusOneDeploy.md`), canary failures are real signals and must not be bypassed.
 
+## canary_script_error — DISTINCT from canary_fail
+
+When error_class is `canary_script_error`, the Python script crashed BEFORE Kayenta judged anything. The deployed service may be perfectly fine. Do not say "regression" — there is no canary judgement to interpret. Likely root causes (in order):
+
+1. **NewRelic has no data** — `appName` from config.json's `new_relic_name` returns zero transactions for the last 7 days (canary.py uses `SINCE 7 days ago`). Common when service is new, freshly renamed, or hasn't been generating traffic.
+2. **appName mismatch** — `config.json.new_relic_name` doesn't match what the service actually reports to NewRelic. E.g. service reports as `fms-fuel` but config has `FMS - Fuel`.
+3. **canary.py defensive-code gap** — script doesn't handle None values from NewRelic gracefully. The exact line from the traceback is loaded in tool context as `canary.py:LINE±10`.
+
+**Finding** for canary_script_error must include:
+- Exact `canary.py:LINE` from traceback
+- The TypeError/KeyError/etc class
+- App name involved
+- Statement: "Service performance is NOT the cause; canary infrastructure script crashed."
+
+**Action** for canary_script_error — 3 paths:
+```
+Path 1 (operator self-serve): Verify NewRelic has data for app '<NR_APPNAME>'.
+  Run NRQL: SELECT count(*) FROM Transaction WHERE appName = '<NR_APPNAME>'
+  SINCE 7 days ago. If zero or null, service isn't reporting → fix
+  service's NewRelic agent config, then retry pipeline.
+
+Path 2 (config fix): Compare config.json's new_relic_name with what the
+  service reports. If mismatch, update config.json and re-deploy.
+
+Path 3 (long-term, requires PR): canary.py:<LINE> needs None handling.
+  Wrap round(...) in defensive check. File ticket to platform/devops
+  team — do NOT block this deploy on it.
+```
+
 **Action** — 3 paths (always include all 3):
 
 ```

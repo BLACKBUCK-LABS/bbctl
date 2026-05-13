@@ -11,6 +11,14 @@ rules:
       - 'sign.?off.*missing'
     description: "Compliance check failure — Jira sign-off / commit ID mismatch"
 
+  - class: canary_script_error
+    patterns:
+      - 'Traceback \(most recent call last\):[\s\S]*?canary\.py'
+      - 'canary\.py", line \d+, in'
+      - "TypeError.*round.*NoneType"
+      - 'KeyError.*canary'
+    description: "canary.py Python script crashed (NOT a service regression). Usually means NewRelic has no baseline data for the app, or canary.py has a defensive-code gap."
+
   - class: canary_fail
     patterns:
       - 'Rollout back as Canary failed'

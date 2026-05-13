@@ -14,10 +14,12 @@ echo "==> target: $APP_DIR"
 
 # 1. Create dirs
 sudo mkdir -p "$APP_DIR" "$CACHE_DIR"
-sudo chown ubuntu:ubuntu "$APP_DIR" "$CACHE_DIR"
+sudo chown -R ubuntu:ubuntu "$APP_DIR" "$CACHE_DIR"
 
-# 2. Sync package + supporting files (no Go artifacts, no .git)
-rsync -av --delete \
+# 2. Sync package + supporting files.
+# NO --delete: preserves repos/, docops/, .venv/ which are populated by other
+# means (nightly sync scripts, pip install). Excludes Go artifacts.
+rsync -av \
   --exclude='.git' \
   --exclude='*.go' \
   --exclude='go.mod' \
@@ -27,6 +29,9 @@ rsync -av --delete \
   --exclude='cmd/' \
   --exclude='commands/' \
   --exclude='internal/' \
+  --exclude='repos/' \
+  --exclude='docops/' \
+  --exclude='.venv/' \
   "$REPO_DIR/" "$APP_DIR/"
 
 # 3. Python venv + deps

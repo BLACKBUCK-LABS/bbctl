@@ -39,39 +39,43 @@ When `jira.tickets[].custom_fields` or `sha_like_fields` is present, USE those v
 
 ## Canary failures (CRITICAL)
 
-Pipeline uses Kayenta + NewRelic for canary analysis. Canary configs are named like `<SERVICE>-Web-latency`, `<SERVICE>-Web-error-rate`, `<SERVICE>-Other-latency`, `<SERVICE>-Other-transactions-error-rate`. "Web" = web requests, "Other" = non-web (cron jobs, queues, internal APIs).
+Pipeline uses Kayenta + NewRelic. Canary configs named `<SERVICE>-Web-latency`, `<SERVICE>-Web-error-rate`, `<SERVICE>-Other-latency`, `<SERVICE>-Other-transactions-error-rate`.
+- Web = web requests
+- Other = non-web (cron jobs, queues, internal API consumers)
 
-When a canary FAILs:
+Kayenta threshold: pass=80. A FAIL means score < 80 → metric regression beyond tolerance.
 
-**Finding** must name:
-- The exact canary_config_name(s) that failed (e.g. `FMS-GPS-Other-latency`)
-- What that config measures (latency vs error-rate; Web vs Other endpoints)
-- Which configs PASSED (gives operator the contrast)
+**Finding** must include:
+- Exact failed canary_config_name(s) (e.g. `FMS-GPS-Other-latency`)
+- What it measures (latency or error-rate; Web or Other)
+- Which configs PASSED in the same run (contrast)
+- If `newrelic.slow_transactions` block is present, name the TOP 1-2 transactions and their p95_ms values
 
-**Action** for canary_fail — always 3 paths:
+**Action** — 3 paths (always include all 3):
 
 ```
 Path 1 (RECOMMENDED — investigate regression):
-  Open NewRelic dashboard for service <SERVICE>, scope to "Other" (non-web)
-  transactions in the canary window (last 30-60 min). Look for:
-  - p95/p99 latency spike on a specific transaction
-  - increased external service call duration
-  - GC pauses in JVM metrics
-  Compare canary build vs baseline build. Likely a code change introduced
-  a slow path.
+  NewRelic transactions slowest during the canary window (from newrelic.slow_transactions):
+    1. <txn_name>: p95 = <p95_ms> ms, rate = <req/min>
+    2. <txn_name>: p95 = <p95_ms> ms, rate = <req/min>
+  Open NewRelic for app <SERVICE>, scope to those transactions, compare canary
+  build vs baseline build (last hour vs prior hour). Likely root cause:
+  code change introduced a slow path (extra DB call, external HTTP, GC pause).
 
-Path 2 (if canary thresholds are wrong, not the code):
-  Inspect Kayenta canary config <FAILED_CONFIG_NAME> and verify thresholds
-  match current production baseline. Adjust if SLO changed legitimately.
+Path 2 (canary threshold mismatch — not a regression):
+  Inspect Kayenta config <FAILED_CONFIG_NAME>. Threshold currently pass=80.
+  If baseline SLO legitimately changed, adjust pass/marginal in config.
 
-Path 3 (emergency bypass — only with manager approval):
-  Re-deploy with canary disabled (NON_CANARY=true pipeline param) to ship
-  the fix urgently. Document why bypass was needed.
+Path 3 (emergency bypass — manager approval required):
+  Re-deploy with NON_CANARY=true pipeline param to ship fix urgently.
+  Document why bypass was needed.
 ```
 
+If `newrelic.slow_transactions` block is missing or empty, in Path 1 still tell operator which app + time window to query; don't fabricate transaction names.
+
 **Verify**:
-- Re-run pipeline and check canary status JSON in log for the previously failed config name
-- Confirm all canary_run_status: "Pass"
+- Re-run pipeline → check canary status JSON in log for previously failed config name
+- Confirm all `canary_run_status: "Pass"`
 
 ## Compliance / commit-mismatch (CRITICAL)
 

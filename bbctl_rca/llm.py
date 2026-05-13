@@ -6,6 +6,7 @@ from . import jira
 from . import source_trace
 from . import github as gh
 from . import runbook
+from . import newrelic as nr
 
 
 # Class-specific runbook docs (in /opt/bbctl-rca/docops/). If file present,
@@ -57,11 +58,30 @@ async def _build_tool_context(service: str, error_class: str, log_window: str) -
         snippet = mcp_tools.repo_read_file("jenkins_pipeline", "vars/createGreenInfra.groovy", 330, 345)
         parts.append(f"## createGreenInfra.groovy:330-345\n```\n{snippet}\n```")
 
-    # if canary_fail: load canary.py + canary.groovy snippets so LLM knows
-    # the canary config / threshold logic
+    # if canary_fail: load canary.groovy + threshold info + slow tx from NewRelic
     if error_class == "canary_fail":
         groovy = mcp_tools.repo_read_file("jenkins_pipeline", "vars/canary.groovy", 1, 80)
         parts.append(f"## canary.groovy:1-80\n```groovy\n{groovy[:1500]}\n```")
+        parts.append(
+            "## canary.thresholds\n"
+            "Kayenta scores canary 0-100. Per resources/canary.py: pass=80, marginal=80. "
+            "A canary_run_status of 'Fail' means score < 80 — new build's metrics "
+            "(latency / error rate) regressed vs baseline beyond tolerance."
+        )
+
+        # Extract canary window timestamps + NewRelic top slow transactions
+        window = nr.extract_canary_window(log_window)
+        if window:
+            start, end = window
+            # service name often matches NewRelic appName — try as-is + common variants
+            for app in (service, service.replace("-", "_"), service.replace("_", "-")):
+                slow = await nr.slow_transactions(app, start, end, limit=5)
+                if slow:
+                    parts.append(
+                        f"## newrelic.slow_transactions ({app}, {start} → {end})\n"
+                        f"```json\n{json.dumps(slow, indent=2)}\n```"
+                    )
+                    break
 
     # Trace error strings → source code. Only include queries with hits.
     traces = [t for t in source_trace.trace(log_window) if t.get("hits")]

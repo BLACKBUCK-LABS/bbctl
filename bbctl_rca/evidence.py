@@ -10,8 +10,18 @@ import re
 
 REPOS_DIR = Path("/opt/bbctl-rca/repos")
 
-# Match `path/to/file.ext` or `path/to/file.ext:NN`
-_PATH_RE = re.compile(r"^([A-Za-z0-9_./-]+\.[A-Za-z]+)(?::(\d+))?$")
+# Sources that are tool/pipeline outputs (not files on disk) — auto-verified
+_TOOL_SOURCES = {
+    "jenkins_log", "build_meta", "console",
+    "jira.tickets", "jira",
+    "service.lookup", "service",
+    "source.trace",
+    "docs", "docops",
+}
+
+# Match `path/to/file.ext` or `path/to/file.ext:NN`. Requires at least one
+# slash to avoid matching tool-source dotted names like "jira.tickets".
+_PATH_RE = re.compile(r"^([A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.[A-Za-z]+)(?::(\d+))?$")
 
 
 def _resolve(source: str) -> tuple[Path | None, int | None]:
@@ -32,8 +42,13 @@ def verify(evidence: list[dict]) -> list[dict]:
       check that line number is within file bounds.
     """
     for ev in evidence:
-        source = ev.get("source", "")
-        if source in ("jenkins_log", "build_meta", "console", ""):
+        source = (ev.get("source") or "").strip()
+        # Tool/log sources: trust them (came from pre-fetch we did)
+        if source in _TOOL_SOURCES or source == "":
+            ev["verified"] = True
+            continue
+        # Check for tool-source prefix (e.g. "jira.tickets[FMSCAT-1234]")
+        if any(source.startswith(s) for s in _TOOL_SOURCES):
             ev["verified"] = True
             continue
 

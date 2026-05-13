@@ -46,6 +46,23 @@ rules:
       - 'fatal: repository'
     description: "Git/SCM failure — likely PAT expired or repo access issue"
 
+  - class: compliance
+    patterns:
+      - 'Signed Off commit id'
+      - 'Compliance:'
+      - 'COMMIT_ID.*does not match'
+      - 'sign.?off.*missing'
+    description: "Compliance check failure — Jira sign-off / commit ID mismatch"
+
+  - class: aws_limit
+    patterns:
+      - 'TooMany[A-Z][a-zA-Z]+'
+      - 'LimitExceeded'
+      - 'QuotaExceeded'
+      - 'ResourceLimitExceeded'
+      - 'maximum number of'
+    description: "AWS service limit hit — bump quota or clean up unused resources"
+
   - class: network
     patterns:
       - 'Connection refused'

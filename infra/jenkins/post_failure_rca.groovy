@@ -88,12 +88,14 @@ def parseJson(String text) {
     return new groovy.json.JsonSlurper().parseText(text)
 }
 
-// Build a one-paragraph human-friendly summary suitable for VictorOps/Slack
-// message field. Pulls Finding + Action from suggested_fix.
+// Build a one-paragraph human-friendly summary suitable for VictorOps / Slack
+// message field. Handles both shapes of suggested_fix (Map with
+// Finding/Action/Verify keys; plain String for classes whose runbook uses a
+// single-block format).
 def buildAlertMessage(Map rca) {
     if (!rca) return ''
     def lines = []
-    lines << "🤖 *Auto-RCA* (class: ${rca.error_class ?: '?'}, stage: ${rca.failed_stage ?: '?'}, conf: ${rca.confidence ?: '?'})"
+    lines << "🤖 *BB-AI RCA* (class: ${rca.error_class ?: '?'}, stage: ${rca.failed_stage ?: '?'}, conf: ${rca.confidence ?: '?'})"
     lines << "Summary: ${rca.summary ?: '—'}"
     def fix = rca.suggested_fix
     if (fix instanceof Map) {
@@ -101,6 +103,10 @@ def buildAlertMessage(Map rca) {
         def action = fix.Action ?: fix.action
         if (finding) lines << "Finding: ${finding}"
         if (action)  lines << "Action: ${(action as String).take(400)}"
+    } else if (fix instanceof CharSequence) {
+        // Single-block string — first ~400 chars give on-call enough to start
+        // triage. Operator can hit Jenkins console for the full block.
+        lines << "Fix: ${(fix as String).take(400)}"
     }
     if (rca.request_id) lines << "request_id: ${rca.request_id}"
     return lines.join('\n')

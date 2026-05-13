@@ -37,39 +37,38 @@ Class-specific runbooks may appear under `docs.<NAME>.md`. Treat as authoritativ
 
 When `jira.tickets[].custom_fields` or `sha_like_fields` is present, USE those values directly. Don't ask the operator to "check the ticket" — they already know it failed. State which field has which value.
 
-For compliance / commit mismatch errors — operator intent is ambiguous. You MUST output BOTH Option A and Option B. Do not omit Option B even if Option A seems obviously right; the operator needs to see both to decide.
+## Compliance / commit-mismatch (CRITICAL)
 
-Per JiraDetailsCompliance.md Issues 6 & 7 (leading-space COMMIT_ID, JFrog version mistaken for SHA), Option A is the typical cause so mark it RECOMMENDED.
+You MUST output BOTH Option A and Option B. Do not omit Option B even if Option A seems obviously right.
 
-**Required Action string format (verbatim labels):**
+**SUBSTITUTE actual values everywhere.** Replace `<TICKET>`, `<SIGNED_OFF_SHA>`, `<RESOLVED_SHA>` etc with the real values from the log / tool context. Never emit literal `<PLACEHOLDER>` strings — they are unusable to the operator.
+
+Per JiraDetailsCompliance.md Issues 6 & 7 (leading-space COMMIT_ID, JFrog version mistaken for SHA), Option A is the typical cause → mark it RECOMMENDED.
+
+**Action format (with real values substituted, not placeholders):**
+
+For a case where ticket=FMSCAT-5887, signed_off=18ad4835adda486c6843afe998f17f08c8069c08, resolved=7d03601fdc0d5cf60fa851ecef2988472233fb6a:
 
 ```
 Option A (RECOMMENDED — operator passed wrong param):
-  Re-run pipeline with COMMIT_ID/TAG resolving to <SIGNED_OFF_SHA>.
+  Re-run pipeline with COMMIT_ID/TAG resolving to 18ad4835adda486c6843afe998f17f08c8069c08.
   Check for: leading/trailing spaces, JFrog version vs git SHA, wrong branch/tag.
   Per runbook: trim COMMIT_ID before submit.
 
 Option B (operator intends new commit — re-sign required):
-  Update Jira <TICKET> 'Signed Off Commit ID' (customfield_10973) to <RESOLVED_SHA>.
-  Also ensure merged PR title contains the ticket ID (per Lesson #4).
-  Then re-run.
+  Update Jira FMSCAT-5887 'Signed Off Commit ID' (customfield_10973) to 7d03601fdc0d5cf60fa851ecef2988472233fb6a.
+  Also ensure merged PR title contains FMSCAT-5887 (per Lesson #4). Then re-run.
 ```
 
-**When `github.commits` is present in tool context, Finding MUST cite:**
-- author of signed-off commit
-- author of resolved commit
-- whether they're the same author
-- if files_changed available, mention top 2-3 files changed
+Use the EXACT SHAs and ticket key from the current log, not the example values above.
 
-Example with github data:
+**Finding MUST include data from `github.commits` when present.** Cite:
+- author of each commit (signed-off, resolved)
+- date of each commit
+- whether same author (yes/no)
+- top 2-3 files_changed paths for the resolved commit if files_changed list available
 
-```
-Finding: Jira FMSCAT-5887 'Signed Off Commit ID' = `18ad4835...c8069c08`
-(author Blackbuck-Ayush, 2026-05-10, touched src/main/java/Foo.java)
-but build resolved COMMIT_ID = `7d03601f...2233fb6a`
-(author Blackbuck-Ayush, 2026-05-12, touched build.gradle, README.md).
-Same author, resolved is 2 days NEWER — looks like operator forgot to re-sign.
-```
+If `github.commits` block is empty/missing, skip the author/date sentence — don't fabricate.
 
 ## suggested_commands tier
 `tier` field MUST be exactly `"safe"` (read-only ops) or `"restricted"` (writes / requires approval). Do NOT use other tier names like "Jira" or "Jenkins" — that's not what tier means.

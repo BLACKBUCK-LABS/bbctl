@@ -215,6 +215,10 @@ async def run_rca_openai(
 
     user_msg = _build_user_msg(build_meta, service, error_class, tool_ctx, log_window, include_examples)
 
+    # Log what blocks made it into the tool context so we can audit retroactively
+    block_titles = [ln.strip() for ln in tool_ctx.split("\n") if ln.startswith("## ")]
+    print(f"[llm] tool_ctx blocks: {block_titles}", file=__import__('sys').stderr, flush=True)
+
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[

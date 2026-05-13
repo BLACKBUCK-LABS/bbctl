@@ -113,9 +113,10 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     if detected_stage:
         build_meta = dict(build_meta)
         build_meta["detected_failed_stage"] = detected_stage
-    # Also stash raw_log on build_meta for canary stage analyzer (needs full
-    # log since canary blocks can span thousands of filtered lines).
-    if error_class == "canary_fail":
+    # Also stash raw_log on build_meta for analyzers that need full log
+    # (canary stage parser; health_check `healthy.sh` line parser) — both
+    # need data that the filtered window often drops.
+    if error_class in ("canary_fail", "health_check"):
         if not isinstance(build_meta, dict):
             build_meta = dict(build_meta)
         build_meta["_raw_log"] = raw_log

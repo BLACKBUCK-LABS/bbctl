@@ -45,25 +45,34 @@ rules:
       - 'Unexpected token'
     description: "jq/JSON parse failure in config.json — check config.json for malformed numeric fields"
 
-  - class: java_runtime
-    # Require BOTH a java class name AND exception/error context to avoid
-    # false-matching on NewRelic NRQL or log lines that just reference
-    # java.lang.* in passing.
-    patterns:
-      - 'java\.lang\.\S+Exception'
-      - 'java\.lang\.\S+Error'
-      - 'Exception in thread "[^"]+"'
-      - 'OutOfMemoryError'
-      - 'StackOverflowError'
-    description: "Java runtime exception in application"
-
+  # health_check MUST come before java_runtime — ALB target group probe
+  # failures are pipeline-level failures specific to deploy/rollout, while
+  # java_runtime is a generic catch-all that can fire on stray references.
   - class: health_check
     patterns:
+      - 'Health Status failed to move to healthy'
+      - 'iterations:\s*unhealthy'
+      - 'Error in Deploy_i-'
       - 'health.*fail'
       - 'healthz.*[45][0-9][0-9]'
       - 'curl.*Connection refused'
       - 'supervisorctl.*FATAL'
-    description: "Service health check failed post-deploy"
+    description: "Service health check failed post-deploy — ALB target group never reached healthy threshold"
+
+  - class: java_runtime
+    # Require BOTH a java class name AND exception/error context to avoid
+    # false-matching on NewRelic NRQL or log lines that just reference
+    # java.lang.* in passing. Note: bare `OutOfMemoryError` was removed —
+    # it falsely matched `-XX:+HeapDumpOnOutOfMemoryError` JVM startup
+    # flags in config.json dumps. Sanitizer now strips those lines, but
+    # we keep the pattern strict here as defense-in-depth.
+    patterns:
+      - 'java\.lang\.\S+Exception'
+      - 'java\.lang\.\S+Error'
+      - 'Exception in thread "[^"]+"'
+      - 'java\.lang\.OutOfMemoryError'
+      - 'java\.lang\.StackOverflowError'
+    description: "Java runtime exception in application"
 
   - class: ssm
     patterns:

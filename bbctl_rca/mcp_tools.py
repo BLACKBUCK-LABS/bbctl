@@ -61,12 +61,14 @@ _SLIM_FIELDS = (
     "name", "service_name", "env", "aws_account", "region",
     "deploy_type", "infra_type", "is_non_web",
     "instance_class", "ami", "target_group_name", "rule_arn",
-    "health_check_path", "canary_threshold", "traffic_values",
+    "health_check_path", "health_check_port", "canary_threshold", "traffic_values",
     "auto_scaling_group", "min_capacity", "max_capacity", "desired_capacity",
     "git_repo", "github_repo", "repo", "repo_name", "service_repo",
     "branch", "default_branch",
     "new_relic_name", "newrelic_name", "nr_app_name",
     "slack_channel",
+    # Surfaced for health_check class so LLM can tell operator where to look
+    "log_path", "service_port", "port", "app_port", "container_port",
 )
 
 

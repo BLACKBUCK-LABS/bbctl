@@ -173,3 +173,52 @@ If `github.commits` block is empty/missing, skip the author/date sentence — do
 - 0.9+ : direct evidence, runbook match, all values known
 - 0.7-0.9: clear pattern, some inference
 - <0.7  : speculation; also set needs_deeper=true
+
+## Non-fatal noise — NEVER cite as root cause
+
+The following appear in many build logs but are upstream noise, NOT the failure cause. If they're the ONLY thing you see, classify as `unknown` and set `needs_deeper=true`. NEVER suggest these as the root cause:
+
+- **`WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!`** — SSH host-key mismatch. Pipeline has SSM fallback for instance login, so this NEVER blocks a deploy. Do not propose `ssh-keygen -R` as the fix unless the operator explicitly asked about SSH.
+- **`<error>Application <X> does not exist.</error>`** (NewRelic XML) — appName isn't registered. Non-fatal observability gap.
+- **`Did you forget the 'def' keyword?` ... `setting a field named <X>` ... `could lead to memory leaks`** — Jenkins Groovy script-warning. Not a failure.
+- **`-XX:+HeapDumpOnOutOfMemoryError`** in JVM startup command — a flag that *configures* OOM heap-dumping. NOT an actual OOM error.
+
+If `Health Status failed to move to healthy within the time limit` appears in the same log, the deploy health check is the real root cause — regardless of whether any of the above noise also appears.
+
+## health_check failures (NEW)
+
+When `error_class` is `health_check`, the ALB target group probe never returned healthy for the new instance. Pipeline aborts in the `Deploy` stage.
+
+**Finding** must cite:
+- Service name
+- Target group name (from `health_check.target.target_group_name`)
+- Instance ID (from `health_check.target.instance_id`)
+- Failed iteration count (from `health_check.target.failed_iterations`)
+
+**Action** template (use values from `health_check.target` and `health_check.service_config`):
+
+```
+RECOMMENDED — diagnose on the instance:
+  1. SSH/SSM into <instance_id> in <region>. Tail the service log:
+       sudo tail -n 500 <log_path>
+     Look for a stack trace / "Failed to start" / "port already in use".
+  2. Verify the service is listening on the expected port:
+       sudo ss -tlnp | grep <service_port|health_check_port>
+  3. Hit the health endpoint locally:
+       curl -i http://localhost:<health_check_port><health_check_path>
+     Expect HTTP/1.1 200.
+
+If service is up + health endpoint returns 200:
+  - Check ALB target-group health from the AWS console
+  - Check security group ingress from ALB SG → instance on the TG port
+```
+
+**`newrelic.slow_transactions` semantics for health_check:**
+If the block is **empty/absent**, that's a strong signal the service never reported a single transaction during the deploy window — i.e. service never started OR never bound the expected port. Cite this directly in Finding.
+
+If the block has data, the service DID report transactions but ALB probe still failed → probably port mismatch or health endpoint path returns non-2xx.
+
+**Confidence guidance for health_check:**
+- 0.9+ if `health_check.target` is populated AND a clear cause (port/path/log evidence) is in the window
+- 0.7-0.9 if `health_check.target` is populated but the on-instance cause needs operator verification (most common)
+- <0.7 if you only have iteration counts + no service config — set `needs_deeper=true`

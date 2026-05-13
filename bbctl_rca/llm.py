@@ -20,7 +20,19 @@ CLASS_DOCS = {
     "canary_script_error": "StaggerProdPlusOneDeploy.md",
     "aws_limit": "AwsLimitTroubleshoot.md",
     "parse_error": "ConfigJsonParseError.md",
+    "health_check": "HealthCheckFailure.md",
 }
+
+# Regex to extract TG ARN + instance + region from the `healthy.sh` invocation
+# line. Pipeline emits exactly:
+#   + bash ./healthy.sh <tg-arn> <region> <instance-id> <env>
+_HEALTHY_SH_RE = re.compile(
+    r"bash \./healthy\.sh\s+"
+    r"(arn:aws:elasticloadbalancing:[^:]+:\d+:targetgroup/([^/]+)/[a-f0-9]+)\s+"
+    r"(\S+)\s+"
+    r"(i-[0-9a-f]+)\s+"
+    r"(\S+)"
+)
 
 # Classes for which we fetch git commit metadata from GitHub
 GIT_CLASSES = {"compliance", "scm"}
@@ -142,6 +154,91 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
                         f"```json\n{json.dumps(slow, indent=2)}\n```"
                     )
                     break
+
+    # if health_check: parse `healthy.sh` invocation for TG/instance/region;
+    # query NewRelic transactions in the deploy window (often shows the
+    # service was deployed but never reported any transactions, i.e. it
+    # never started or never bound the expected port).
+    if error_class == "health_check":
+        bm_dict = build_meta or {}
+        full_log = bm_dict.get("_raw_log") or log_window
+        # Pipeline runs healthy.sh multiple times (Prod+1 passes first, then
+        # Deploy stage call fails). Use the LAST invocation — that's the one
+        # whose probe loop the pipeline actually failed on.
+        matches = _HEALTHY_SH_RE.findall(full_log)
+        if matches:
+            tg_arn, tg_name, region, instance_id, env = matches[-1]
+            # Count failed iterations to give LLM a concrete duration signal.
+            iter_match = re.search(
+                r"Health Status for .* after (\d+) iterations:\s*unhealthy",
+                full_log, re.IGNORECASE,
+            )
+            failed_iterations = int(iter_match.group(1)) if iter_match else None
+            health_ctx = {
+                "target_group_name": tg_name,
+                "target_group_arn": tg_arn,
+                "instance_id": instance_id,
+                "region": region,
+                "env": env,
+            }
+            if failed_iterations is not None:
+                health_ctx["failed_iterations"] = failed_iterations
+            parts.append(
+                f"## health_check.target\n```json\n{json.dumps(health_ctx, indent=2)}\n```"
+            )
+
+        # Surface service log path + port from config.json so LLM can tell
+        # operator EXACTLY where to look on the instance.
+        if isinstance(svc, dict):
+            useful = {k: svc[k] for k in (
+                "log_path", "service_port", "port", "app_port",
+                "health_check_path", "health_check_port",
+            ) if k in svc and svc[k] not in (None, "")}
+            if useful:
+                parts.append(
+                    f"## health_check.service_config\n```json\n{json.dumps(useful, indent=2)}\n```"
+                )
+
+        # NewRelic transactions during deploy window — if the service is
+        # registered with NR but reports zero transactions, that proves it
+        # never accepted traffic. Same pattern as canary_fail block.
+        bm = build_meta or {}
+        ts = bm.get("timestamp")
+        dur = bm.get("duration") or bm.get("estimatedDuration") or 0
+        if ts and dur and isinstance(svc, dict):
+            from datetime import datetime, timezone
+            end_dt = datetime.fromtimestamp((ts + dur) / 1000, tz=timezone.utc)
+            start_dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+            start_iso = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+            end_iso = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+            candidates = []
+            nr_name = svc.get("new_relic_name")
+            if nr_name:
+                candidates.append(nr_name)
+            for v in (service, service.replace("-", "_"), service.replace("_", "-")):
+                if v not in candidates:
+                    candidates.append(v)
+            for app in candidates:
+                slow = await nr.slow_transactions(app, start_iso, end_iso, limit=5)
+                if slow:
+                    parts.append(
+                        f"## newrelic.slow_transactions ({app}, {start_iso} → {end_iso} UTC)\n"
+                        f"```json\n{json.dumps(slow, indent=2)}\n```"
+                    )
+                    break
+
+        parts.append(
+            "## health_check.guide\n"
+            "ALB target group probe stayed `unhealthy` for the full poll window. "
+            "Pipeline declared deploy failed. Common root causes (check in order):\n"
+            "  1. Service didn't start — check service log at `log_path` on the instance for crash/exception\n"
+            "  2. Port mismatch — service listening on a different port than TG `health_check_port`\n"
+            "  3. Health endpoint path wrong / returns non-2xx — verify `health_check_path` returns 200 via `curl` from inside instance\n"
+            "  4. Security group blocks ALB → instance on the TG port\n"
+            "  5. Slow boot vs threshold — service takes longer to come up than TG `healthy_threshold * interval`\n"
+            "  6. Dependency unreachable — service starts but health endpoint depends on DB/Redis/Kafka which is down/blocked\n"
+            "DO NOT cite SSH host-key warnings or NewRelic `Application X does not exist` as the cause — both are non-fatal upstream noise."
+        )
 
     # Trace error strings → source code. Only include queries with hits.
     traces = [t for t in source_trace.trace(log_window) if t.get("hits")]

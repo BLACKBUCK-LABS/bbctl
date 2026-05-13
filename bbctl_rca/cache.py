@@ -8,7 +8,8 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 _cache = diskcache.Cache(str(CACHE_DIR / "cache.db"))
 
-DEDUP_TTL = 60          # seconds
+DEDUP_TTL = 60          # seconds — in-flight collision window
+RCA_RESULT_TTL = 86400  # 24h — same job+build returns cached RCA (no LLM call)
 TOOL_CACHE_TTL = 86400  # 24h
 DAILY_COST_CAP = 20.0   # USD
 
@@ -17,12 +18,25 @@ def dedup_key(job: str, build: int) -> str:
     return f"dedup:{job}:{build}"
 
 
+def rca_key(job: str, build: int) -> str:
+    return f"rca:{job}:{build}"
+
+
 def is_duplicate(job: str, build: int) -> str | None:
     return _cache.get(dedup_key(job, build))
 
 
 def mark_processed(job: str, build: int, request_id: str):
     _cache.set(dedup_key(job, build), request_id, expire=DEDUP_TTL)
+
+
+def get_rca(job: str, build: int) -> dict | None:
+    """Return cached RCA result for this (job, build) if any."""
+    return _cache.get(rca_key(job, build))
+
+
+def set_rca(job: str, build: int, result: dict):
+    _cache.set(rca_key(job, build), result, expire=RCA_RESULT_TTL)
 
 
 def tool_cache_key(tool: str, args: dict) -> str:

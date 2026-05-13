@@ -13,7 +13,10 @@ from .window import extract_window
 from .sanitize import sanitize
 from .classifier import classify
 from .llm import run_rca
-from .cache import is_duplicate, mark_processed, over_daily_cap, add_spend
+from .cache import (
+    is_duplicate, mark_processed, over_daily_cap, add_spend,
+    get_rca, set_rca,
+)
 from .evidence import verify as verify_evidence
 from .audit import record as audit_record
 from .slack import post as slack_post
@@ -78,6 +81,16 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     if over_daily_cap():
         raise HTTPException(status_code=429, detail="daily cost cap reached")
 
+    # 24h cache: same job+build returns prior RCA without LLM call.
+    # `deep=true` bypasses cache (operator explicitly wants re-analysis with
+    # wider context). `?nocache=true` query param could be added later.
+    if not deep:
+        cached = get_rca(job, build)
+        if cached:
+            cached_copy = dict(cached)
+            cached_copy["from_cache"] = True
+            return cached_copy
+
     existing = is_duplicate(job, build)
     if existing and not deep:
         return {"cached": True, "request_id": existing}
@@ -119,6 +132,7 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         result["evidence"] = verify_evidence(result["evidence"])
 
     mark_processed(job, build, request_id)
+    set_rca(job, build, result)  # 24h cache for future repeat queries
 
     # Audit log + Slack notify (non-blocking, best-effort)
     audit_record({

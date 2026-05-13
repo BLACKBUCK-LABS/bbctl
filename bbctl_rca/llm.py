@@ -29,37 +29,59 @@ def _load_prompt(name: str) -> str:
 
 
 async def _build_tool_context(service: str, error_class: str, log_window: str) -> str:
-    """Eagerly fetch key context before calling LLM."""
+    """Eagerly fetch key context before calling LLM. Compact output."""
     parts = []
 
-    # service config
+    # service config — slim fields only (see mcp_tools.service_lookup)
     svc = mcp_tools.service_lookup(service)
-    parts.append(f"## service.lookup({service})\n```json\n{json.dumps(svc, indent=2)}\n```")
+    parts.append(f"## service.lookup({service})\n```json\n{json.dumps(svc)}\n```")
 
-    # if parse_error: read relevant groovy + config.json area
+    # if parse_error: read groovy snippet from known offending location
     if error_class == "parse_error":
         snippet = mcp_tools.repo_read_file("jenkins_pipeline", "vars/createGreenInfra.groovy", 330, 345)
-        parts.append(f"## createGreenInfra.groovy:330-345\n```groovy\n{snippet}\n```")
+        parts.append(f"## createGreenInfra.groovy:330-345\n```\n{snippet}\n```")
 
-    # Trace error strings back to their source files via ripgrep.
-    # Gives LLM real file:line citations to use in evidence[] instead of guesses.
-    traces = source_trace.trace(log_window)
+    # Trace error strings → source code. Only include queries with hits.
+    traces = [t for t in source_trace.trace(log_window) if t.get("hits")]
     if traces:
-        parts.append("## source.trace (ripgrep error strings → pipeline code)")
+        lines = ["## source.trace"]
         for t in traces:
-            block = f"### query: {t['query']}\n"
-            if t["hits"]:
-                block += "\n".join(t["hits"])
-            else:
-                block += "(no matches)"
-            parts.append(block)
+            lines.append(f"query: {t['query']}")
+            lines.extend(t["hits"][:3])  # cap hits per query
+        parts.append("\n".join(lines))
 
-    # Jira tickets referenced in log: fetch live status + summary
+    # Jira tickets — already slim from fetch_ticket
     ticket_keys = jira.extract_tickets(log_window)
     if ticket_keys:
         tickets = await jira.fetch_all(ticket_keys)
-        parts.append(f"## jira.tickets ({', '.join(ticket_keys)})\n```json\n{json.dumps(tickets, indent=2)}\n```")
+        parts.append(f"## jira.tickets\n```json\n{json.dumps(tickets)}\n```")
 
+    return '\n\n'.join(parts)
+
+
+def _build_user_msg(
+    build_meta: dict, service: str, error_class: str, tool_ctx: str,
+    log_window: str, include_examples: bool,
+) -> str:
+    parts = []
+    if include_examples:
+        ex = _load_prompt("rca_examples.md")
+        if ex:
+            parts.append(ex)
+    parts.append(
+        f"## Build context\n"
+        f"- job: {build_meta.get('fullDisplayName', '')}\n"
+        f"- result: {build_meta.get('result', '')}\n"
+        f"- error_class: {error_class}\n"
+        f"- service: {service}"
+    )
+    parts.append(tool_ctx)
+    parts.append(f"## Log window (sanitized)\n```\n{log_window}\n```")
+    parts.append(
+        "Return ONLY valid JSON. Required keys: summary, failed_stage, "
+        "error_class, root_cause, evidence[{source,snippet}], suggested_fix, "
+        "suggested_commands[{cmd,tier,rationale}], confidence (0-1), needs_deeper."
+    )
     return '\n\n'.join(parts)
 
 
@@ -75,35 +97,14 @@ async def run_rca_gemini(
     model = genai.GenerativeModel("gemini-2.0-flash")
 
     system = _load_prompt("rca_system.md")
-    examples = _load_prompt("rca_examples.md")
     tool_ctx = await _build_tool_context(service, error_class, log_window)
+    include_examples = error_class == "unknown" or deep
 
-    prompt = f"""{system}
-
-{examples}
-
----
-## Build context
-- job: {build_meta.get('fullDisplayName', '')}
-- result: {build_meta.get('result', '')}
-- error_class: {error_class}
-- service: {service}
-
-{tool_ctx}
-
-## Log window (sanitized)
-```
-{log_window}
-```
-
-Return ONLY valid JSON matching this schema:
-{json.dumps(RCA_SCHEMA, indent=2)}
-"""
+    user_msg = _build_user_msg(build_meta, service, error_class, tool_ctx, log_window, include_examples)
+    prompt = f"{system}\n\n{user_msg}"
 
     response = model.generate_content(prompt)
     text = response.text.strip()
-
-    # strip markdown fences if present
     if text.startswith("```"):
         text = text.split("```")[1]
         if text.startswith("json"):
@@ -129,28 +130,10 @@ async def run_rca_openai(
     client = OpenAI(api_key=api_key)
 
     system = _load_prompt("rca_system.md")
-    examples = _load_prompt("rca_examples.md")
     tool_ctx = await _build_tool_context(service, error_class, log_window)
+    include_examples = error_class == "unknown" or deep
 
-    user_msg = f"""{examples}
-
----
-## Build context
-- job: {build_meta.get('fullDisplayName', '')}
-- result: {build_meta.get('result', '')}
-- error_class: {error_class}
-- service: {service}
-
-{tool_ctx}
-
-## Log window (sanitized)
-```
-{log_window}
-```
-
-Return ONLY valid JSON matching this schema:
-{json.dumps(RCA_SCHEMA, indent=2)}
-"""
+    user_msg = _build_user_msg(build_meta, service, error_class, tool_ctx, log_window, include_examples)
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -158,6 +141,9 @@ Return ONLY valid JSON matching this schema:
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},
         ],
+        # JSON mode means model is constrained to emit valid JSON; schema is
+        # documented in system prompt + final instruction. Saves ~150 tk vs
+        # dumping the full schema struct in prompt.
         response_format={"type": "json_object"},
         temperature=0.1,
     )

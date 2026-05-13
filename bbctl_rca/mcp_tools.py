@@ -57,14 +57,32 @@ def docs_get(name: str) -> str:
     return path.read_text()
 
 
+_SLIM_FIELDS = (
+    "name", "service_name", "env", "aws_account", "region",
+    "deploy_type", "infra_type", "is_non_web",
+    "instance_class", "ami", "target_group_name", "rule_arn",
+    "health_check_path", "canary_threshold", "traffic_values",
+    "auto_scaling_group", "min_capacity", "max_capacity", "desired_capacity",
+)
+
+
 def service_lookup(service_name: str) -> dict:
-    """Return config.json entry for a service."""
+    """Return slim config.json entry — only fields useful for RCA reasoning.
+
+    Drops verbose metadata (ARNs of unrelated resources, timestamps, tags) to
+    cut prompt tokens. Operator can inspect full config via repo_read_file if
+    LLM requests it.
+    """
     config = _load_config()
     entry = config.get(service_name)
     if not entry:
-        # fuzzy: partial match
         matches = [k for k in config if service_name.lower() in k.lower()]
         if matches:
-            return {"matches": matches, "hint": "use exact name"}
+            return {"matches": matches[:5], "hint": "use exact name"}
         return {"error": f"service '{service_name}' not found in config.json"}
-    return entry
+    # Keep only meaningful fields, drop None/empty
+    slim = {k: entry[k] for k in _SLIM_FIELDS if k in entry and entry[k] not in (None, "", [], {})}
+    if not slim:
+        # service exists but no matching slim fields — return all top-level keys for visibility
+        slim = {"_keys": list(entry.keys())[:20]}
+    return slim

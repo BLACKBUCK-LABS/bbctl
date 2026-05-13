@@ -2,10 +2,12 @@
 // On pipeline failure: POST signed webhook to bbctl-rca, get JSON RCA back,
 // pretty-print it to console + set build description for at-a-glance triage.
 //
+// Uses raw HttpURLConnection (no plugin dep) to match the existing VictorOps
+// pattern. Only Jenkins steps used: withCredentials.
+//
 // Prereqs in Jenkins:
 //   - "Secret text" credential with ID `bbctl-webhook-secret` matching the
 //     WEBHOOK_SECRET in AWS Secrets Manager.
-//   - HTTP Request plugin installed.
 //
 // Usage in vars/<pipeline>.groovy:
 //
@@ -32,32 +34,58 @@ def triggerRcaWebhook() {
 
     withCredentials([string(credentialsId: 'bbctl-webhook-secret', variable: 'WEBHOOK_SECRET')]) {
         def sig = 'sha256=' + hmacSha256(WEBHOOK_SECRET, payload)
+        def result
         try {
-            def response = httpRequest(
-                url: rcaUrl,
-                httpMode: 'POST',
-                contentType: 'APPLICATION_JSON',
-                requestBody: payload,
-                customHeaders: [
-                    [name: 'X-Bbctl-Signature', value: sig, maskValue: true],
-                ],
-                timeout: 60,           // RCA takes 10-30s with LLM call
-                quiet: true,
-                validResponseCodes: '100:599',
-            )
-            if (response.status == 200) {
-                def rca = readJSON text: response.content
+            result = postWebhook(rcaUrl, payload, sig)
+        } catch (Exception e) {
+            echo "[bbctl-rca] webhook transport error (non-fatal): ${e.message}"
+            return null
+        }
+        if (result?.status == 200) {
+            try {
+                def rca = parseJson(result.body)
                 renderRca(rca)
                 return rca
-            } else {
-                echo "[bbctl-rca] HTTP ${response.status}: ${response.content?.take(300)}"
+            } catch (Exception e) {
+                echo "[bbctl-rca] JSON parse error: ${e.message}"
+                echo "[bbctl-rca] raw body: ${result.body?.take(500)}"
                 return null
             }
-        } catch (Exception e) {
-            echo "[bbctl-rca] webhook error (non-fatal): ${e.message}"
+        } else {
+            echo "[bbctl-rca] HTTP ${result?.status}: ${result?.body?.take(300)}"
             return null
         }
     }
+}
+
+// Pure-Java HTTP POST. Returns [status: int, body: String]. Throws on
+// transport error so caller logs once via echo (which can't run inside @NonCPS).
+// @NonCPS keeps HttpURLConnection / streams off the persisted CPS heap.
+@NonCPS
+def postWebhook(String urlStr, String payload, String sig) {
+    URL url = new URL(urlStr)
+    HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+    conn.setRequestMethod('POST')
+    conn.setDoOutput(true)
+    conn.setRequestProperty('Content-Type', 'application/json')
+    conn.setRequestProperty('X-Bbctl-Signature', sig)
+    conn.setConnectTimeout(10_000)
+    conn.setReadTimeout(60_000)   // LLM call: 10-30s typical
+
+    OutputStream os = conn.getOutputStream()
+    os.write(payload.getBytes('UTF-8'))
+    os.close()
+
+    int status = conn.getResponseCode()
+    InputStream is = (status >= 200 && status < 400) ? conn.getInputStream() : conn.getErrorStream()
+    String body = is != null ? is.getText('UTF-8') : ''
+    conn.disconnect()
+    return [status: status, body: body]
+}
+
+@NonCPS
+def parseJson(String text) {
+    return new groovy.json.JsonSlurper().parseText(text)
 }
 
 // Build a one-paragraph human-friendly summary suitable for VictorOps/Slack

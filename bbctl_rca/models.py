@@ -7,8 +7,8 @@ class WebhookPayload(BaseModel):
     build: int
     service: str
     commit: str = ""
-    buildUrl: str
-    consoleUrl: str
+    buildUrl: str = ""
+    consoleUrl: str = ""
 
 
 class RCARequest(BaseModel):

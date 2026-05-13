@@ -61,16 +61,18 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
         snippet = mcp_tools.repo_read_file("jenkins_pipeline", "vars/createGreenInfra.groovy", 330, 345)
         parts.append(f"## createGreenInfra.groovy:330-345\n```\n{snippet}\n```")
 
-    # if canary_script_error: load canary.py around the crash line
+    # if canary_script_error: load canary.py around the DEEPEST frame (actual crash)
     if error_class == "canary_script_error":
-        # Try to extract line number from traceback in log_window
-        m = re.search(r'canary\.py", line (\d+), in', log_window)
-        line_no = int(m.group(1)) if m else 80
+        # Traceback prints frames outer-to-inner. The LAST canary.py frame
+        # is where the error actually occurred (deepest in stack). Outer
+        # frames are just main() / dispatch.
+        matches = re.findall(r'canary\.py", line (\d+), in', log_window)
+        line_no = int(matches[-1]) if matches else 80
         snippet = mcp_tools.repo_read_file(
             "jenkins_pipeline", "resources/canary.py",
             max(1, line_no - 10), line_no + 10
         )
-        parts.append(f"## canary.py:{line_no}±10\n```python\n{snippet}\n```")
+        parts.append(f"## canary.py:{line_no}±10 (deepest traceback frame — actual crash site)\n```python\n{snippet}\n```")
         parts.append(
             "## canary.script_error.context\n"
             "This is a SCRIPT CRASH in canary.py, NOT a service performance regression. "

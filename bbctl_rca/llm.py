@@ -65,12 +65,14 @@ async def _build_tool_context(service: str, error_class: str, log_window: str) -
             lines.extend(t["hits"][:3])  # cap hits per query
         parts.append("\n".join(lines))
 
-    # Class-specific runbook doc (added by ops; loaded only when relevant)
+    # Class-specific runbook doc (added by ops; loaded only when relevant).
+    # Truncated to 6000 chars (~1500 tokens) to fit substantive runbook content
+    # while staying within budget.
     doc_name = CLASS_DOCS.get(error_class)
     if doc_name:
         doc = mcp_tools.docs_get(doc_name)
         if doc and not doc.startswith("doc not found"):
-            parts.append(f"## docs.{doc_name}\n{doc.strip()[:2000]}")
+            parts.append(f"## docs.{doc_name}\n{doc.strip()[:6000]}")
 
     # Jira tickets — already slim from fetch_ticket
     ticket_keys = jira.extract_tickets(log_window)

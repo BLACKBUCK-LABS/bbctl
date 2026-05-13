@@ -45,7 +45,7 @@ def _load_prompt(name: str) -> str:
     return p.read_text() if p.exists() else ""
 
 
-async def _build_tool_context(service: str, error_class: str, log_window: str) -> str:
+async def _build_tool_context(service: str, error_class: str, log_window: str, build_meta: dict | None = None) -> str:
     """Eagerly fetch key context before calling LLM. Compact output."""
     parts = []
 
@@ -70,8 +70,9 @@ async def _build_tool_context(service: str, error_class: str, log_window: str) -
 
         # Window from Jenkins build_meta timestamps (build start/end approximates
         # canary window; canary typically runs in last 30-60 min of build).
-        ts = build_meta.get("timestamp")
-        dur = build_meta.get("duration") or build_meta.get("estimatedDuration") or 0
+        bm = build_meta or {}
+        ts = bm.get("timestamp")
+        dur = bm.get("duration") or bm.get("estimatedDuration") or 0
         if ts and dur:
             from datetime import datetime, timezone
             end_dt = datetime.fromtimestamp((ts + dur) / 1000, tz=timezone.utc)
@@ -166,7 +167,7 @@ async def run_rca_gemini(
     model = genai.GenerativeModel("gemini-2.0-flash")
 
     system = _load_prompt("rca_system.md")
-    tool_ctx = await _build_tool_context(service, error_class, log_window)
+    tool_ctx = await _build_tool_context(service, error_class, log_window, build_meta)
     include_examples = error_class == "unknown" or deep
 
     user_msg = _build_user_msg(build_meta, service, error_class, tool_ctx, log_window, include_examples)
@@ -199,7 +200,7 @@ async def run_rca_openai(
     client = OpenAI(api_key=api_key)
 
     system = _load_prompt("rca_system.md")
-    tool_ctx = await _build_tool_context(service, error_class, log_window)
+    tool_ctx = await _build_tool_context(service, error_class, log_window, build_meta)
     include_examples = error_class == "unknown" or deep
 
     user_msg = _build_user_msg(build_meta, service, error_class, tool_ctx, log_window, include_examples)

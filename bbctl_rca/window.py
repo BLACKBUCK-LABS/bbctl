@@ -49,7 +49,10 @@ NOISE_PATTERNS = re.compile(
     # Terraform plan refresh noise
     r'Refreshing state\.\.\.|'
     r'Reading\.\.\.|'
-    r'Read complete after)\b',
+    r'Read complete after|'
+    # AWS CLI text-format table rows (TSV-style noise from describe-rules etc.)
+    r'^RULES\s|^ACTIONS\s|^TARGETGROUPS\s|^TARGETGROUPSTICKINESSCONFIG\s|'
+    r'^CONDITIONS\s|^VALUES\s|^FORWARDCONFIG\s)\b',
     re.IGNORECASE,
 )
 

@@ -54,6 +54,11 @@ Kayenta threshold: pass=80. A FAIL means score < 80 → metric regression beyond
 - Which configs PASSED in the same run (contrast)
 - If `newrelic.slow_transactions` block is present, name the TOP 1-2 transactions and their p95_ms values
 
+**STRICT — do NOT invent numbers:**
+- The canary numeric SCORE is NOT printed in the log; only `canary_run_status: "Pass"|"Fail"` is visible. NEVER write "score was 40" or any specific number. Say "score was below the pass threshold of 80" without naming a value.
+- Do not pull numbers from AWS CLI output (RULES, ACTIONS, TARGETGROUPS rows) and present them as canary metrics — those are ALB rule weights/IDs, not Kayenta scores.
+- If `newrelic.slow_transactions` is absent, do not invent transaction names. Tell the operator the appName + time window to query themselves.
+
 **Action** — 3 paths (always include all 3):
 
 ```

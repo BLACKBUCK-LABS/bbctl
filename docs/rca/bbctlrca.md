@@ -377,9 +377,25 @@ LLM is instructed to **never** cite SSH host-key warnings or NewRelic `Applicati
 ## Phase roadmap
 
 - **Phase A (LIVE)** — Auto-RCA prints to console + build description on failure. Webhook is non-fatal; nothing about the existing alert flow changed.
-- **Phase B (planned, after ~10 clean Phase A runs)** — enrich the existing VictorOps incident `message` field with `buildAlertMessage(rca)` so on-call sees the RCA summary inside the page itself.
+- **Phase B (LIVE)** — VictorOps incident `message` field now includes `buildAlertMessage(rca)` so on-call sees the RCA summary inside the page itself. RCA fields (`rcaErrorClass`, `rcaFailedStage`, `rcaConfidence`, `rcaSummary`, `rcaRequestId`) also injected into the VictorOps `details` panel for structured access. Base message still leads — existing VictorOps filters / dashboards keep working.
 - **Phase C (later)** — Slack notification with RCA + suggested commands; "deep" mode triggered from a Slack button.
 - **Future** — fetch real Kayenta canary scores via Kayenta API for `canary_fail` class instead of inferring from build log alone.
+
+### Phase B — VictorOps message shape
+
+```
+Production pipeline failed for <service> after Prod+1 validation passed.
+Rollback initiated. here is the jenkins link : <build_url>console
+
+🤖 *BB-AI RCA* (class: health_check, stage: Deploy, conf: 0.85)
+Summary: Deploy stage failed due to health check failure; ALB target group
+         probe remained unhealthy for 50 iterations.
+Finding: <first line of suggested_fix, if Map-shaped>
+Action:  <truncated to 400 chars>
+request_id: <uuid>
+```
+
+If `suggested_fix` is a single String (some classes use this shape), only the first ~400 chars appear under a `Fix:` label. For full detail, the on-call clicks through to the Jenkins console where `renderRca()` printed the full boxed block.
 
 ---
 
@@ -393,6 +409,8 @@ LLM is instructed to **never** cite SSH host-key warnings or NewRelic `Applicati
 6. **`HealthCheckFailure.md` runbook + wiring** — new docops/ runbook with 6 ordered likely causes + verify commands; wired into `CLASS_DOCS["health_check"]` so the LLM gets it in the prompt automatically.
 7. **`log_path` / `service_port` / `health_check_port` surfaced** — `_SLIM_FIELDS` in `mcp_tools.py` now exposes these so the LLM can give the operator EXACT instance-side paths/ports to check.
 8. **Live verification** — build 25 (`stagger-prod-plus-devops-test`) re-RCA'd cleanly: `error_class=health_check`, `failed_stage=Deploy`, cites instance `i-02fc813e939bb2b39` + 50 iterations + concrete `ssh ... tail /var/log/blackbuck/<svc>.log` / `ss -tlnp | grep <port>` / `curl /admin/version` commands. Cost: $0.003 / 18K input tokens / 60s latency.
+9. **Phase B shipped** — VictorOps incident `message` now carries `buildAlertMessage(rca)` (class/stage/confidence + summary + Finding/Action), and `details` panel adds structured `rcaErrorClass / rcaFailedStage / rcaConfidence / rcaSummary / rcaRequestId`. On-call sees the RCA inside the page itself — no need to click through to Jenkins console to know what failed.
+10. **`buildAlertMessage` hardened** — handles both `suggested_fix` shapes (Map with Finding/Action keys, or plain String). Previously String-shaped fixes produced an empty alert body.
 
 ---
 

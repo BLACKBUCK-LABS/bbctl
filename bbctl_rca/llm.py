@@ -80,8 +80,18 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
             start_dt = datetime.fromtimestamp(max(ts, ts + dur - 30 * 60 * 1000) / 1000, tz=timezone.utc)
             start_iso = start_dt.strftime("%Y-%m-%d %H:%M:%S")
             end_iso = end_dt.strftime("%Y-%m-%d %H:%M:%S")
-            for app in (service, service.replace("-", "_"), service.replace("_", "-"),
-                        service.replace("prod-", "")):
+            # NewRelic appName often != service name (e.g. config has
+            # new_relic_name="FMS - GPS" for service "prod-gps"). Try the
+            # explicit field first, then heuristic variants.
+            candidates = []
+            nr_name = svc.get("new_relic_name") if isinstance(svc, dict) else None
+            if nr_name:
+                candidates.append(nr_name)
+            for v in (service, service.replace("-", "_"), service.replace("_", "-"),
+                      service.replace("prod-", "")):
+                if v not in candidates:
+                    candidates.append(v)
+            for app in candidates:
                 slow = await nr.slow_transactions(app, start_iso, end_iso, limit=5)
                 if slow:
                     parts.append(

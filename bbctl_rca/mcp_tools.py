@@ -65,6 +65,8 @@ _SLIM_FIELDS = (
     "auto_scaling_group", "min_capacity", "max_capacity", "desired_capacity",
     "git_repo", "github_repo", "repo", "repo_name", "service_repo",
     "branch", "default_branch",
+    "new_relic_name", "newrelic_name", "nr_app_name",
+    "slack_channel",
 )
 
 

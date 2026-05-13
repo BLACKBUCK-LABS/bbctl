@@ -92,18 +92,46 @@ def _strip_and_filter(raw_log: str) -> list[str]:
 # Stage markers: "[Pipeline] { (Build)", "[Pipeline] { (Rollout)", etc.
 _STAGE_RE = re.compile(r"\[Pipeline\] \{ \(([^)]+)\)")
 
+# Failure markers: anything past these lines is post-failure cleanup, not
+# the failing stage. "Declarative: Post Actions" runs *after* failure so we
+# must stop scanning before it.
+_FAILURE_MARKER_RE = re.compile(
+    r"(Rolling Back as Result|Rollout back as Canary|"
+    r"BUILD FAILED|ERROR:|hudson\.AbortException|"
+    r"Canary run failed for canary run id|"
+    r'"canary_run_status"\s*:\s*"Fail"|'
+    r"Stage \".*?\" skipped due to earlier failure)",
+    re.IGNORECASE,
+)
+
+# Stages we always ignore — they wrap post{} blocks, not real pipeline work
+_IGNORED_STAGES = {
+    "declarative: post actions",
+    "declarative: tool install",
+    "declarative: agent setup",
+    "post actions",
+}
+
 
 def extract_failed_stage(raw_log: str) -> str | None:
-    """Find the LAST stage that was entered before pipeline failure.
+    """Find the user-defined stage where the failure actually happened.
 
-    Stage list gets emitted as the pipeline enters each stage. The last one
-    before failure markers is where the failure actually occurred. Useful
-    when the log mentions multiple stages by name (Prod+1, Prod, Rollout, etc.).
+    Strategy: scan log, track last stage entry. Stop at first failure marker.
+    Skip Jenkins-internal stages like 'Declarative: Post Actions' which wrap
+    the post{} block that runs AFTER the real failure.
     """
-    stages = _STAGE_RE.findall(raw_log)
-    if not stages:
-        return None
-    return stages[-1]
+    last_real_stage = None
+    for line in raw_log.splitlines():
+        m = _STAGE_RE.search(line)
+        if m:
+            name = m.group(1)
+            if name.lower() not in _IGNORED_STAGES:
+                last_real_stage = name
+            continue
+        # Once we see a failure marker, stop — anything after is cleanup
+        if _FAILURE_MARKER_RE.search(line):
+            break
+    return last_real_stage
 
 
 def _anchored_window(lines: list[str], context: int, cap: int) -> str:

@@ -24,7 +24,7 @@ def call() {
 }
 
 def triggerRcaWebhook() {
-    def rcaUrl = env.BBCTL_RCA_URL ?: 'http://10.34.120.223:7070/v1/rca/webhook'
+    def rcaUrl = env.BBCTL_RCA_URL ?: 'https://bbctl.blackbuck.com/rca/v1/rca/webhook'
     def service = (params?.SERVICE ?: env.SERVICE ?: env.JOB_NAME) as String
     def payload = groovy.json.JsonOutput.toJson([
         job: env.JOB_NAME,

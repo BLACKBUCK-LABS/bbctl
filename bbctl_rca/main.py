@@ -4,7 +4,7 @@ import json
 import os
 import uuid
 
-from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi import FastAPI, APIRouter, Request, HTTPException, Header
 from fastapi.responses import JSONResponse
 
 from .models import WebhookPayload, RCARequest, RCAResponse
@@ -25,6 +25,10 @@ import yaml
 from pathlib import Path
 
 app = FastAPI(title="bbctl-rca", version="0.1.0")
+# All routes go on this router so we can mount them at both root and /rca.
+# /rca prefix is for ALB path-based routing (bbctl.blackbuck.com/rca/*);
+# root mount keeps direct-port access working for backward compat.
+router = APIRouter()
 
 # Config loaded from env (set via SOPS decrypt on startup)
 JENKINS_URL = os.environ.get("BBCTL_JENKINS_URL", "http://10.34.42.254:8080")
@@ -37,7 +41,7 @@ LLM_PROVIDER = os.environ.get("BBCTL_LLM_PROVIDER", "gemini")
 JENKINS_AUTH = (JENKINS_USER, JENKINS_TOKEN)
 
 
-@app.get("/healthz")
+@router.get("/healthz")
 async def health():
     return {"status": "ok", "provider": LLM_PROVIDER}
 
@@ -49,7 +53,7 @@ def verify_hmac(payload: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-@app.post("/v1/rca/webhook")
+@router.post("/v1/rca/webhook")
 async def rca_webhook(
     request: Request,
     x_bbctl_signature: str = Header(None),
@@ -64,7 +68,7 @@ async def rca_webhook(
     return await _run_rca(payload.job, payload.build, payload.service, deep=False)
 
 
-@app.post("/v1/rca")
+@router.post("/v1/rca")
 async def rca_cli(req: RCARequest):
     meta = await get_build_meta(req.job, req.build, JENKINS_URL, JENKINS_AUTH)
     service = meta.get("actions", [{}])[0].get("parameters", [{}])
@@ -167,6 +171,12 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     await slack_post(result, job, build)
 
     return result
+
+
+# Mount routes at both root (for direct port access) and /rca (for ALB
+# path-based routing via bbctl.blackbuck.com/rca/*). Both URL shapes work.
+app.include_router(router)
+app.include_router(router, prefix="/rca")
 
 
 if __name__ == "__main__":

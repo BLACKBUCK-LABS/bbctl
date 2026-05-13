@@ -12,7 +12,7 @@ from .jenkins import get_console_log, get_build_meta
 from .window import extract_window
 from .sanitize import sanitize
 from .classifier import classify
-from .llm import run_rca_gemini
+from .llm import run_rca
 from .cache import is_duplicate, mark_processed, over_daily_cap, add_spend
 import subprocess
 import yaml
@@ -88,7 +88,8 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     clean_window, redactions = sanitize(window)
     error_class = classify(clean_window)
 
-    result = await run_rca_gemini(
+    result = await run_rca(
+        LLM_PROVIDER,
         api_key=LLM_API_KEY,
         service=service,
         build_meta=build_meta,
@@ -98,10 +99,15 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     )
     result["request_id"] = request_id
 
-    # estimate cost: gemini-2.0-flash ~$0.075/1M input, $0.30/1M output
+    # cost estimate by provider
     tokens_in = result["tokens_used"].get("input", 0)
     tokens_out = result["tokens_used"].get("output", 0)
-    cost = (tokens_in / 1_000_000 * 0.075) + (tokens_out / 1_000_000 * 0.30)
+    if LLM_PROVIDER == "openai":
+        # gpt-4o-mini: $0.15/1M input, $0.60/1M output
+        cost = (tokens_in / 1_000_000 * 0.15) + (tokens_out / 1_000_000 * 0.60)
+    else:
+        # gemini-2.0-flash: $0.075/1M input, $0.30/1M output
+        cost = (tokens_in / 1_000_000 * 0.075) + (tokens_out / 1_000_000 * 0.30)
     add_spend(cost)
 
     mark_processed(job, build, request_id)

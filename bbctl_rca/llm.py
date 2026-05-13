@@ -94,3 +94,67 @@ Return ONLY valid JSON matching this schema:
         "output": response.usage_metadata.candidates_token_count if response.usage_metadata else 0,
     }
     return result
+
+
+async def run_rca_openai(
+    api_key: str,
+    service: str,
+    build_meta: dict,
+    log_window: str,
+    error_class: str,
+    deep: bool = False,
+) -> dict:
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+
+    system = _load_prompt("rca_system.md")
+    examples = _load_prompt("rca_examples.md")
+    tool_ctx = _build_tool_context(service, error_class)
+
+    user_msg = f"""{examples}
+
+---
+## Build context
+- job: {build_meta.get('fullDisplayName', '')}
+- result: {build_meta.get('result', '')}
+- error_class: {error_class}
+- service: {service}
+
+{tool_ctx}
+
+## Log window (sanitized)
+```
+{log_window}
+```
+
+Return ONLY valid JSON matching this schema:
+{json.dumps(RCA_SCHEMA, indent=2)}
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_msg},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1,
+    )
+    text = response.choices[0].message.content.strip()
+    result = json.loads(text)
+    result["tokens_used"] = {
+        "input": response.usage.prompt_tokens,
+        "output": response.usage.completion_tokens,
+    }
+    return result
+
+
+LLM_DISPATCH = {
+    "gemini": run_rca_gemini,
+    "openai": run_rca_openai,
+}
+
+
+async def run_rca(provider: str, **kwargs) -> dict:
+    fn = LLM_DISPATCH.get(provider, run_rca_gemini)
+    return await fn(**kwargs)

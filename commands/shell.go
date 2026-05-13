@@ -764,6 +764,10 @@ func looksLikePath(arg string) bool {
 	if strings.HasPrefix(arg, "'") || strings.HasPrefix(arg, "\"") {
 		return false
 	}
+	// URL schemes (http://, https://, ftp://, etc.) are never filesystem paths.
+	if strings.Contains(arg, "://") {
+		return false
+	}
 	// Explicit path separator → definitely a path
 	if strings.Contains(arg, "/") {
 		return true

@@ -55,9 +55,15 @@ Kayenta threshold: pass=80. A FAIL means score < 80 → metric regression beyond
 - If `newrelic.slow_transactions` block is present, name the TOP 1-2 transactions and their p95_ms values
 
 **STRICT — do NOT invent numbers:**
-- The canary numeric SCORE is NOT printed in the log; only `canary_run_status: "Pass"|"Fail"` is visible. NEVER write "score was 40" or any specific number. Say "score was below the pass threshold of 80" without naming a value.
-- Do not pull numbers from AWS CLI output (RULES, ACTIONS, TARGETGROUPS rows) and present them as canary metrics — those are ALB rule weights/IDs, not Kayenta scores.
-- If `newrelic.slow_transactions` is absent, do not invent transaction names. Tell the operator the appName + time window to query themselves.
+- Canary numeric SCORE is NOT in build log. Only `canary_run_status: Pass|Fail` is. NEVER write "score was 40" or any specific number. Say "score was below the pass threshold of 80" without naming a value.
+- Do not pull numbers from AWS CLI output (RULES, ACTIONS, TARGETGROUPS rows) and present them as canary metrics — those are ALB rule weights/IDs.
+- If `newrelic.slow_transactions` is absent, do not invent transaction names. Tell operator the appName + window to query themselves.
+
+**Use `canary.judge_logic` to interpret severity** — this is the org's canary tolerance:
+- If `*-Web-latency` failed: latency exceeded 2.5x baseline. Moderate regression.
+- If `*-Other-latency` failed: non-Web latency exceeded **50x** baseline. CATASTROPHIC regression — likely infinite loop, deadlock, unbounded query, or hung external call in an async/cron/consumer path. Investigate accordingly.
+- If `*-error-rate` failed: error rate increased at all (1x = no tolerance). Check exception logs.
+- Whole canary fails if ANY of 7 configs fails — name which one, name the rest as PASSED.
 
 **Action** — 3 paths (always include all 3):
 

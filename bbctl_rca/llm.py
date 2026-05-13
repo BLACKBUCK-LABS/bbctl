@@ -63,9 +63,16 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
         groovy = mcp_tools.repo_read_file("jenkins_pipeline", "vars/canary.groovy", 1, 80)
         parts.append(f"## canary.groovy:1-80\n```groovy\n{groovy[:1500]}\n```")
         parts.append(
-            "## canary.thresholds\n"
-            "Kayenta scores canary 0-100. Per resources/canary.py: pass=80, marginal=80. "
-            "FAIL = score < 80 → new build's metrics regressed vs baseline beyond tolerance."
+            "## canary.judge_logic (from resources/canary.py)\n"
+            "Judge: Kayenta NetflixACAJudge-v1.0. Score 0-100. pass=80, marginal=80.\n"
+            "FAIL means score < 80 — new build worse than baseline beyond `effectSize.allowedIncrease`:\n"
+            "  - latency, Web transactions:   2.5x baseline allowed\n"
+            "  - latency, Other (non-Web):    50x baseline allowed  (very lenient — failing this = catastrophic)\n"
+            "  - latency, per-txn duration>10s: configured per-config (2.5x or 50x)\n"
+            "  - latency, per-txn duration<=10s: 15x baseline allowed\n"
+            "  - error-rate (any type):       1x baseline allowed  (no increase)\n"
+            "Whole canary FAILs if ANY of the 7 configs fails (canary.py:545-548).\n"
+            "The numeric score is in Kayenta API response only, NOT in the build log."
         )
 
         # Window from Jenkins build_meta timestamps (build start/end approximates

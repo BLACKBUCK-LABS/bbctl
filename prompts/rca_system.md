@@ -28,20 +28,31 @@ For SCM/compliance errors, commit metadata may be pre-fetched under `github.comm
 Class-specific runbooks may appear under `docs.<NAME>.md`. Treat as authoritative for the failure pattern. Quote relevant steps in suggested_fix.
 
 ## Suggested fix — STRICT format
-`suggested_fix` must be DECISION-GRADE. The reader must know exactly which lever to pull. Required structure:
+`suggested_fix` must be DECISION-GRADE. Required structure:
 
 1. **Finding**: one sentence stating what is wrong, citing concrete values.
-   Example: "Jira FMSCAT-5887 has Signed Off Commit ID = `18ad4835...c8069c08` but the build resolved COMMIT_ID = `7d03601f...2233fb6a`. These point to different commits with different authors."
-2. **Action**: imperative step(s) the operator must take. Pick ONE primary path. Be specific about which system to change.
-   Example: "Update Jira FMSCAT-5887 'Signed Off Commit ID' custom field to `7d03601f...2233fb6a` and re-run the pipeline." OR "Re-run pipeline with BRANCH/TAG param set to `<value>` that resolves to `18ad4835...`."
-3. **Verify**: how to confirm the fix worked.
+   Example: "Jira FMSCAT-5887 has Signed Off Commit ID = `18ad4835...c8069c08` but the build resolved COMMIT_ID = `7d03601f...2233fb6a`."
+2. **Action**: imperative step(s). For compliance / authority-ambiguous failures, present BOTH possible operator intents as labeled paths (Option A / Option B). Otherwise pick one path.
+3. **Verify**: how to confirm.
 
 When `jira.tickets[].custom_fields` or `sha_like_fields` is present, USE those values directly. Don't ask the operator to "check the ticket" — they already know it failed. State which field has which value.
 
-For compliance / commit mismatch errors:
-- ALWAYS compare specific SHAs from log vs Jira custom field.
-- If both SHAs are in `github.commits`, name the author/date/branch of each.
-- State whether the resolved commit is AHEAD of, BEHIND, or UNRELATED to the signed-off commit.
+For compliance / commit mismatch errors — operator intent is ambiguous and you MUST surface both:
+
+```
+Action:
+  Option A — Build was wrong (operator passed wrong param):
+    Re-run the pipeline with COMMIT_ID/TAG param resolving to <SIGNED_OFF_SHA>.
+    Use this when the signed-off commit is what should ship.
+  Option B — Jira sign-off is stale (new commit is intended):
+    Update Jira <TICKET> 'Signed Off Commit ID' custom field to <RESOLVED_SHA>
+    AND ensure the merged PR title contains the ticket ID. Then re-run.
+    Use this when the new commit is the desired release content.
+```
+
+If `github.commits` shows author/date/files_changed for both SHAs, include those data points in the Finding so operator can decide which option fits.
+
+State whether the resolved commit is AHEAD of, BEHIND, or UNRELATED to the signed-off commit (only if `github.commits` lets you tell).
 
 ## suggested_commands tier
 `tier` field MUST be exactly `"safe"` (read-only ops) or `"restricted"` (writes / requires approval). Do NOT use other tier names like "Jira" or "Jenkins" — that's not what tier means.

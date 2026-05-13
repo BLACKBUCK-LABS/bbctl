@@ -1,27 +1,16 @@
 #!/usr/bin/env bash
-# Decrypt SOPS secrets, export as env vars, start bbctl-rca uvicorn
+# Fetch secrets from AWS Secrets Manager, export as env vars, start uvicorn.
+# Requires IAM role on bbctl-ec2 with secretsmanager:GetSecretValue on
+# arn:aws:secretsmanager:ap-south-1:<acct>:secret:bbctl-rca/prod-*
 set -euo pipefail
 
-KEYS_FILE="/etc/bbctl-rca/keys.enc.yaml"
-AGE_KEY="/etc/bbctl-rca/keys/bbctl-rca.key"
 APP_DIR="/opt/bbctl-rca"
 VENV="$APP_DIR/.venv"
+export AWS_REGION="${AWS_REGION:-ap-south-1}"
+export BBCTL_SECRET_ID="${BBCTL_SECRET_ID:-bbctl-rca/prod}"
 
-if [[ ! -f "$KEYS_FILE" ]]; then
-  echo "ERROR: secrets file not found: $KEYS_FILE" >&2
-  exit 1
-fi
-
-# Decrypt and export env vars
-eval "$(
-  SOPS_AGE_KEY_FILE="$AGE_KEY" sops --decrypt "$KEYS_FILE" \
-    | python3 -c "
-import sys, yaml
-d = yaml.safe_load(sys.stdin)
-for k, v in d.items():
-    print(f'export BBCTL_{k.upper()}={v!r}')
-"
-)"
+# Fetch secrets via boto3 and export as env vars
+eval "$("$VENV/bin/python" -m bbctl_rca.secrets)"
 
 cd "$APP_DIR"
 exec "$VENV/bin/uvicorn" bbctl_rca.main:app \

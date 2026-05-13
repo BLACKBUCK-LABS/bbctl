@@ -109,6 +109,12 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     if detected_stage:
         build_meta = dict(build_meta)
         build_meta["detected_failed_stage"] = detected_stage
+    # Also stash raw_log on build_meta for canary stage analyzer (needs full
+    # log since canary blocks can span thousands of filtered lines).
+    if error_class == "canary_fail":
+        if not isinstance(build_meta, dict):
+            build_meta = dict(build_meta)
+        build_meta["_raw_log"] = raw_log
 
     result = await run_rca(
         LLM_PROVIDER,
@@ -119,6 +125,10 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         error_class=error_class,
         deep=deep,
     )
+    # Strip raw_log from build_meta after LLM call so it doesn't leak into
+    # audit log / response (it's massive).
+    if isinstance(build_meta, dict) and "_raw_log" in build_meta:
+        build_meta = {k: v for k, v in build_meta.items() if k != "_raw_log"}
     result["request_id"] = request_id
 
     # cost estimate by provider

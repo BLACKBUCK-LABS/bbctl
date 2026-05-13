@@ -65,6 +65,19 @@ Kayenta threshold: pass=80. A FAIL means score < 80 → metric regression beyond
 - If `*-error-rate` failed: error rate increased at all (1x = no tolerance). Check exception logs.
 - Whole canary fails if ANY of 7 configs fails — name which one, name the rest as PASSED.
 
+**`canary.stage_analysis` MANDATORY use** — when this block is present, Finding MUST cite:
+1. `failed_at_percent` — the EXACT traffic stage that failed (e.g. "50%")
+2. `passed_before_failure` — list of stages that passed first (e.g. "5%, 20%")
+3. `load_dependent` — if `true`, this is a load-dependent regression. State it explicitly. Likely causes: DB connection pool exhaustion, thread saturation, GC pressure, cache eviction. NOT a simple code bug (would have failed at 5%).
+
+Action recommendation MUST adjust based on stage:
+- Failed at 5%: code-level bug in hot path → diff recent commits for slow logic
+- Failed at 20%: borderline regression → similar to 5% but check threshold tuning
+- Failed at 50%: LOAD-DEPENDENT → get heap/thread dump from green hosts BEFORE re-deploy; investigate resource limits
+- Failed at 100%: saturation edge case → check downstream services
+
+**NEVER suggest NON_CANARY=true bypass or disabling canary checks.** Per org runbook (`docs.StaggerProdPlusOneDeploy.md`), canary failures are real signals and must not be bypassed.
+
 **Action** — 3 paths (always include all 3):
 
 ```

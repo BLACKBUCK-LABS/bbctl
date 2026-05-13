@@ -7,6 +7,7 @@ from . import source_trace
 from . import github as gh
 from . import runbook
 from . import newrelic as nr
+from . import canary_analyzer
 
 
 # Class-specific runbook docs (in /opt/bbctl-rca/docops/). If file present,
@@ -58,8 +59,18 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
         snippet = mcp_tools.repo_read_file("jenkins_pipeline", "vars/createGreenInfra.groovy", 330, 345)
         parts.append(f"## createGreenInfra.groovy:330-345\n```\n{snippet}\n```")
 
-    # if canary_fail: load canary.groovy + threshold info + slow tx from NewRelic
+    # if canary_fail: pre-compute stage-level pass/fail + load info + slow tx
     if error_class == "canary_fail":
+        # Prefer full raw_log stashed on build_meta for accurate stage parse
+        bm_dict = build_meta or {}
+        full_log = bm_dict.get("_raw_log") or log_window
+        stage_analysis = canary_analyzer.analyze(full_log)
+        if stage_analysis["stages"]:
+            parts.append(
+                f"## canary.stage_analysis\n```json\n"
+                f"{json.dumps(stage_analysis, indent=2)}\n```"
+            )
+
         groovy = mcp_tools.repo_read_file("jenkins_pipeline", "vars/canary.groovy", 1, 80)
         parts.append(f"## canary.groovy:1-80\n```groovy\n{groovy[:1500]}\n```")
         parts.append(

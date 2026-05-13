@@ -87,7 +87,7 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     raw_log = await get_console_log(job, build, JENKINS_URL, JENKINS_AUTH)
     build_meta = await get_build_meta(job, build, JENKINS_URL, JENKINS_AUTH)
 
-    window = extract_window(raw_log)
+    window = extract_window(raw_log, deep=deep)
     clean_window, redactions = sanitize(window)
     error_class = classify(clean_window)
 

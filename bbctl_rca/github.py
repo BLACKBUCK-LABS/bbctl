@@ -13,9 +13,14 @@ commits using the bare SHA-only endpoint when possible (org-wide search).
 """
 import os
 import re
+import sys
 import httpx
 from . import cache
 from . import mcp_tools
+
+
+def _log(msg: str) -> None:
+    print(f"[github] {msg}", file=sys.stderr, flush=True)
 
 
 SHA_RE = re.compile(r"\b([0-9a-f]{40})\b")
@@ -131,15 +136,23 @@ async def _resolve_repo_for_sha(sha: str, service: str) -> tuple[str, dict] | No
 async def fetch_commits_from_log(log_window: str, service: str) -> list[dict]:
     """Extract SHAs from log, fetch commit details. Returns list of slim dicts."""
     if not GH_PAT:
+        _log("GH_PAT not set — skipping commit fetch")
         return []
     shas = _extract_shas(log_window)
     if not shas:
+        _log(f"no 40-char SHAs found in log for service={service}")
         return []
+
+    repos = _candidate_repos(service)
+    _log(f"service={service} shas={shas} candidate_repos={repos}")
 
     results = []
     for sha in shas:
         hit = await _resolve_repo_for_sha(sha, service)
         if hit:
-            _, commit = hit
+            repo, commit = hit
+            _log(f"sha={sha[:8]} -> {repo} ({commit.get('author')})")
             results.append(commit)
+        else:
+            _log(f"sha={sha[:8]} NOT FOUND in any candidate repo")
     return results

@@ -145,6 +145,7 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         "cost_usd": cost,
         "redactions": redactions,
         "log_window_chars": len(clean_window),
+        "log_window_sample": clean_window[:500],
         "rca": result,
     })
     await slack_post(result, job, build)

@@ -352,11 +352,13 @@ async def run_agent(
         _elide_old_tool_results(messages, current_iter=iteration,
                                 keep_recent=TRIM_HISTORY_AFTER)
 
-    # Final JSON parse
-    try:
-        rca = json.loads(final_text)
-    except (json.JSONDecodeError, TypeError):
-        _log(f"agent did not emit valid JSON; falling back to error stub")
+    # Final JSON parse — tolerate markdown code fences (LLMs sometimes wrap
+    # despite response_format=json_object). Log the raw text on failure so
+    # the actual model output is visible in journalctl for debugging.
+    rca = _parse_final_json(final_text)
+    if rca is None:
+        _log("agent did not emit valid JSON; falling back to error stub")
+        _log(f"raw final_text (first 800 chars): {(final_text or '')[:800]!r}")
         rca = {
             "summary": "Agent failed to emit valid JSON.",
             "failed_stage": build_meta.get("detected_failed_stage", "—"),
@@ -373,6 +375,52 @@ async def run_agent(
     rca["agent_tool_calls"] = tool_call_count
     _log(f"done. tool_calls={tool_call_count} tokens={total_in}+{total_out}")
     return rca
+
+
+def _parse_final_json(text: str | None) -> dict | None:
+    """Tolerantly parse the agent's final response.
+
+    Handles three real-world shapes:
+      1. Pure JSON object — `json.loads` directly.
+      2. Markdown-wrapped JSON — ```json\n{...}\n``` or ```\n{...}\n```.
+      3. Trailing/leading prose — find the largest `{...}` substring.
+    """
+    if not text:
+        return None
+    s = text.strip()
+    # 1. Direct parse
+    try:
+        v = json.loads(s)
+        if isinstance(v, dict):
+            return v
+    except json.JSONDecodeError:
+        pass
+    # 2. Strip code fences
+    if s.startswith("```"):
+        inner = s[3:].lstrip()
+        # optional 'json' tag
+        if inner.lower().startswith("json"):
+            inner = inner[4:].lstrip()
+        if inner.endswith("```"):
+            inner = inner[:-3].rstrip()
+        try:
+            v = json.loads(inner)
+            if isinstance(v, dict):
+                return v
+        except json.JSONDecodeError:
+            pass
+    # 3. Pull out first `{...}` block by brace matching
+    first = s.find("{")
+    last = s.rfind("}")
+    if first != -1 and last != -1 and last > first:
+        candidate = s[first:last + 1]
+        try:
+            v = json.loads(candidate)
+            if isinstance(v, dict):
+                return v
+        except json.JSONDecodeError:
+            pass
+    return None
 
 
 def _elide_old_tool_results(messages: list, *, current_iter: int, keep_recent: int) -> None:

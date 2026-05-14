@@ -350,35 +350,6 @@ footer .author strong { color: var(--fg-strong); font-weight: 600; }
   </section>
   {% endif %}
 
-  <!-- Metadata -->
-  <section class="card">
-    <div class="card-head"><h2 class="card-title">Metadata</h2></div>
-    <div class="card-body">
-      <dl class="meta">
-        <div class="kv">
-          <dt>request_id</dt>
-          <dd class="mono-val">{{ request_id }}</dd>
-        </div>
-        <div class="kv">
-          <dt>provider</dt>
-          <dd>{{ provider }}</dd>
-        </div>
-        <div class="kv">
-          <dt>redactions</dt>
-          <dd>{{ redactions or 'none' }}</dd>
-        </div>
-        <div class="kv">
-          <dt>log_window_chars</dt>
-          <dd>{{ log_window_chars }}</dd>
-        </div>
-        <div class="kv full">
-          <dt>recorded_at</dt>
-          <dd>{{ recorded_at }}</dd>
-        </div>
-      </dl>
-    </div>
-  </section>
-
   <footer>
     <div>BB-AI · powered by bbctl-rca · audit record stored on bbctl-ec2</div>
     <div class="author">Built by <strong>Hariharan G</strong>, DevOps</div>

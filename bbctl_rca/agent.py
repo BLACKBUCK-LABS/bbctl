@@ -38,6 +38,32 @@ def _log(msg: str) -> None:
     print(f"[agent] {msg}", file=sys.stderr, flush=True)
 
 
+# Forced final-answer prompt. Used both for "tool budget exhausted" and
+# "cost cap reached" paths. The explicit schema + "JSON object only, no
+# markdown" guard rails are necessary because gpt-4o sometimes emits a
+# markdown report ("### Summary\n...") when its prior tool call errored —
+# the response_format=json_object constraint alone hasn't been enough.
+_FORCE_FINAL_PROMPT = (
+    "Stop calling tools. Emit your FINAL answer NOW as a single JSON object "
+    "(NOT markdown, NOT ###headings — ONLY a JSON object that parses with "
+    "json.loads). Schema:\n"
+    "{\n"
+    '  "summary": "string",\n'
+    '  "failed_stage": "string",\n'
+    '  "error_class": "compliance|canary_fail|canary_script_error|health_check|aws_limit|parse_error|java_runtime|scm|network|dependency|ssm|timeout|unknown",\n'
+    '  "root_cause": "string with citations from files you read",\n'
+    '  "evidence": [{"source": "jenkins_log|jira.tickets|<repo>/<file>:<line>", "snippet": "string", "verified": true}],\n'
+    '  "suggested_fix": "string OR {Finding,Action,Verify}",\n'
+    '  "suggested_commands": [{"cmd": "string", "tier": "safe|restricted", "rationale": "string"}],\n'
+    '  "confidence": 0.0,\n'
+    '  "needs_deeper": false\n'
+    "}\n"
+    "If a tool errored earlier, that's fine — use the context you already "
+    "have (primer + earlier tool results) to compose the JSON. Output the "
+    "JSON object only — no prose before or after."
+)
+
+
 def _load_prompt(name: str) -> str:
     p = Path(__file__).parent.parent / "prompts" / name
     return p.read_text() if p.exists() else ""
@@ -282,7 +308,7 @@ async def run_agent(
             _log(f"cost cap hit at ${cost_so_far:.4f} — forcing final answer")
             messages.append({
                 "role": "user",
-                "content": "Cost cap reached. Emit final RCA JSON now using only the evidence you have.",
+                "content": _FORCE_FINAL_PROMPT,
             })
             response = client.chat.completions.create(
                 model=model, messages=messages,
@@ -304,7 +330,7 @@ async def run_agent(
             kwargs["response_format"] = {"type": "json_object"}
             messages.append({
                 "role": "user",
-                "content": "Tool budget exhausted. Emit final RCA JSON now.",
+                "content": _FORCE_FINAL_PROMPT,
             })
         else:
             kwargs["tools"] = TOOLS

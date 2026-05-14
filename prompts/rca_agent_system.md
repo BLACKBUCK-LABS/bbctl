@@ -88,6 +88,14 @@ When done, emit a single JSON object — no markdown, no commentary. Required ke
 - Never cite a file you didn't actually open through a tool call.
 - If you didn't open any source files (e.g. failed before tools could run), set `evidence` to `jenkins_log` snippets only and `needs_deeper: true`.
 
+**MANDATORY — if you called `repo_read_file` at least ONCE during the trace, your final `evidence` array MUST contain AT LEAST ONE entry whose `source` is a repo path `<repo>/<file>:<line>` pointing at a line YOU READ.** Reading files and then citing only `jenkins_log` wastes the trace and the budget. The repo citation is what makes this an agent-mode RCA worth its cost.
+
+## Wandering avoidance
+
+- DON'T call `repo_list_dir` unless you genuinely don't know where to look. The primer's `## source.trace` block already names candidate paths — start there.
+- DON'T call the same tool twice with identical args.
+- After `get_jenkins_job_config` + one `repo_read_file` of the entrypoint, you should know which `vars/<helper>.groovy` to drill into next. Jump straight to `repo_find_function` → `repo_read_file` of that helper. Don't list directories first.
+
 ## Action rules (same as one-shot)
 
 - For **compliance** failures: operator edits Jira (UI), NOT REST API curl. Never emit `curl -X PUT ... atlassian.net`.

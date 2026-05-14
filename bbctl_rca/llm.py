@@ -216,8 +216,16 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
                 if m:
                     log_dir_hint = m.group(1).rstrip("/")
 
+            # Org pattern: services log to `/var/log/blackbuck/<service>.log`
+            # when filebeat_log_path / log_path / log.dir aren't set.
+            org_log_fallback = f"/var/log/blackbuck/{service}.log"
             resolved = {
-                "log_path": log_path or "NOT_IN_CONFIG",
+                "log_path": log_path or org_log_fallback,
+                "log_path_source": (
+                    "filebeat_log_path/log_path" if log_path
+                    else ("server_command -Dlog.dir hint" if log_dir_hint
+                          else "org default /var/log/blackbuck/<service>.log")
+                ),
                 "log_dir_hint_from_server_command": log_dir_hint or "NOT_IN_CONFIG",
                 "port": port or "NOT_IN_CONFIG",
                 "health_check_path": hc_path or "NOT_IN_CONFIG",

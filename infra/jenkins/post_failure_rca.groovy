@@ -117,54 +117,22 @@ def renderRca(Map rca) {
     def stage = rca.failed_stage ?: '—'
     def summary = rca.summary ?: '—'
     def reqId = rca.request_id ?: '—'
+    def reportUrl = rcaReportUrl(reqId)
 
-    // Build the formatted console block
+    // Minimal console block — the full RCA lives in the HTML report. Keep
+    // the console output tight so operators don't have to scroll through a
+    // wall of text; one click on the report URL gets them the full view.
     def lines = []
     lines << ''
     lines << '╔══════════════════════════════════════════════════════════════════╗'
     lines << '║               Jenkins Build RCA — Powered by BB-AI               ║'
     lines << '╚══════════════════════════════════════════════════════════════════╝'
-    lines << "  class:       ${cls}"
-    lines << "  failed_stage:${stage}"
+    lines << "  class:        ${cls}"
+    lines << "  failed_stage: ${stage}"
+    lines << "  summary:      ${(summary as String).take(160)}"
     lines << ''
-    lines << "  Summary:"
-    lines << "    ${summary}"
-    lines << ''
-    lines << "  Root cause:"
-    wrap(rca.root_cause ?: '—', 70).each { lines << "    ${it}" }
-    lines << ''
-    lines << "  Suggested fix:"
-    def fix = rca.suggested_fix
-    if (fix instanceof Map) {
-        fix.each { k, v ->
-            lines << "    [${k}]"
-            wrap((v as String), 70).each { lines << "      ${it}" }
-        }
-    } else {
-        wrap((fix as String), 70).each { lines << "    ${it}" }
-    }
-    lines << ''
-    def cmds = rca.suggested_commands ?: []
-    if (cmds) {
-        lines << "  Commands:"
-        cmds.eachWithIndex { c, i ->
-            lines << "    ${i + 1}. [${c.tier ?: '?'}] ${c.cmd ?: ''}"
-            if (c.rationale) lines << "       → ${c.rationale}"
-        }
-        lines << ''
-    }
-    def ev = rca.evidence ?: []
-    if (ev) {
-        lines << "  Evidence:"
-        ev.take(5).each { e ->
-            def verified = e.verified == true ? '✓' : (e.verified == false ? '✗' : '?')
-            lines << "    [${verified}] ${e.source}: ${(e.snippet ?: '').take(120)}"
-        }
-        lines << ''
-    }
-    def reportUrl = rcaReportUrl(reqId)
-    lines << "  request_id: ${reqId}"
-    lines << "  📊 report:  ${reportUrl}"
+    lines << "  Full RCA report: ${reportUrl}"
+    lines << "  request_id:      ${reqId}"
     lines << ''
 
     echo lines.join('\n')
@@ -178,8 +146,8 @@ def renderRca(Map rca) {
         shortSummary = shortSummary.substring(0, 110).trim() + '…'
     }
     def descLines = []
-    descLines << "<b>🤖 BB-AI:</b> <code>${cls}</code> · <code>${stage}</code>"
-    descLines << "${escapeHtml(shortSummary)} <a href='${reportUrl}' target='_blank'><b>📊 Open RCA →</b></a>"
+    descLines << "<b>BB-AI:</b> <code>${cls}</code> · <code>${stage}</code>"
+    descLines << "${escapeHtml(shortSummary)} <a href='${reportUrl}' target='_blank'><b>Open RCA →</b></a>"
     currentBuild.description = descLines.join('<br/>')
 }
 

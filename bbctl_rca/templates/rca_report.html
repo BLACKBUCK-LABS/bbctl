@@ -4,79 +4,152 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>BB-AI RCA · {{ service }} #{{ build }}</title>
+<link rel="preconnect" href="https://rsms.me/" />
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
 <script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ["Inter var", "Inter", "system-ui", "sans-serif"],
+          mono: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "monospace"],
+        },
+      },
+    },
+  };
+</script>
 <style>
-  /* Subtle class-color tags */
-  .badge { @apply px-2 py-0.5 rounded text-xs font-mono font-semibold; }
+  html { font-feature-settings: "cv02", "cv03", "cv04", "cv11"; }
+  body { font-family: "Inter var", "Inter", system-ui, sans-serif; }
+  .card { @apply bg-white rounded-xl border border-slate-200 shadow-sm; }
+  .card-header { @apply px-6 py-4 border-b border-slate-100 flex items-center justify-between; }
+  .card-title { @apply text-sm font-semibold tracking-wide uppercase text-slate-500; }
+  .card-body { @apply px-6 py-5; }
+  .pill { @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium; }
+  .pill-mono { @apply font-mono text-xs; }
+  .kv-key { @apply text-xs font-mono text-slate-500 uppercase tracking-wider; }
+  .kv-val { @apply text-sm text-slate-800; }
   pre code { white-space: pre-wrap; word-break: break-word; }
-  .copy-btn { @apply text-xs text-slate-400 hover:text-slate-200 ml-2 cursor-pointer; }
+  .cmd-block { @apply bg-slate-900 text-slate-100 rounded-lg overflow-hidden ring-1 ring-slate-800; }
+  .copy-btn { @apply text-xs text-slate-400 hover:text-white px-2 py-1 rounded transition-colors cursor-pointer select-none; }
   .copy-btn.copied { @apply text-emerald-400; }
+  .anchor-link { @apply text-sm text-slate-500 hover:text-blue-600 transition-colors; }
+  /* Subtle background pattern */
+  body { background-image: radial-gradient(rgb(226 232 240) 1px, transparent 1px); background-size: 22px 22px; background-attachment: fixed; }
 </style>
 </head>
-<body class="bg-slate-50 text-slate-800 font-sans">
-<div class="max-w-5xl mx-auto px-6 py-8">
+<body class="text-slate-800 min-h-screen">
 
-  <!-- Header -->
-  <header class="flex flex-wrap items-baseline gap-3 mb-2">
-    <span class="text-2xl">🤖</span>
-    <h1 class="text-2xl font-semibold">BB-AI Auto-RCA</h1>
-    <span class="text-slate-500">·</span>
-    <a href="{{ build_url }}" class="text-blue-600 hover:underline font-mono text-sm">{{ job }} #{{ build }}</a>
-  </header>
-  <p class="text-sm text-slate-500 mb-6">
-    Service <code class="font-mono bg-slate-100 px-1 rounded">{{ service }}</code>
-    · Generated {{ recorded_at }}
-  </p>
-
-  <!-- Top-line: class / stage -->
-  <div class="flex flex-wrap gap-2 mb-6">
-    <span class="badge {{ class_color }}">class · {{ error_class }}</span>
-    <span class="badge bg-slate-200 text-slate-700">stage · {{ failed_stage }}</span>
-    {% if needs_deeper %}<span class="badge bg-amber-200 text-amber-800">needs deeper analysis</span>{% endif %}
+<!-- Sticky header bar -->
+<header class="sticky top-0 z-10 bg-white/85 backdrop-blur border-b border-slate-200">
+  <div class="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between gap-4">
+    <div class="flex items-center gap-3 min-w-0">
+      <div class="font-semibold tracking-tight whitespace-nowrap">BB-AI <span class="text-slate-400 font-normal">/ Auto-RCA</span></div>
+      <span class="text-slate-300">·</span>
+      <a href="{{ build_url }}" class="font-mono text-sm text-slate-600 hover:text-blue-600 truncate">{{ job }} #{{ build }}</a>
+    </div>
+    <div class="hidden md:flex items-center gap-3">
+      <a href="#summary" class="anchor-link">Summary</a>
+      <a href="#root-cause" class="anchor-link">Root cause</a>
+      <a href="#suggested-fix" class="anchor-link">Fix</a>
+      {% if suggested_commands %}<a href="#commands" class="anchor-link">Commands</a>{% endif %}
+      {% if evidence %}<a href="#evidence" class="anchor-link">Evidence</a>{% endif %}
+    </div>
   </div>
+</header>
+
+<main class="max-w-6xl mx-auto px-6 py-8">
+
+  <!-- Hero card: title + classification at a glance -->
+  <section class="card mb-6">
+    <div class="card-body">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="pill {{ class_color }}">{{ error_class }}</span>
+            <span class="pill bg-slate-100 text-slate-700">{{ failed_stage }}</span>
+            {% if needs_deeper %}
+              <span class="pill bg-amber-100 text-amber-800 ring-1 ring-amber-200">needs deeper analysis</span>
+            {% endif %}
+          </div>
+          <h1 class="text-2xl font-semibold tracking-tight text-slate-900">Root-cause analysis</h1>
+          <p class="text-sm text-slate-500 mt-1">
+            Service <code class="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">{{ service }}</code>
+            · Generated {{ recorded_at }}
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 shrink-0">
+          <a href="{{ build_url }}" class="pill bg-slate-100 text-slate-700 hover:bg-slate-200">↗ Jenkins build</a>
+          <a href="{{ build_url }}console" class="pill bg-slate-100 text-slate-700 hover:bg-slate-200">↗ Console log</a>
+          <a href="/rca/v1/report/{{ request_id }}.json" class="pill bg-slate-100 text-slate-700 hover:bg-slate-200">↗ Raw JSON</a>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <!-- Summary -->
-  <section class="bg-white rounded-lg border border-slate-200 p-5 mb-5 shadow-sm">
-    <h2 class="text-lg font-semibold mb-2">Summary</h2>
-    <p class="text-slate-700 leading-relaxed">{{ summary }}</p>
+  <section id="summary" class="card mb-6 scroll-mt-20">
+    <div class="card-header">
+      <h2 class="card-title">Summary</h2>
+    </div>
+    <div class="card-body">
+      <p class="text-base text-slate-700 leading-relaxed">{{ summary }}</p>
+    </div>
   </section>
 
-  <!-- Root cause -->
-  <section class="bg-white rounded-lg border border-slate-200 p-5 mb-5 shadow-sm">
-    <h2 class="text-lg font-semibold mb-2">Root cause</h2>
-    <p class="text-slate-700 leading-relaxed whitespace-pre-wrap">{{ root_cause }}</p>
-  </section>
+  <!-- Two-column: root cause + suggested fix -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <section id="root-cause" class="card scroll-mt-20">
+      <div class="card-header">
+        <h2 class="card-title">Root cause</h2>
+      </div>
+      <div class="card-body">
+        <p class="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{{ root_cause }}</p>
+      </div>
+    </section>
 
-  <!-- Suggested fix -->
-  <section class="bg-white rounded-lg border border-slate-200 p-5 mb-5 shadow-sm">
-    <h2 class="text-lg font-semibold mb-2">Suggested fix</h2>
-    {% if fix_is_map %}
-      {% for key, value in fix_items %}
-        <div class="mb-3">
-          <div class="text-xs font-mono uppercase text-slate-500 tracking-wider mb-1">{{ key }}</div>
-          <p class="text-slate-700 whitespace-pre-wrap">{{ value }}</p>
-        </div>
-      {% endfor %}
-    {% else %}
-      <p class="text-slate-700 whitespace-pre-wrap">{{ suggested_fix }}</p>
-    {% endif %}
-  </section>
+    <section id="suggested-fix" class="card scroll-mt-20">
+      <div class="card-header">
+        <h2 class="card-title">Suggested fix</h2>
+      </div>
+      <div class="card-body">
+        {% if fix_is_map %}
+          <dl class="space-y-4">
+            {% for key, value in fix_items %}
+              <div>
+                <dt class="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">{{ key }}</dt>
+                <dd class="text-sm text-slate-700 whitespace-pre-wrap">{{ value }}</dd>
+              </div>
+            {% endfor %}
+          </dl>
+        {% else %}
+          <p class="text-sm text-slate-700 whitespace-pre-wrap">{{ suggested_fix }}</p>
+        {% endif %}
+      </div>
+    </section>
+  </div>
 
   <!-- Suggested commands -->
   {% if suggested_commands %}
-  <section class="bg-white rounded-lg border border-slate-200 p-5 mb-5 shadow-sm">
-    <h2 class="text-lg font-semibold mb-3">Suggested commands</h2>
-    <div class="space-y-3">
+  <section id="commands" class="card mb-6 scroll-mt-20">
+    <div class="card-header">
+      <h2 class="card-title">Suggested commands</h2>
+      <span class="text-xs text-slate-400">{{ suggested_commands|length }} suggestion(s)</span>
+    </div>
+    <div class="card-body space-y-3">
       {% for c in suggested_commands %}
-      <div class="bg-slate-900 rounded-md p-3 flex items-start justify-between">
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="text-xs font-mono px-1.5 py-0.5 rounded {{ 'bg-emerald-700 text-emerald-100' if c.tier == 'safe' else 'bg-amber-700 text-amber-100' }}">{{ c.tier }}</span>
-            <span class="text-xs text-slate-400">{{ c.rationale }}</span>
+      <div class="cmd-block">
+        <div class="flex items-center justify-between px-3 py-2 border-b border-slate-800 bg-slate-800/60">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="pill {{ 'bg-emerald-900 text-emerald-200' if c.tier == 'safe' else 'bg-amber-900 text-amber-200' }} pill-mono">
+              {{ c.tier }}
+            </span>
+            <span class="text-xs text-slate-300 truncate">{{ c.rationale }}</span>
           </div>
-          <pre class="text-emerald-300 text-sm font-mono"><code id="cmd-{{ loop.index }}">{{ c.cmd }}</code></pre>
+          <button class="copy-btn" onclick="copyCmd('cmd-{{ loop.index }}', this)">Copy</button>
         </div>
-        <button class="copy-btn" onclick="copyCmd('cmd-{{ loop.index }}', this)">copy</button>
+        <pre class="px-3 py-2.5 text-sm leading-relaxed"><code id="cmd-{{ loop.index }}" class="text-emerald-300">{{ c.cmd }}</code></pre>
       </div>
       {% endfor %}
     </div>
@@ -85,55 +158,79 @@
 
   <!-- Evidence -->
   {% if evidence %}
-  <section class="bg-white rounded-lg border border-slate-200 p-5 mb-5 shadow-sm">
-    <h2 class="text-lg font-semibold mb-3">Evidence</h2>
-    <ul class="space-y-2">
-      {% for e in evidence %}
-      <li class="flex items-start gap-2">
-        <span class="mt-0.5">
-          {% if e.verified == True %}<span class="text-emerald-600">✓</span>
-          {% elif e.verified == False %}<span class="text-red-600">✗</span>
-          {% else %}<span class="text-slate-400">?</span>{% endif %}
-        </span>
-        <div class="flex-1 min-w-0">
-          <div class="text-xs font-mono text-slate-500">{{ e.source }}</div>
-          <div class="text-sm text-slate-700 break-words">{{ e.snippet }}</div>
-        </div>
-      </li>
-      {% endfor %}
-    </ul>
+  <section id="evidence" class="card mb-6 scroll-mt-20">
+    <div class="card-header">
+      <h2 class="card-title">Evidence</h2>
+      <span class="text-xs text-slate-400">{{ evidence|length }} item(s)</span>
+    </div>
+    <div class="card-body">
+      <ul class="divide-y divide-slate-100">
+        {% for e in evidence %}
+        <li class="py-3 first:pt-0 last:pb-0 flex items-start gap-3">
+          <span class="mt-0.5 shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-xs font-semibold
+            {% if e.verified == True %}bg-emerald-100 text-emerald-700
+            {% elif e.verified == False %}bg-red-100 text-red-700
+            {% else %}bg-slate-100 text-slate-500{% endif %}">
+            {% if e.verified == True %}✓
+            {% elif e.verified == False %}✗
+            {% else %}?{% endif %}
+          </span>
+          <div class="flex-1 min-w-0">
+            <div class="text-xs font-mono text-slate-500 mb-0.5">{{ e.source }}</div>
+            <div class="text-sm text-slate-700 break-words">{{ e.snippet }}</div>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
   </section>
   {% endif %}
 
-  <!-- Metadata / footer -->
-  <section class="bg-white rounded-lg border border-slate-200 p-5 mb-5 shadow-sm text-sm text-slate-600">
-    <h2 class="text-lg font-semibold mb-3 text-slate-800">Metadata</h2>
-    <dl class="grid grid-cols-1 sm:grid-cols-2 gap-y-1.5">
-      <dt class="font-mono text-slate-500">request_id</dt><dd class="font-mono text-xs break-all">{{ request_id }}</dd>
-      <dt class="font-mono text-slate-500">provider</dt><dd>{{ provider }}</dd>
-      <dt class="font-mono text-slate-500">redactions</dt><dd>{{ redactions or 'none' }}</dd>
-      <dt class="font-mono text-slate-500">log_window_chars</dt><dd>{{ log_window_chars }}</dd>
-      <dt class="font-mono text-slate-500">recorded_at</dt><dd>{{ recorded_at }}</dd>
-    </dl>
-    <div class="mt-4 flex gap-3">
-      <a href="{{ build_url }}" class="text-blue-600 hover:underline text-sm">Jenkins build →</a>
-      <a href="{{ build_url }}console" class="text-blue-600 hover:underline text-sm">Console log →</a>
-      <a href="/rca/v1/report/{{ request_id }}.json" class="text-blue-600 hover:underline text-sm">Raw JSON →</a>
+  <!-- Metadata -->
+  <section class="card mb-6">
+    <div class="card-header">
+      <h2 class="card-title">Metadata</h2>
+    </div>
+    <div class="card-body">
+      <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+        <div>
+          <dt class="kv-key">request_id</dt>
+          <dd class="kv-val font-mono text-xs break-all mt-0.5">{{ request_id }}</dd>
+        </div>
+        <div>
+          <dt class="kv-key">provider</dt>
+          <dd class="kv-val mt-0.5">{{ provider }}</dd>
+        </div>
+        <div>
+          <dt class="kv-key">redactions</dt>
+          <dd class="kv-val mt-0.5">{{ redactions or 'none' }}</dd>
+        </div>
+        <div>
+          <dt class="kv-key">log_window_chars</dt>
+          <dd class="kv-val mt-0.5">{{ log_window_chars }}</dd>
+        </div>
+        <div class="sm:col-span-2">
+          <dt class="kv-key">recorded_at</dt>
+          <dd class="kv-val mt-0.5">{{ recorded_at }}</dd>
+        </div>
+      </dl>
     </div>
   </section>
 
-  <footer class="text-xs text-slate-400 mt-8">
-    BB-AI · powered by bbctl-rca · audit record stored on bbctl-ec2
+  <footer class="mt-12 pt-6 border-t border-slate-200 text-xs text-slate-400 space-y-1">
+    <div>BB-AI · powered by bbctl-rca · audit record stored on bbctl-ec2</div>
+    <div>Built by <span class="font-medium text-slate-600">Hariharan G</span>, DevOps</div>
   </footer>
-</div>
+</main>
 
 <script>
 function copyCmd(id, btn) {
   const text = document.getElementById(id).innerText;
   navigator.clipboard.writeText(text).then(() => {
     btn.classList.add('copied');
-    btn.innerText = 'copied ✓';
-    setTimeout(() => { btn.classList.remove('copied'); btn.innerText = 'copy'; }, 1500);
+    const orig = btn.innerText;
+    btn.innerText = 'Copied ✓';
+    setTimeout(() => { btn.classList.remove('copied'); btn.innerText = orig; }, 1500);
   });
 }
 </script>

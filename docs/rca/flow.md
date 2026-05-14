@@ -1,714 +1,374 @@
-# Phase 1 — Flow Charts and Edge Cases
+# BB-AI Auto-RCA — End-to-end Flow
 
-Companion to `plan.md`. Use this to drive implementation.
+Companion to `bbctlrca.md` (which is the changelog). This doc explains **how** an Auto-RCA happens, from Jenkins pipeline failure through to the operator seeing a Slack message or HTML report.
+
+For history of why each piece was added, see numbered items 1–51 in `bbctlrca.md`.
 
 ---
 
-## 1. Master flow (RCA — auto webhook or manual CLI)
+## High-level diagram
 
 ```
-                            ┌──────────────────────────────┐
-                            │           ENTRY              │
-                            │                              │
-                            │  A) Jenkins post-build       │
-                            │     groovy: on FAILURE →     │
-                            │     POST /v1/rca/webhook     │
-                            │     HMAC-signed body         │
-                            │                              │
-                            │  B) Dev runs bbctl rca       │
-                            │     POST /v1/rca             │
-                            │     JWT auth                 │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │ 1. AUTH + DEDUP              │
-                            │    - verify HMAC or JWT      │
-                            │    - request_id = uuid()     │
-                            │    - dedup check: same       │
-                            │      (job,build,user) in     │
-                            │      last 60s? → return cached│
-                            │    - cost-cap check: daily   │
-                            │      spend < $20? → 429      │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │ 2. RESOLVE BUILD             │
-                            │    Jenkins MCP get_build     │
-                            │    Cache: tool_cache lookup  │
-                            │    (immutable when done)     │
-                            └──────────────┬───────────────┘
-              ┌────────────────────────────┼────────────────────────────┐
-              │                            │                            │
-        result=null            result=SUCCESS/ABORTED          result=FAILURE/UNSTABLE
-              │                            │                            │
-              ▼                            ▼                            ▼
-        409 build_not_found       skip with "not failed"        ┌───────────────┐
-                                  202 (audit only)              │ CONTINUE      │
-                                                                └───────┬───────┘
-                                                                        ▼
-                            ┌──────────────────────────────┐
-                            │ 3. FETCH LOG (Jenkins MCP)   │
-                            │    get_log tail=2000 lines   │
-                            │    Cache: tool_cache         │
-                            │    If MCP 5xx → retry x3     │
-                            │    If still fail → 502 +     │
-                            │    audit                     │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │ 4. LOG WINDOW EXTRACT        │
-                            │    Regex hit ERROR/FAIL/etc  │
-                            │    Pull ±50 lines each       │
-                            │    + last 50 lines           │
-                            │    Cap 300 lines / ~2k tok   │
-                            │    No hits? → use last 200   │
-                            │    lines (heuristic fallback)│
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │ 5. SANITIZE                  │
-                            │    Apply sanitize_rules.yml  │
-                            │    Track redaction count     │
-                            │    redaction_rate > 50%?     │
-                            │    → flag "low_signal" but   │
-                            │    continue                  │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │ 6. CLASSIFY (regex table)    │
-                            │    → enum: parse_error |     │
-                            │      java_runtime | ssm |    │
-                            │      scm | network | etc.    │
-                            │    Multiple matches? → take  │
-                            │    earliest in log           │
-                            │    No match → 'unknown'      │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │ 7. BUILD RETRIEVAL QUERY     │
-                            │    Top 5 unique error lines  │
-                            │    + identifiers extracted   │
-                            │    via regex (file paths,    │
-                            │    fn names, error strings)  │
-                            │    Cap query at ~500 tokens  │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │ 8. EMBED QUERY               │
-                            │    Gemini Embedding 001 API  │
-                            │    768-dim                   │
-                            │    On 429: backoff x3        │
-                            │    On 5xx: fail gracefully   │
-                            │    → continue with BM25 only │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │ 9. HYBRID RETRIEVE (PG)      │
-                            │    pgvector cosine top-30    │
-                            │    + tsvector BM25 top-30    │
-                            │    RRF merge k=60 → top-10   │
-                            │    KB filter from classifier │
-                            │    Empty result? → broaden   │
-                            │    to all KBs + retry        │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │10. PROMPT ASSEMBLY           │
-                            │    Block A (cached 1h TTL):  │
-                            │      system + schema +       │
-                            │      tools + repo manifest   │
-                            │    Block B (per-query):      │
-                            │      class + meta + log +    │
-                            │      top-10 chunks + Q       │
-                            │    Cap total input at 50k    │
-                            │    If > 50k → truncate       │
-                            │    oldest chunks first       │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │11. CLAUDE SONNET 4.6 + MCP   │
-                            │    Tools registered:         │
-                            │      jenkins.* (read-only)   │
-                            │      bbctl.* (read-only)     │
-                            │    Tool budget: 4 calls      │
-                            │    Streaming on              │
-                            │    response_format=JSON schema│
-                            │    Timeout 60s per call      │
-                            │    On 429: backoff x3        │
-                            │    On 5xx: fail to 502       │
-                            │    Tool loop count > 4 →     │
-                            │    force stop with current   │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │12. PARSE JSON                │
-                            │    Validate vs RCA_SCHEMA    │
-                            │    Malformed? → retry x1     │
-                            │    Still bad? → return raw   │
-                            │    text + 'schema_invalid'   │
-                            │    flag                      │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │13. CONFIDENCE GATE           │
-                            │    if conf >= 0.7 AND not    │
-                            │    needs_deeper → DONE       │
-                            │    else if not opus_used     │
-                            │    AND cost_ok →             │
-                            │    re-run step 10-12 with    │
-                            │    Opus 4.7, budget=8        │
-                            │    Opus failed too? → return │
-                            │    Sonnet result + low_conf  │
-                            │    flag                      │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │14. PUBLISH (parallel)        │
-                            │    a. Slack #ci-failures     │
-                            │       blocks format          │
-                            │       on fail: log + retry   │
-                            │       to deadletter file     │
-                            │    b. CLI streamed render    │
-                            │       (only for /v1/rca,     │
-                            │       not webhook)           │
-                            │    c. S3 audit write         │
-                            │       on fail: write to      │
-                            │       /var/log/bbctl/audit/  │
-                            │       deadletter, alarm      │
-                            └──────────────┬───────────────┘
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │ RETURN 200 + RCA JSON        │
-                            └──────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 1. Pipeline failure → triggerRcaWebhook() POSTs to /rca/v1/rca/webhook  │
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 2. bbctl-rca: verify HMAC, dedup, daily cap, 24h cache lookup           │
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 3. Hybrid freshness — git fetch+reset jenkins_pipeline + InfraComposer  │
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 4. Pull Jenkins data: consoleText + api/json + wfapi/describe           │
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 5. extract_window() + sanitize() + prepend stage errors                 │
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 6. classify(clean_window) → class ∈ {health_check, scm, … , unknown}    │
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 7. Dispatch: AGENT_CLASSES → agent loop; else → one-shot LLM            │
+└────────────────────┬─────────────────────────────────┬──────────────────┘
+                     ▼                                 ▼
+       ┌──────────────────────────┐     ┌──────────────────────────────┐
+       │ 7a. AGENT (multi-step)   │     │ 7b. ONE-SHOT (single call)   │
+       │  • primer + tools list   │     │  • primer with runbook       │
+       │  • loop ≤ 6 iters /      │     │  • single gpt-4o call        │
+       │    ≤ $0.25               │     │  • response_format=json      │
+       │  • tool_choice forces    │     │                              │
+       │    final JSON at end     │     │                              │
+       └────────────┬─────────────┘     └────────────┬─────────────────┘
+                    └────────────────┬───────────────┘
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 8. _parse_final_json() — tolerant: JSON / markdown-fenced / brace-extract│
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 9. audit.write() + cache.put() + return RCA map to pipeline             │
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 10. Surfaces: Jenkins console, sidebar, Slack, VictorOps, HTML report   │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Docs flow (simpler)
+## Step-by-step
 
-```
-bbctl docs "<question>"
-   │
-   ▼
-1. AUTH (JWT) + cost-cap check
-   │
-   ▼
-2. SANITIZE question (in case user pastes secret accidentally)
-   │
-   ▼
-3. EMBED question (Gemini)
-   │
-   ▼
-4. PG hybrid retrieve on kb='docops' only, top-5
-   │
-   │ empty result? → return "no relevant doc found"
-   │
-   ▼
-5. PROMPT (cached system+manifest; uncached chunks+Q)
-   │
-   ▼
-6. Claude Sonnet 4.6 + bbctl-mcp tools (docs.get only)
-   tool budget: 2
-   │
-   ▼
-7. PARSE + render markdown
-   │
-   ▼
-8. Audit + return
+### 1. Pipeline failure → webhook POST
+
+File: `jenkins_pipeline/vars/triggerRcaWebhook.groovy`
+
+When a stage fails, the `post.failure` block calls `triggerRcaWebhook()`. Payload:
+
+```json
+{"job": "<job_name>", "build": <build_number>, "service": "<service>"}
 ```
 
-Lighter than RCA — no Jenkins, no log window, no classifier, narrower toolset.
+Signed with HMAC-SHA256 using the `bbctl-webhook-secret` Jenkins credential. Header `X-Bbctl-Signature: sha256=<digest>`.
 
----
+The pipeline waits up to 60s for the response. Service-side LLM call is the slow part — pipeline blocks on it.
 
-## 3. Ingestion flow (background)
+### 2. Webhook receiver — auth + caching
 
-### Repo sync (nightly 02:00 UTC)
+File: `bbctl_rca/main.py` (`/rca/v1/rca/webhook` route)
 
-```
-systemd: bbctl-repo-sync.service
-   │
-   ▼
-For each repo in [jenkins_pipeline, infra-compose]:
-   │
-   ├─ git fetch + git pull (timeout 60s)
-   │    fail? → log + alarm + skip this repo
-   │
-   ├─ git diff HEAD~ HEAD --name-only → changed files
-   │    first run? → all files
-   │
-   ├─ For each changed file:
-   │    │
-   │    ├─ Read file (skip > 1 MB)
-   │    │    binary? → skip
-   │    │    encoding fail? → skip + log
-   │    │
-   │    ├─ SHA-256 of normalized content
-   │    │
-   │    ├─ Doc-level dedup:
-   │    │   SELECT 1 FROM documents WHERE content_hash=$1
-   │    │   exists? → skip (unchanged)
-   │    │
-   │    ├─ Chunk (recursive 512 tok, 15% overlap)
-   │    │   markdown → header-aware
-   │    │   code → block-aware (basic, full tree-sitter Phase 2)
-   │    │
-   │    ├─ For each chunk:
-   │    │   │
-   │    │   ├─ SHA-256 of chunk content
-   │    │   │
-   │    │   ├─ Chunk-level dedup:
-   │    │   │   SELECT 1 FROM chunks WHERE content_hash=$1
-   │    │   │   exists? → skip
-   │    │   │
-   │    │   ├─ Add to embed batch (50 chunks per Gemini call)
-   │    │
-   │    └─ Flush remaining batch
-   │
-   ├─ INSERT batch into documents + chunks tables
-   │
-   └─ Update tsvector via trigger
-       (or batch UPDATE after insert)
+- HMAC verify against `WEBHOOK_SECRET` env var (loaded from AWS Secrets Manager via `infra/scripts/bbctl-rca-start.sh`).
+- Dedup: `is_duplicate(job, build)` — if same job+build currently being processed, return the running `request_id`.
+- 24h cache: `get_rca(job, build)` — if same job+build was RCA'd in last 24h, return cached with `from_cache: true`. `deep=true` bypasses.
+- Daily cost cap: `over_daily_cap()` in `cache.py` — sum of today's RCA costs > daily limit → HTTP 429.
+- Generate `request_id` (UUID).
 
-Refresh repo file manifest cache (for Claude prompt):
-   SELECT source_path, COUNT(*) FROM chunks
-   WHERE kb=$1 GROUP BY source_path
-   → write to /var/lib/bbctl/manifest_{kb}.txt
+### 3. Hybrid git freshness pull
+
+File: `bbctl_rca/git_fresh.py`
+
+Called once per RCA before any tool context built:
+
+```python
+freshness = ensure_fresh_many([
+    ("jenkins_pipeline", None),
+    ("InfraComposer", None),
+])
 ```
 
-### Docops S3 sync (S3 event → cron hourly fallback)
+Per repo:
+- `git fetch --depth 1 origin/<branch>` then `git reset --hard origin/<branch>`
+- 3s timeout — falls back to on-disk copy on failure
+- 60s in-memory dedup — concurrent RCAs share a single fetch
+- Self-heals perms (`chown -R ubuntu:ubuntu` + `chmod -R u+w`) before each op
 
-```
-Option A — S3 event Lambda (recommend):
-   S3:ObjectCreated → SNS → HTTPS POST /v1/ingest/doc
-   bbctl backend fetches + ingests same as above
+Result attached to audit as `repos_freshness`. See `bbctlrca.md` item 29.
 
-Option B — Cron hourly (simpler Phase 1):
-   systemd: bbctl-docops-sync.service hourly
-   aws s3 sync s3://docops-doc-storage/docs/ /var/cache/bbctl/docs/
-   Then run repo-sync-style flow on /var/cache/bbctl/docs/
-```
+### 4. Pull Jenkins data
 
-Phase 1 default: **Option B**.
+File: `bbctl_rca/jenkins.py`
 
-### Build history sync (hourly)
+Three REST calls:
 
-```
-systemd: bbctl-history-sync.service hourly
-   │
-   ▼
-Query Jenkins MCP get_queue + get_builds in last hour
-   filter result IN (FAILURE, UNSTABLE)
-   │
-   ▼
-For each new failed build:
-   │
-   ├─ Jenkins MCP get_log full
-   ├─ Sanitize
-   ├─ Save to s3://docops-doc-storage/build-history/{job}/{build}.txt
-   ├─ Ingest (chunk + dedup + embed + insert) into kb='build-history'
-   └─ Metadata: {job, build, sha, failure_class, ingested_at}
-```
-
----
-
-## 4. Edge cases (comprehensive)
-
-### 4.1 Auth + Entry
-
-| Case | Detection | Action |
+| Call | Returns | Use |
 |---|---|---|
-| HMAC signature mismatch on webhook | `hmac.Equal` fails | 401 + log + count metric |
-| JWT expired / invalid on CLI | SDK verify fails | 401 + suggest `bbctl login` |
-| Duplicate webhook (Jenkins retries) | dedup table: (job,build) in last 60s | return prior `request_id` 200 (idempotent) |
-| Concurrent same (job,build) from CLI + webhook | DB unique constraint on `audit(job,build)` | second loses, returns first's result |
-| Daily cost cap hit | counter > $20 today | 429 + Slack alert dev |
-| Request body too large (>1 MB) | http body limit | 413 |
-| Malformed JSON body | unmarshal fails | 400 |
+| `get_console_log(job, build)` → `/job/<j>/<b>/consoleText` | raw text log | bulk evidence |
+| `get_build_meta(job, build)` → `/job/<j>/<b>/api/json` | build URL, timestamps | metadata |
+| `get_stage_errors(job, build)` → `/job/<j>/<b>/wfapi/describe` | per-stage status + `error.message` | exception trace |
 
-### 4.2 Jenkins MCP
+**Why wfapi**: `consoleText` reflects flushed console output only. When webhook fires inside `post.failure`, Jenkins has NOT yet emitted the trailing `Also: groovy.lang.MissingMethodException ... at WorkflowScript:330` block — that lands AFTER the post block completes. `wfapi/describe` populates each stage's `error.message` as soon as the stage transitions to FAILED, independent of console buffer timing. See `bbctlrca.md` item 50.
 
-| Case | Detection | Action |
-|---|---|---|
-| Jenkins master down | TCP refused / 5xx | retry 3 × exp-backoff (1s, 4s, 16s), then 502 |
-| MCP plugin not installed | `/mcp-server/mcp` returns 404 | 502 + clear error "MCP plugin missing" |
-| `bbctl-rca-bot` user revoked | 403 from Jenkins | 502 + alarm DevOps |
-| Build not found (wrong job/build) | result=null | 404 + audit only |
-| Build still running | result=null AND building=true | 409 + "build in progress, retry later" |
-| Build aborted (not failed) | result=ABORTED | 200 + skip RCA + audit |
-| Build success (called by mistake) | result=SUCCESS | 200 + skip RCA + audit |
-| Log doesn't exist (very old build) | get_log returns empty | use metadata only + flag "no_log" |
-| Log truncated mid-stack-trace | unmatched braces / dangling lines | accept, classify on what we have |
-| Log size huge (>10 MB) | response too big | use paginated `start=-2000` (last 2000 lines only) |
+### 5. Window extraction + sanitization
 
-### 4.3 Log window extraction
+Files: `bbctl_rca/window.py`, `bbctl_rca/sanitize.py`
 
-| Case | Detection | Action |
-|---|---|---|
-| No regex hits | regex matches = 0 | fallback: use last 200 lines |
-| Hits all in last 50 lines | dedup overlaps fully | use last 200 lines |
-| ANSI escape codes everywhere | strip via `strip-ansi` Go lib | clean before window extract |
-| Non-UTF8 bytes in log | scan + replace `�` | continue, log warning |
-| Log lines >10k chars (no newline, e.g. single-line stack trace) | split heuristic on `at `, `: `, `Caused by:` | best-effort |
-| Multiple distinct errors (jq + java OOM in one build) | classify on FIRST error, attach others as evidence | document in JSON output |
-| `parse error` repeating 100x | dedupe identical lines, keep one | reduces noise |
+- `extract_window(raw_log, deep=deep)` — finds the failure marker (first `Error in`, `script returned exit code`, `BUILD FAILED`) and takes ±N lines around it (wider for `deep=true`).
+- Prepend wfapi stage errors as a block at the top so classifier + LLM always see the real exception:
+  ```
+  === Failed stages (from Jenkins workflow API) ===
+  Stage 'Jira Details' status=FAILED
+  groovy.lang.MissingMethodException: No signature of method: ...
+  ```
+- `sanitize(window)` — drops noise: SSH host-key mismatch, NewRelic appName-404, JVM `-XX:+HeapDumpOnOutOfMemoryError` flags. Collapses iteration spam (50× `unhealthy` lines → first+last+`[N-2 elided]`). Returns `(clean_window, redactions_list)`.
 
-### 4.4 Sanitize
+`extract_failed_stage(raw_log)` runs separately for `build_meta.detected_failed_stage`.
 
-| Case | Detection | Action |
-|---|---|---|
-| Sanitize redacts >50% of window | redaction_count / line_count > 0.5 | flag `low_signal=true`, continue |
-| Sanitize regex catastrophic backtrack | exec time > 1s | abort that rule, log, continue with remaining |
-| New secret pattern unseen | post-hoc audit script | add to `sanitize_rules.yml`, re-run on suspect audit logs |
-| Account ID in legitimate context (e.g. doc text "Use account 735317561518") | over-redaction | acceptable; LLM still gets `<account>` and can reason |
+### 6. Rule-based classify
 
-### 4.5 Classifier
+Files: `bbctl_rca/classifier.py`, `classifier_rules.yml`
 
-| Case | Detection | Action |
-|---|---|---|
-| No regex match | enum=unknown | broaden KB filter to ALL, set conf threshold lower |
-| Multiple matches | pick earliest in log (line number) | log all matches in audit |
-| Ambiguous (matches both `java_runtime` and `dependency`) | precedence rules in YAML | YAML order = priority |
+Walks rules top-to-bottom, returns first matching class. No-match → `unknown`.
 
-### 4.6 Embedding
+Priority order:
 
-| Case | Detection | Action |
-|---|---|---|
-| Gemini API 429 | resp 429 | retry x3 exp-backoff (1s, 4s, 16s) |
-| Gemini API 5xx | resp 5xx | retry x3, then fall back to BM25-only retrieval |
-| Gemini API key invalid | 401 | alarm, return 502 |
-| Query > 2048 tok | check len before send | truncate to 2000 tok (keep most important error line) |
-| Query empty (all whitespace) | strip + check | return 400 "no actionable error" |
-| Network timeout (30s) | context cancel | retry once, then BM25-only |
+1. `compliance` — `ERROR: Compliance:`, `no Signed Off commit id`
+2. `canary_fail` — `Rolling Back as Result !=0`, `Canary run failed for canary run id`
+3. `canary_script_error` — `canary.py: error`, `subprocess.CalledProcessError`
+4. `aws_limit` — `LimitExceededException`, `QuotaExceeded`
+5. `parse_error` — `parse error:`, `jq: error`, `Unexpected token`
+6. `health_check` — `Health Status failed to move to healthy`, `iterations: unhealthy`, `healthz`
+7. `java_runtime` — `java.lang.\S+Exception/Error`, `groovy.lang.\S+Exception`, `No signature of method:`, `unable to resolve class`
+8. `ssm` — `SSM command failed`, `ssm:SendCommand`
+9. `scm` — `git fetch failed`, `Could not read from remote`, `Authentication failed.*github`
+10. `network` — `Connection refused`, `No route to host`
+11. `dependency` — `Could not resolve`, `Download failed`
+12. `timeout` — pipeline-level timeouts
+13. `unknown` — fallthrough
 
-### 4.7 Retrieval
+`health_check` MUST come before `java_runtime` (probe failures falsely match `OutOfMemoryError` otherwise). Groovy DSL exceptions added to `java_runtime` so pipeline-script errors don't fall to `unknown` (item 48).
 
-| Case | Detection | Action |
-|---|---|---|
-| Postgres down | conn fail | retry x2 with 200ms gap, then 503 |
-| Empty result (no chunks in KB filter) | 0 rows | broaden filter to all KBs + retry once; if still empty → return "no context found" + run Claude with metadata only |
-| pgvector HNSW index missing | query error "no index" | log critical alarm, fallback to seq scan with `ORDER BY embedding <=> $1 LIMIT 30` (slow but works) |
-| RRF merge yields top-10 all same source | dedup by source_path → keep top from each | diversity heuristic |
-| Vector score and BM25 score wildly different scales | use RRF (rank-based), not raw scores | already in design |
-| KB filter typo (KB doesn't exist) | 0 chunks for that KB | log + continue |
+### 7. Dispatch — agent loop vs one-shot
 
-### 4.8 Prompt assembly
+File: `bbctl_rca/main.py::_run_rca`
 
-| Case | Detection | Action |
-|---|---|---|
-| Input total > 50k tokens | tokenizer count | trim oldest chunks first; if still >50k, trim log window middle (keep head+tail); if still >50k, 413 |
-| Repo manifest > 5k tokens | size check | summarize: only top-level dirs + recently-changed files |
-| System prompt < 2048 tokens (Anthropic cache minimum for Sonnet) | check | pad with stable boilerplate (e.g. tool examples) |
-| 4 cache_control breakpoints exceeded | enforce limit | merge stable blocks into single cache block |
-
-### 4.9 Claude API
-
-| Case | Detection | Action |
-|---|---|---|
-| 429 rate limit | resp 429 | retry x3 exp-backoff (2s, 8s, 32s) |
-| 5xx Anthropic outage | resp 5xx | retry x3, then 502 with `provider_down=anthropic` (Phase 2 would fallback to Gemini/OpenAI) |
-| Network timeout 60s | context cancel | abort + 504 |
-| Tool call loop > 4 iterations | counter | inject final "summarize what you have" turn, force JSON output |
-| Tool call to unknown tool name | Claude hallucinates a tool | return tool error "unknown tool" to Claude → it adjusts |
-| MCP tool call timeout (30s) | tool wrapper timeout | return error to Claude → retry or skip |
-| Claude refuses (content policy) | empty content + stop_reason="refusal" | return `confidence=0`, summary="LLM refused", escalate to human |
-| Output truncated (max_tokens hit) | stop_reason="max_tokens" | parse partial JSON, accept if root_cause + summary present, flag |
-| Stream disconnect mid-response | EOF on SSE | accept partial, retry full once |
-| Cache miss on expected hit | log `cache_read_tokens=0` when expected >0 | log + investigate, no retry |
-| Tool result > 100 KB | size check before send | truncate to 100 KB, append `... [truncated]` |
-
-### 4.10 JSON parsing
-
-| Case | Detection | Action |
-|---|---|---|
-| Malformed JSON | json.Unmarshal err | retry Claude with "your last output was malformed JSON, return only valid JSON matching schema X" (1 retry) |
-| Missing required fields | schema validate | same retry |
-| `confidence` field missing | absent | default to 0.5, mark `confidence_inferred=true` |
-| `confidence` out of [0,1] | bounds check | clamp + log |
-| Extra unknown fields | strict mode catches | log + accept (forward-compat) |
-| Schema violations after retry | still bad | return wrapper with raw text + flag `schema_invalid`, surface to dev |
-
-### 4.11 Confidence gate
-
-| Case | Detection | Action |
-|---|---|---|
-| conf < 0.7 AND opus_used | already escalated | accept low conf, mark `low_confidence=true` |
-| conf < 0.7 AND cost cap hit | can't afford Opus | skip Opus, mark `low_confidence_no_escalate` |
-| conf exactly 0.7 boundary | use `>=` not `>` | accept (per design) |
-| LLM returns conf=1.0 always | suspicious calibration | log for monitoring; periodic manual eval |
-
-### 4.12 Publish
-
-| Case | Detection | Action |
-|---|---|---|
-| Slack webhook fails | non-200 resp | retry x2, then write to `/var/log/bbctl/slack-deadletter/` + alarm |
-| Slack message too long (>3000 chars per block) | size check | truncate root_cause + suggested_fix, link to S3 audit for full |
-| S3 audit write fails | AWS err | retry x2, then write to `/var/lib/bbctl/audit-deadletter/`, alarm; nightly cron retries deadletter |
-| CLI client disconnected mid-stream | broken pipe | continue work, store result, dev re-fetches via `bbctl rca --request-id <uuid>` |
-| Audit S3 bucket permission denied | 403 | alarm critical (compliance gap) |
-
-### 4.13 Concurrency
-
-| Case | Detection | Action |
-|---|---|---|
-| 2 webhooks for same (job,build) within 60s | dedup table | second returns first's `request_id` |
-| 10 concurrent RCA requests | rate limit per-user | 5 concurrent per-user, queue rest |
-| Ingestion cron + RCA query racing on same chunk row | row-level lock in Postgres | reads tolerate writes (MVCC) |
-| Postgres connection pool exhausted | pool wait > 5s | 503 + alarm |
-
-### 4.14 Ingestion edge cases
-
-| Case | Detection | Action |
-|---|---|---|
-| Git pull merge conflict (rare on read-only mirror) | git error | hard reset to origin/main + log |
-| File too big (>1 MB) | stat check | skip + log |
-| Binary file mistaken for text | UTF-8 validation | skip if invalid |
-| File deleted between list and read | open fail | skip + log |
-| Chunk content all whitespace | trim + check | skip embed |
-| Chunk hash collision (same content_hash, different content — practically impossible SHA-256) | sanity check on insert | log + skip |
-| Embedding 768-dim mismatch (Gemini returns 3072) | dim assert | truncate first 768 dims (Matryoshka representation) OR fail-fast |
-| Postgres disk full | write fails | alarm + halt ingest |
-| HNSW build slow on >100k chunks | takes minutes | accept; serve queries from existing index meanwhile |
-
-### 4.15 Operational
-
-| Case | Detection | Action |
-|---|---|---|
-| Instance reboot during RCA | systemd service restart | in-flight requests lost; CLI retries with same request_id is idempotent via dedup |
-| Disk fills up (logs / Postgres) | CW alarm at 75% | alert ops; cleanup script |
-| Daily Anthropic cost > $20 | metering | switch all queries to deny + Slack alert; reset 00:00 UTC |
-| Anthropic API key rotation needed | manual or scheduled | SOPS update + bbctl reload (graceful) |
-| SOPS decrypt fails on boot | age key missing | service fails to start; alarm |
-| Postgres backup needed | weekly cron `pg_dump` | store in S3 audit bucket |
-
-### 4.16 Security warnings (auto-clarity zone — read carefully)
-
-> **Suggested-command execution boundary:**
-> LLM output `suggested_commands` is **never auto-executed**. CLI always presents to dev for explicit choice. Once chosen, command flows through existing `/v1/commands` gated pipeline (safe / restricted / denied tiers + Jira approval for restricted).
->
-> Webhook path **never** executes commands at all. Only the interactive CLI path allows command selection.
->
-> If LLM suggests destructive command (rm/dd/etc.), classifier in `/v1/commands` denies; no override exists in this loop.
-
-> **Audit write failures must alarm:**
-> S3 audit is compliance-critical (13-month retention). Local deadletter is acceptable temporary; nightly cron must drain deadletter to S3 before next business day. Failure to drain after 24h = SEV alert.
-
-Caveman resume.
-
----
-
-## 5. Algorithm pseudocode (Go-ish, edge-aware)
-
-```go
-// /v1/rca handler
-func handleRCA(ctx context.Context, req RCARequest) (*RCAResponse, error) {
-    requestID := uuid.New().String()
-    log := log.With("request_id", requestID, "user", req.User)
-
-    // 1. AUTH + DEDUP
-    if !verifyAuth(req) { return nil, ErrUnauthorized }
-    if prior := dedup.Check(req.Job, req.Build, 60*time.Second); prior != nil {
-        log.Info("dedup hit", "prior_id", prior.RequestID)
-        return prior, nil
-    }
-    if !costcap.Allow(req.User) {
-        slack.Alert("daily cost cap hit")
-        return nil, ErrCostCapExceeded
-    }
-
-    // 2-3. METADATA + LOG (with retry + cache)
-    meta, err := jenkinsClient.GetBuildCached(ctx, req.Job, req.Build)
-    if err != nil { return nil, mapJenkinsErr(err) }
-    if meta.Result == "SUCCESS" || meta.Result == "ABORTED" {
-        return auditAndReturn(requestID, "skipped_non_failure"), nil
-    }
-    if meta.Result == "" && meta.Building {
-        return nil, ErrBuildInProgress
-    }
-    logTail, err := jenkinsClient.GetLogCached(ctx, req.Job, req.Build, 2000)
-    if err != nil { return nil, mapJenkinsErr(err) }
-
-    // 4. LOG WINDOW
-    window, hits := extractFailureWindow(logTail, 50, 300)
-    if len(hits) == 0 {
-        log.Warn("no error markers found, using log tail")
-        window = lastN(logTail, 200)
-    }
-
-    // 5. SANITIZE
-    cleanWindow, redactions := sanitizer.Scrub(window)
-    redRate := float64(len(redactions)) / float64(countLines(window))
-    if redRate > 0.5 {
-        log.Warn("high redaction rate", "rate", redRate)
-    }
-
-    // 6. CLASSIFY
-    class := classifier.Classify(cleanWindow)
-    kbFilter := classKBs[class]
-    if class == "unknown" {
-        kbFilter = AllKBs
-    }
-
-    // 7. QUERY
-    query := buildQueryFromErrors(cleanWindow, hits)
-    if strings.TrimSpace(query) == "" {
-        return nil, ErrNoActionableError
-    }
-
-    // 8. EMBED (with fallback)
-    qVec, err := geminiEmbed.Encode(ctx, query)
-    bm25Only := false
-    if err != nil {
-        log.Warn("embed failed, falling back to BM25-only", "err", err)
-        bm25Only = true
-    }
-
-    // 9. RETRIEVE
-    chunks, err := vec.HybridSearch(ctx, kbFilter, query, qVec, bm25Only, 10)
-    if err != nil { return nil, err }
-    if len(chunks) == 0 && len(kbFilter) < len(AllKBs) {
-        log.Info("empty result, broadening filter")
-        chunks, err = vec.HybridSearch(ctx, AllKBs, query, qVec, bm25Only, 10)
-    }
-    // accept empty chunks — LLM still runs with metadata + window
-
-    // 10. PROMPT
-    promptIn := buildPromptCacheAware(meta, class, cleanWindow, chunks, req.Question)
-    if estTokens(promptIn) > 50000 {
-        promptIn = trimChunksOldestFirst(promptIn, 50000)
-    }
-
-    // 11. CLAUDE (with tool budget)
-    rsp, err := claude.ToolUse(ctx, claude.Request{
-        Model: ifFlag(req.Deep, "claude-opus-4-7", "claude-sonnet-4-6"),
-        SystemBlocks: promptIn.System, // with cache_control
-        Messages:     promptIn.Messages,
-        Tools:        []claude.MCPServer{jenkinsMCP, bbctlMCP},
-        MaxToolUse:   ifFlag(req.Deep, 8, 4),
-        ResponseSchema: rcaSchema,
-        Timeout:      60 * time.Second,
-    })
-    if err != nil { return nil, mapClaudeErr(err) }
-
-    // 12. PARSE
-    rca, err := parseRCA(rsp.Content)
-    if err != nil {
-        rsp2, err2 := claude.ToolUse(ctx, withMessage(promptIn, "your last output was malformed JSON, return valid JSON"))
-        if err2 != nil { return nil, err2 }
-        rca, err = parseRCA(rsp2.Content)
-        if err != nil {
-            log.Error("schema_invalid after retry")
-            rca = &RCA{SummaryRaw: rsp2.Content, SchemaInvalid: true, Confidence: 0}
-        }
-    }
-
-    // 13. CONFIDENCE GATE
-    if (rca.Confidence < 0.7 || rca.NeedsDeeper) && !req.Deep && costcap.Allow(req.User) {
-        // re-run with Opus
-        opusReq := req
-        opusReq.Deep = true
-        return handleRCA(ctx, opusReq) // tail-recursive, dedup will key on (job,build)
-    }
-
-    // 14. PUBLISH (parallel best-effort)
-    audit.WriteAsync(ctx, requestID, req, rca)
-    if !req.SilentMode { slack.PostAsync(rca) }
-
-    return &RCAResponse{RequestID: requestID, RCA: rca}, nil
+```python
+AGENT_CLASSES = {
+    "canary_fail", "canary_script_error",
+    "health_check", "parse_error", "scm",
 }
+if LLM_PROVIDER == "openai" and error_class in AGENT_CLASSES:
+    result = await run_agent(...)
+else:
+    result = await run_rca(...)        # one-shot
 ```
+
+**Why these classes are AGENT_CLASSES**: they benefit from in-repo code tracing. `health_check` → agent reads `nonwebdeploy.groovy` → `healthy.sh`. `canary_fail` → agent reads `rollout.groovy` → `canary.py`. Tool calls pay off.
+
+**Why compliance + unknown are NOT** (items 43, 46):
+- Compliance = Jira-field-missing. Primer already has `jira.tickets` + Mode 1-5 guidance. Agent has nothing to trace, drifts into prose.
+- Unknown = catch-all. By definition no class-specific code path. Same drift pattern.
+
+Both route to one-shot with `unknown_class.guide` STRICT rules forbidding runbook-narrative borrowing (item 49).
 
 ---
 
-## 6. State diagram — Jenkins build state interpretation
+## 7a. Agent loop deep dive
+
+File: `bbctl_rca/agent.py`
+
+```python
+MAX_TOOL_CALLS = 6              # iterations (each may issue multiple tool calls)
+COST_CAP_USD   = 0.25
+PER_TOOL_RESULT_CAP = 1500      # bytes per tool result body
+TRIM_HISTORY_AFTER  = 1         # elide tool-result bodies older than 1 iter
+INPUT_USD_PER_TOKEN  = 2.50 / 1_000_000
+OUTPUT_USD_PER_TOKEN = 10.00 / 1_000_000
+```
+
+### Tool palette
+
+| Tool | Purpose |
+|---|---|
+| `get_jenkins_job_config` | Jenkins job's `config.xml` → `scm_url`, `scm_branch`, `script_path` |
+| `repo_read_file(repo, path, start, lines)` | File slice with 1-based line numbers |
+| `repo_search(repo, query, max_hits)` | Ripgrep across a repo |
+| `repo_find_function(repo, name)` | Locate Groovy/Java/Python definitions |
+| `repo_list_dir(repo, path)` | List immediate children of a dir |
+| `repo_recent_commits(repo, n)` | `git log` short SHA + date + author + message |
+| `service_lookup(service)` | `config.json` slim view |
+
+### Loop iteration
 
 ```
-   ┌──────────┐
-   │ unknown  │  (Jenkins MCP unreachable)
-   └────┬─────┘
-        │ retry x3
-        ▼
-   ┌────────────┐   ┌─────────┐
-   │ result=null├──▶│ pending │  (still building)
-   └────┬───────┘   └────┬────┘
-        │                │ wait/poll
-        ▼                ▼
-   ┌──────────┐    ┌─────────┐
-   │ FAILURE  │    │ SUCCESS │
-   │ UNSTABLE │    │ ABORTED │
-   └────┬─────┘    └────┬────┘
-        │               │
-        ▼               ▼
-    RUN RCA       audit + skip
+for iteration in range(MAX_TOOL_CALLS + 1):     # 0..6 inclusive
+    if cost_so_far >= COST_CAP_USD:
+        inject _FORCE_FINAL_PROMPT; tool_choice="none"
+    force_final = (iteration == MAX_TOOL_CALLS)  # iter 6 forced
+    if force_final:
+        inject _FORCE_FINAL_PROMPT; tool_choice="none"
+    response = openai.chat.completions.create(...)
+    update cost_so_far += tokens × pricing
+    if force_final or no tool_calls in response:
+        return _parse_final_json(response.content)
+    for tc in response.tool_calls:
+        run tool, cap result body to PER_TOOL_RESULT_CAP
+        append to messages
+    _elide_old_tool_results(messages, current_iter, keep_recent=TRIM_HISTORY_AFTER)
 ```
+
+### Why a separate COST_CAP_USD alongside MAX_TOOL_CALLS
+
+Iteration count alone does NOT bound token cost. Three multipliers:
+
+1. **Parallel tool calls in a single iter.** OpenAI's API lets the LLM return N tool_calls in one assistant message. N=5 means 5 tool results re-fed.
+2. **Large tool results.** `repo_read_file` on a 500-line file can return ~30KB even after cap. PER_TOOL_RESULT_CAP=1500 trims but rare LLM choices still spike.
+3. **History replay.** Every API call re-sends the FULL message history. Older tool results stay in context (elision after `TRIM_HISTORY_AFTER` iters replaces body with `[elided to save tokens]`, but iteration N still pays for iter N-1's content).
+
+Pathological case: LLM at iter 3 does 4 parallel `repo_search` calls each returning 50 hits → 6K extra tokens in. By iter 6 that would be ~$0.30 input alone. Cost cap catches it before iter 6.
+
+### `_FORCE_FINAL_PROMPT`
+
+Injected on both cost-cap and iter-6 paths. Inline RCA schema + explicit rules:
+
+- "NOT markdown, NOT ###headings — ONLY a JSON object"
+- "If a tool errored earlier, that's fine — use the context you already have"
+- "Output the JSON object only — no prose before or after"
+
+`tool_choice="none"` is set in the same call so the LLM cannot request more tools.
+
+### What happens if the LLM still outputs garbage
+
+`_parse_final_json(text)` tries 3 shapes in order:
+
+1. Pure `json.loads`
+2. Strip ` ```json … ``` ` fence then `json.loads`
+3. Find first `{` and last `}`, slice, `json.loads`
+
+If all fail → fallback stub `"summary": "Agent failed to emit valid JSON.", "needs_deeper": true`. Raw `final_text` logged to stderr at journalctl for debugging. See `bbctlrca.md` item 41.
 
 ---
 
-## 7. Test plan (Phase 1 acceptance)
+## 7b. One-shot path
 
-### Unit tests
+File: `bbctl_rca/llm.py` (`run_rca`)
 
-- `sanitizer.Scrub` — 20 cases (each pattern + composites)
-- `classifier.Classify` — 12 fixture logs from prior failures
-- `extractFailureWindow` — empty / single hit / multi hit / no hit / huge log
-- `vec.HybridSearch` — empty / vec-only / bm25-only / both / no KB match
-- `parseRCA` — valid / malformed / partial / wrong schema
+Single `chat.completions.create` call with `response_format={"type": "json_object"}`. Faster, cheaper, no tool calls. Used for non-agent classes.
 
-### Integration tests (against staging Jenkins + test Postgres)
+Tool context built ahead of time in `_build_tool_context`:
 
-- happy path: known failing fixture → expected RCA structure
-- Jenkins down: 502 returned cleanly
-- Postgres down: 503 returned cleanly
-- Anthropic 429 simulated: backoff respected
-- Webhook HMAC mismatch: 401
-- Duplicate webhook: dedup returns prior
+- `build.meta` — job, build, service, detected_failed_stage
+- `service.lookup` — slim config.json view (port, log_path, key_name, …)
+- `source.trace` — pre-computed ripgrep of the failing error string across `jenkins_pipeline` + `InfraComposer`
+- `docs.<class>` — class-specific runbook excerpt (from `CLASS_DOCS` dict). E.g. `compliance` → `JiraDetailsCompliance.md`.
+- `docs.catalog` — for `unknown` class only: all `docops/*.md` first heading + 250-char preview
+- `unknown_class.guide` — for `unknown` only: 5 strict rules (item 49)
+- `jira.tickets` — for any class that mentions a ticket key
+- `github.commits` — for `compliance`/`scm`: commit metadata for SHAs in log
 
-### End-to-end shadow mode
-
-Run for 3 days with `silent=true` (no Slack post). Compare:
-- LLM root_cause vs human ground-truth on 20 archived failures
-- Token cost vs estimate
-- Latency p50/p95
-
-Promote to live after 60%+ match on test set.
+Prompt = system (one-shot RCA primer) + user (tool context + log window).
 
 ---
 
-## 8. Metrics to emit (Prometheus-friendly, even Phase 1)
+## 8. Parse + validate
 
-```
-bbctl_rca_total{result="success|skip|error", class="parse_error|..."}
-bbctl_rca_duration_seconds{quantile="0.5|0.95|0.99"}
-bbctl_rca_tokens_total{provider="claude", model="sonnet|opus", kind="input|output|cache_read|cache_write"}
-bbctl_rca_cost_usd_total{provider, model}
-bbctl_rca_confidence_bucket{le="0.5|0.7|0.9"}
-bbctl_rca_tool_calls_total{tool="jenkins.get_log|..."}
-bbctl_rca_cache_hits_total{cache="L2|L4|L5"}
-bbctl_rca_redaction_rate_bucket
-bbctl_rca_provider_errors_total{provider, code}
-bbctl_ingestion_chunks_total{kb}
-bbctl_ingestion_duplicates_skipped_total{kb}
-```
-
-Phase 1: log JSON lines to journald + grep. Phase 2: scrape with Prometheus.
+Both paths converge on `_parse_final_json` (defined in `agent.py`, used by both). Same tolerant parser handles drifted LLM output.
 
 ---
 
-## 9. Rollout safety
+## 9. Persist + cache + respond
 
-1. Build + deploy to t3a.large new instance
-2. Shadow mode (`SILENT_MODE=true`) — webhook logs result but doesn't post Slack
-3. 3-day soak; human reviews 20 RCAs vs ground truth
-4. Flip `SILENT_MODE=false` for one job (e.g. `stagger-prod-plus-one`)
-5. 7-day soak on single job, monitor cost + Slack signal:noise
-6. Roll out to all jobs
+Files: `bbctl_rca/audit.py`, `bbctl_rca/cache.py`
 
-Rollback: flip ENV `BBCTL_RCA_ENABLED=false` → backend returns 503 on `/v1/rca/*`; CLI shows graceful disable message.
+- `audit.write(request_id, payload)` → JSON file at `/var/log/bbctl-rca/<request_id>.json`. Payload includes the RCA, build_url, redactions list, repos_freshness, agent_tool_calls, cost, tokens.
+- `cache.put(job, build, rca)` → diskcache 24h TTL.
+- HTTP response to Jenkins = the parsed RCA Map.
 
 ---
 
-## 10. What's locked / Next step
+## 10. Operator surfaces
 
-**Locked:** flow + edge cases + algorithm + test plan above.
+Surfaces fanned out from the pipeline once `triggerRcaWebhook()` returns:
 
-**Next:** invoke writing-plans skill to produce `docs/superpowers/specs/2026-05-11-bbctl-rca-phase1-design.md` (detailed implementation plan with files, code skeletons, tasks, owners). Then start coding Week 1 Day 1 tasks (instance migration).
+| Surface | Where | Triggered by |
+|---|---|---|
+| Jenkins console box | `renderRca()` in `triggerRcaWebhook.groovy` | always |
+| Sidebar build description | `currentBuild.description = ...` in same var | always |
+| Slack channel | `com.blackbuck.utils.Notification.rcaAlert` | per-pipeline, if `slack_channel` set |
+| VictorOps | inline in `main_stagger_prod_plus_one.groovy::post.failure` | only stagger prod+1, only when `PROD_PLUS_ONE_COMPLETED=true` + not canary |
+| HTML report | `GET /rca/v1/report/<request_id>` | URL embedded in all surfaces |
+| Audit JSON | `GET /rca/v1/report/<request_id>.json` | URL embedded |
+
+`create-quick-infra` deliberately skips VictorOps (interactive / dev-triggered, see `bbctlrca.md` item 45).
+
+---
+
+## Cost / latency
+
+| Path | Tokens (in + out) | Cost | Latency |
+|---|---|---|---|
+| Cache hit (24h) | 0 | $0 | < 100ms |
+| One-shot (gpt-4o) | 15–25K + 500 | $0.04–0.06 | 30–60s |
+| Agent (6 tool calls) | 25–35K + 600–900 | $0.20–0.25 | 60–90s |
+| Worst-case agent (cap hit) | ~capped at COST_CAP_USD | ≤ $0.25 | ~90s |
+
+Daily global cap in `cache.py::over_daily_cap` is the outer limit across all RCAs.
+
+---
+
+## Edge cases
+
+### Stage skipped due to earlier failure
+
+Only the FIRST failed stage's `error.message` is meaningful. Subsequent `Stage 'X' skipped due to earlier failure(s)` lines are downstream effects. `extract_failed_stage` (Strategy A: first stage containing error markers) handles this.
+
+### wfapi unavailable (older Jenkins, non-Pipeline job)
+
+`get_stage_errors` returns `[]`. Flow falls through to consoleText-only — works when the exception trace IS already in console. Just degrades for the post.failure timing-gap case.
+
+### LLM emits prose instead of JSON (item 41)
+
+`_parse_final_json` recovers from 3 shapes. If all fail, fallback stub. Raw text logged.
+
+### Cost cap hits mid-trace
+
+Same as iter 6 — force-final prompt, `tool_choice="none"`, LLM must emit JSON from context gathered so far. May result in `needs_deeper: true` if context was insufficient.
+
+### Compliance / unknown class going via one-shot
+
+These classes deliberately bypass agent loop (items 43, 46). One-shot path uses `unknown_class.guide` STRICT rules (item 49) to prevent LLM from confabulating runbook narratives — better to emit "cannot determine" + `needs_deeper: true` than a confident wrong answer.
+
+### Replay vs new build
+
+Jenkins "Replay" reloads the previous build's WorkflowScript content, NOT the latest SCM. So a pipeline-script bug fixed on disk won't apply to a replayed build. Always re-trigger from SCM for verification.
+
+---
+
+## Where to look for details
+
+- `bbctl_rca/main.py::_run_rca` — orchestrator
+- `bbctl_rca/agent.py` — agent loop, force-final, tolerant parser
+- `bbctl_rca/llm.py` — one-shot path + tool context builder + unknown_class.guide
+- `bbctl_rca/classifier.py` + `classifier_rules.yml` — rule precedence
+- `bbctl_rca/jenkins.py` — consoleText / build_meta / wfapi / config.xml
+- `bbctl_rca/git_fresh.py` — per-RCA shallow fetch + reset
+- `bbctl_rca/mcp_tools.py` — repo_read_file, repo_search, repo_find_function, …
+- `bbctl_rca/window.py` — extract_window, extract_failed_stage
+- `bbctl_rca/sanitize.py` — noise pattern drops + iteration-spam collapse
+- `bbctl_rca/audit.py` — audit JSON writer
+- `bbctl_rca/cache.py` — 24h cache + daily cost cap
+- `docs/rca/bbctlrca.md` — numbered changelog (items 1–51)

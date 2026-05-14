@@ -437,7 +437,7 @@ async def run_rca_openai(
     print(f"[llm] tool_ctx blocks: {block_titles}", file=__import__('sys').stderr, flush=True)
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},

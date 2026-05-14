@@ -241,8 +241,8 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     tokens_in = result["tokens_used"].get("input", 0)
     tokens_out = result["tokens_used"].get("output", 0)
     if LLM_PROVIDER == "openai":
-        # gpt-4o-mini: $0.15/1M input, $0.60/1M output
-        cost = (tokens_in / 1_000_000 * 0.15) + (tokens_out / 1_000_000 * 0.60)
+        # gpt-4o: $2.50/1M input, $10.00/1M output
+        cost = (tokens_in / 1_000_000 * 2.50) + (tokens_out / 1_000_000 * 10.00)
     else:
         # gemini-2.0-flash: $0.075/1M input, $0.30/1M output
         cost = (tokens_in / 1_000_000 * 0.075) + (tokens_out / 1_000_000 * 0.30)

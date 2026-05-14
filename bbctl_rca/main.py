@@ -96,6 +96,20 @@ async def rca_webhook(
     return await _run_rca(payload.job, payload.build, payload.service, deep=False)
 
 
+# NOTE on route order: FastAPI evaluates routes in registration order. The
+# `.json` route MUST be registered before the catch-all HTML route, otherwise
+# the HTML route's `{request_id}` would greedily match `<uuid>.json` (with
+# `.json` ending up as part of request_id), failing the uuid regex inside
+# `read_by_request_id` and returning a misleading 404.
+@router.get("/v1/report/{request_id}.json")
+async def rca_report_json(request_id: str):
+    """Raw JSON view of the audit record — for debugging / scripts."""
+    audit = read_by_request_id(request_id)
+    if not audit:
+        raise HTTPException(status_code=404, detail="report not found")
+    return audit
+
+
 @router.get("/v1/report/{request_id}", response_class=HTMLResponse)
 async def rca_report(request_id: str):
     """Render a stored RCA result as an HTML page.
@@ -110,15 +124,6 @@ async def rca_report(request_id: str):
     if not audit:
         raise HTTPException(status_code=404, detail="report not found")
     return _render_report(audit)
-
-
-@router.get("/v1/report/{request_id}.json")
-async def rca_report_json(request_id: str):
-    """Raw JSON view of the same audit record — for debugging / scripts."""
-    audit = read_by_request_id(request_id)
-    if not audit:
-        raise HTTPException(status_code=404, detail="report not found")
-    return audit
 
 
 def _render_report(audit: dict) -> str:

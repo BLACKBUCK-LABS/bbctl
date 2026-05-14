@@ -35,6 +35,17 @@ trap 'restart_service' EXIT
 
 log "==== sync start ===="
 
+# Self-heal: ensure ubuntu has write on every file in both clones. Earlier
+# someone ran `chmod -R a-w` (or similar) which makes `git reset --hard`
+# fail with "unable to unlink old <file>: Permission denied". Make this
+# idempotent + cheap.
+for d in jenkins_pipeline InfraComposer; do
+    if [ -d "$REPOS_DIR/$d" ]; then
+        chown -R ubuntu:ubuntu "$REPOS_DIR/$d" 2>/dev/null || true
+        chmod -R u+w "$REPOS_DIR/$d" 2>/dev/null || true
+    fi
+done
+
 # 1. jenkins_pipeline
 if [ -d "$REPOS_DIR/jenkins_pipeline/.git" ]; then
     log "syncing jenkins_pipeline (branch=$JP_BRANCH)"

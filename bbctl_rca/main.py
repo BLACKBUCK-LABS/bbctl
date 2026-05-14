@@ -5,7 +5,8 @@ import os
 import uuid
 
 from fastapi import FastAPI, APIRouter, Request, HTTPException, Header
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .models import WebhookPayload, RCARequest, RCAResponse
 from .jenkins import get_console_log, get_build_meta
@@ -18,11 +19,36 @@ from .cache import (
     get_rca, set_rca,
 )
 from .evidence import verify as verify_evidence
-from .audit import record as audit_record
+from .audit import record as audit_record, read_by_request_id
 from .slack import post as slack_post
 import subprocess
 import yaml
 from pathlib import Path
+
+# Jinja2 environment for HTML report rendering. Autoescape ON for all .html
+# templates so values from the audit JSON can't inject script tags.
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
+_jinja = Environment(
+    loader=FileSystemLoader(str(_TEMPLATE_DIR)),
+    autoescape=select_autoescape(["html"]),
+)
+
+# Color hint per error_class for the badge in the HTML report.
+_CLASS_COLORS = {
+    "compliance":          "bg-amber-200 text-amber-900",
+    "canary_fail":         "bg-red-200 text-red-900",
+    "canary_script_error": "bg-violet-200 text-violet-900",
+    "health_check":        "bg-rose-200 text-rose-900",
+    "aws_limit":           "bg-orange-200 text-orange-900",
+    "parse_error":         "bg-yellow-200 text-yellow-900",
+    "java_runtime":        "bg-red-200 text-red-900",
+    "scm":                 "bg-indigo-200 text-indigo-900",
+    "network":             "bg-sky-200 text-sky-900",
+    "dependency":          "bg-fuchsia-200 text-fuchsia-900",
+    "ssm":                 "bg-cyan-200 text-cyan-900",
+    "timeout":             "bg-amber-200 text-amber-900",
+    "unknown":             "bg-slate-200 text-slate-700",
+}
 
 app = FastAPI(title="bbctl-rca", version="0.1.0")
 # All routes go on this router so we can mount them at both root and /rca.
@@ -66,6 +92,81 @@ async def rca_webhook(
 
     payload = WebhookPayload(**json.loads(body))
     return await _run_rca(payload.job, payload.build, payload.service, deep=False)
+
+
+@router.get("/v1/report/{request_id}", response_class=HTMLResponse)
+async def rca_report(request_id: str):
+    """Render a stored RCA result as an HTML page.
+
+    Looks up the audit record by request_id (uuid). The audit record is
+    written by `audit_record(...)` after every RCA run and lives at
+    /var/log/bbctl-rca/<uuid>.json. The HTML view is the shareable canonical
+    surface — same URL appears in Jenkins console, Jenkins build description,
+    Slack alerts, and VictorOps details.
+    """
+    audit = read_by_request_id(request_id)
+    if not audit:
+        raise HTTPException(status_code=404, detail="report not found")
+    return _render_report(audit)
+
+
+@router.get("/v1/report/{request_id}.json")
+async def rca_report_json(request_id: str):
+    """Raw JSON view of the same audit record — for debugging / scripts."""
+    audit = read_by_request_id(request_id)
+    if not audit:
+        raise HTTPException(status_code=404, detail="report not found")
+    return audit
+
+
+def _render_report(audit: dict) -> str:
+    """Build template vars from the audit record and render the HTML page."""
+    rca = audit.get("rca") or {}
+    fix = rca.get("suggested_fix")
+    fix_is_map = isinstance(fix, dict)
+    fix_items = list(fix.items()) if fix_is_map else []
+
+    job = audit.get("job", "")
+    build = audit.get("build", "")
+    build_url = audit.get("build_url") or _guess_build_url(job, build)
+
+    tmpl = _jinja.get_template("rca_report.html")
+    return tmpl.render(
+        request_id=audit.get("request_id", ""),
+        recorded_at=audit.get("recorded_at", ""),
+        job=job,
+        build=build,
+        build_url=build_url,
+        service=audit.get("service", ""),
+        error_class=rca.get("error_class") or audit.get("error_class") or "unknown",
+        class_color=_CLASS_COLORS.get(rca.get("error_class") or audit.get("error_class"), _CLASS_COLORS["unknown"]),
+        failed_stage=rca.get("failed_stage", "—"),
+        confidence=rca.get("confidence", "—"),
+        needs_deeper=bool(rca.get("needs_deeper")),
+        cost_usd=audit.get("cost_usd") or rca.get("cost_usd") or 0,
+        tokens_in=(rca.get("tokens_used") or {}).get("input", 0),
+        tokens_out=(rca.get("tokens_used") or {}).get("output", 0),
+        summary=rca.get("summary", "—"),
+        root_cause=rca.get("root_cause", "—"),
+        suggested_fix=fix if not fix_is_map else "",
+        fix_is_map=fix_is_map,
+        fix_items=fix_items,
+        suggested_commands=rca.get("suggested_commands", []),
+        evidence=rca.get("evidence", []),
+        provider=audit.get("provider", "—"),
+        redactions=", ".join(audit.get("redactions") or []) or None,
+        log_window_chars=audit.get("log_window_chars", 0),
+    )
+
+
+def _guess_build_url(job: str, build) -> str:
+    """Best-effort Jenkins URL when the audit record didn't capture build_url."""
+    base = JENKINS_URL.rstrip("/")
+    if not job or build in (None, ""):
+        return base
+    # Jenkins URL-encodes path segments but spaces become %20 in the job name.
+    safe_job = str(job).replace(" ", "%20")
+    return f"{base}/job/{safe_job}/{build}/"
 
 
 @router.post("/v1/rca")
@@ -167,6 +268,7 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         "redactions": redactions,
         "log_window_chars": len(clean_window),
         "log_window_sample": clean_window[:500],
+        "build_url": build_meta.get("url") if isinstance(build_meta, dict) else None,
         "rca": result,
     })
     await slack_post(result, job, build)

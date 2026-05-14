@@ -164,20 +164,31 @@ def renderRca(Map rca) {
         }
         lines << ''
     }
+    def reportUrl = rcaReportUrl(reqId)
     lines << "  request_id: ${reqId}"
-    lines << "  audit log: request_id ${reqId} (full JSON stored on BB-AI server)"
+    lines << "  📊 report:  ${reportUrl}"
     lines << ''
 
     echo lines.join('\n')
 
-    // Also set a short description so the build list page shows it at a glance
+    // Also set a short HTML description so the build list page shows it at a
+    // glance + a clickable link to the full HTML report.
     def descLines = []
-    descLines << "<b>RCA:</b> ${escapeHtml(summary)}"
+    descLines << "<b>🤖 BB-AI RCA:</b> ${escapeHtml(summary)}"
     descLines << "<b>class:</b> ${cls} | <b>stage:</b> ${stage} | <b>conf:</b> ${conf}"
     if (fix instanceof Map && fix.Finding) {
         descLines << "<b>Finding:</b> ${escapeHtml((fix.Finding as String).take(200))}"
     }
+    descLines << "<a href='${reportUrl}' target='_blank'>📊 Open full RCA report →</a>"
     currentBuild.description = descLines.join('<br/>')
+}
+
+// Canonical URL for the HTML report served by bbctl-rca. Override the host
+// at runtime via BBCTL_RCA_REPORT_BASE_URL if testing against a different ALB
+// / endpoint. The route `/rca/v1/report/<uuid>` is served by FastAPI.
+def rcaReportUrl(String requestId) {
+    def base = env.BBCTL_RCA_REPORT_BASE_URL ?: 'https://bbctl.blackbuck.com'
+    return "${base}/rca/v1/report/${requestId}"
 }
 
 def wrap(String text, int width) {

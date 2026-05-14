@@ -219,12 +219,25 @@ If service is up + health endpoint returns 200:
 Fallback (only if BBCTL unavailable): `aws ssm start-session --target <instance_id> --region <region>` or raw `ssh -i <pem_path_hint> ubuntu@<private_ip>`.
 ```
 
-**BBCTL command rules (STRICT):**
-- BBCTL is the org's standard CLI for EC2 access — ALWAYS prefer it over raw `ssh` or `aws ssm` in suggested_commands.
+**BBCTL command rules (STRICT — applies to suggested_commands AND prose in suggested_fix):**
+- BBCTL is the org's standard CLI for EC2 access. Use it EVERYWHERE — in `suggested_commands` AND in the natural-language `Action` / `Finding` / `Verify` prose inside `suggested_fix`.
+- DO NOT use the words `SSH`, `ssh`, `SSH into`, or `ssh -i` in the prose. Write `Use bbctl shell <instance_id>` or `Run bbctl run <instance_id> -- '<cmd>'` instead.
+- The phrase `SSH/SSM` or `ssh ...` is ONLY acceptable in a single short fallback clause at the end (e.g., "if BBCTL is unavailable, fall back to `aws ssm start-session ...`"). Default to BBCTL.
 - Use `bbctl shell <instance_id>` for interactive login (long debug sessions).
 - Use `bbctl run <instance_id> -- '<cmd>'` for one-shot commands (preferred for `suggested_commands` array — keeps each command self-contained for the operator to copy-paste).
 - Substitute the REAL `instance_id` from `health_check.target.instance_id`. Never emit `<instance-id>` or `<instance_ip>` placeholders.
 - Tier: `bbctl run ... 'sudo tail ...'` and `'curl ...'` are `safe`. Interactive `bbctl shell` is `safe`. Writes (`systemctl restart`, file edits) are `restricted`.
+
+**Prose rewrite examples** (Action / Finding / Verify):
+
+BAD:  "SSH into instance i-09b74a842864cd1b6 and check the service log for errors."
+GOOD: "Use `bbctl shell i-09b74a842864cd1b6` to open a shell on the instance, then tail the service log for errors."
+
+BAD:  "Verify that the service is listening on port 8080 using 'sudo ss -tlnp | grep 8080'."
+GOOD: "Verify the service is listening on port 8080: `bbctl run i-09b74a842864cd1b6 -- 'sudo ss -tlnp | grep 8080'`."
+
+BAD:  "Check the health endpoint to ensure it returns a 200 status."
+GOOD: "Confirm the health endpoint returns 200: `bbctl run i-09b74a842864cd1b6 -- 'curl -i http://localhost:8080/admin/version'`."
 
 **`newrelic.slow_transactions` semantics for health_check:**
 If the block is **empty/absent**, that's a strong signal the service never reported a single transaction during the deploy window — i.e. service never started OR never bound the expected port. Cite this directly in Finding.

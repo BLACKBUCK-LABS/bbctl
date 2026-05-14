@@ -240,8 +240,11 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     # Classes worth the agent's deeper trace through the actual source code.
     # Cheap one-shot stays good enough for the rest (timeout, ssm, network,
     # dependency, java_runtime when stack trace is self-explanatory).
+    # compliance is excluded: it's a Jira-field-missing problem, not a code-trace
+    # problem — primer already carries jira.tickets + runbook + mode 1-5 guidance,
+    # so the agent has nothing to trace and tends to drift into prose output.
     AGENT_CLASSES = {
-        "compliance", "canary_fail", "canary_script_error",
+        "canary_fail", "canary_script_error",
         "health_check", "parse_error", "scm", "unknown",
     }
 

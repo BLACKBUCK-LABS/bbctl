@@ -31,6 +31,12 @@ When you write `suggested_fix.Action` or any `suggested_commands.cmd`:
 - If a field shows `NOT_IN_CONFIG`, write a concrete discovery command (e.g. `bbctl run <id> -- 'sudo ls /var/log/blackbuck/'`) — never an angle-bracket placeholder.
 - The instance ID comes from the primer's `health_check.target.instance_id`. Use it verbatim.
 
+**HALLUCINATION GUARD — common wrong values to AVOID unless they literally appear in the primer:**
+- Do NOT default to `/var/log/blackbuck/gps.log` — that's the GPS service's log, not yours. Use `service_config.log_path` (or its `log_dir_hint_from_server_command` fallback), AND construct the filename from the service name if needed (e.g. `/var/log/blackbuck/<service>.log`).
+- Do NOT default to port `8080`. The real port is in `service_config.port` (resolved from `target_port`). For this org, common values: 7005, 7009, 8443. Read it from the primer.
+- Do NOT default to `/admin/version` for health check path — only use it if `service_config.health_check_path` confirms.
+- If you find yourself writing a value that doesn't appear verbatim in the resolved-values block, STOP and re-read the primer.
+
 ## Tool budget
 
 You have at most **6 tool calls** per RCA. Plan: typical good trace is

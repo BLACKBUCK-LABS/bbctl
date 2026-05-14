@@ -19,16 +19,16 @@ from . import mcp_tools
 from . import jenkins as jenkins_api
 
 
-MAX_TOOL_CALLS = 6           # ↓ from 8; typical successful runs use 4-5
+MAX_TOOL_CALLS = 6           # iterations; each iter may issue multiple tool calls
 COST_CAP_USD = 0.25
 # Per-tool-result cap. Lower = less context-bloat per iteration. Older
 # results are also elided (see TRIM_HISTORY_AFTER) so this is mainly the
 # CURRENT iteration's read budget.
-PER_TOOL_RESULT_CAP = 3000   # ↓ from 8000 chars
+PER_TOOL_RESULT_CAP = 1500   # was 3000; agent rarely needs more than ~50 lines
 # After this many iterations, elide older tool-result bodies (keep the
 # tool-call shell intact so the LLM still sees what was asked). Cuts the
 # replay weight that drives input-token cost.
-TRIM_HISTORY_AFTER = 2
+TRIM_HISTORY_AFTER = 1       # was 2; tighter trim, only keep last iter full
 # gpt-4o pricing (must match main.py)
 INPUT_USD_PER_TOKEN = 2.50 / 1_000_000
 OUTPUT_USD_PER_TOKEN = 10.00 / 1_000_000
@@ -256,12 +256,19 @@ async def run_agent(
     client = OpenAI(api_key=api_key)
 
     system = _load_prompt("rca_agent_system.md")
-    user_msg = _build_primer(job, build, service, error_class, build_meta,
-                             log_window, initial_tool_ctx)
+    primer = _build_primer(job, build, service, error_class, build_meta,
+                           log_window, initial_tool_ctx)
+    # Concatenate primer into the system message so OpenAI's automatic prompt
+    # caching can reuse the prefix across iterations (cached tokens billed at
+    # ~50% rate). The user message stays short — just kicks off the trace.
+    system_full = system + "\n\n" + primer
 
     messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user_msg},
+        {"role": "system", "content": system_full},
+        {"role": "user", "content": (
+            "Begin the trace. Use the primer above. Don't re-fetch what's "
+            "already there. Cite repo evidence at IMPLEMENTATION lines."
+        )},
     ]
 
     ctx = {"jenkins_url": jenkins_url, "jenkins_auth": jenkins_auth}
@@ -402,25 +409,55 @@ def _build_primer(
     job: str, build: int, service: str, error_class: str,
     build_meta: dict, log_window: str, initial_tool_ctx: str,
 ) -> str:
-    """Compose the user message handed to the agent on the first turn."""
+    """Compose the static primer block that becomes part of the system message.
+
+    Structure (resolved-values up top so the LLM never has to hunt for them):
+      1. Build context (job/build/service/stage)
+      2. RESOLVED VALUES (instance, port, log_path, …) — USE VERBATIM
+      3. Pre-fetched context blocks (service.lookup, source.trace, runbooks…)
+      4. Log window (truncated)
+    """
     detected = build_meta.get("detected_failed_stage", "—")
     parts = [
-        f"## Build context",
+        "## Build context",
         f"- job: {job}",
         f"- build: {build}",
         f"- service: {service}",
         f"- classifier hint: {error_class}",
         f"- detected_failed_stage: {detected}",
         "",
-        "## Pre-fetched context (do not re-fetch — these are already in scope)",
+        "## RESOLVED VALUES — substitute these VERBATIM in suggested_fix and commands",
+        "Pulled from the pre-fetched context blocks below. NEVER write `<placeholder>`, `<log_path>`, `<port>`, etc.",
+        _format_resolved_values(initial_tool_ctx),
+        "",
+        "## Pre-fetched context (do not re-fetch — already in scope)",
         initial_tool_ctx or "(no pre-fetched context)",
         "",
         "## Log window (sanitized)",
         "```",
-        log_window,
+        log_window[:30000],  # primer cap; full log otherwise re-replays heavy
         "```",
-        "",
-        "Begin tracing. Start by calling `get_jenkins_job_config(job)` unless "
-        "the pre-fetched context already names the entrypoint script.",
     ]
     return "\n".join(parts)
+
+
+def _format_resolved_values(initial_tool_ctx: str) -> str:
+    """Extract the resolved health_check.target / .service_config JSON blocks
+    from the pre-fetched context and republish them at the top of the primer
+    in a single, easy-to-spot section. Pure heuristic regex over the existing
+    `## health_check.target` and `## health_check.service_config` markdown
+    blocks emitted by `_build_tool_context` — no new fetches.
+    """
+    import re as _re
+    out = []
+    for header in ("health_check.target", "health_check.service_config"):
+        m = _re.search(
+            rf"## {_re.escape(header)}\s*\n```json\s*\n(.*?)\n```",
+            initial_tool_ctx or "",
+            flags=_re.DOTALL,
+        )
+        if m:
+            out.append(f"### {header}\n```json\n{m.group(1)}\n```")
+    if not out:
+        return "(no resolved values block found — primer will rely on service.lookup directly)"
+    return "\n\n".join(out)

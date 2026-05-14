@@ -35,7 +35,7 @@ Automated Root Cause Analysis service for Jenkins `stagger-prod-plus-one` pipeli
 3. Sanitize log (regex-based redactions for secrets/credentials)
 4. Classify error → one of: `compliance`, `canary_fail`, `canary_script_error`, `aws_limit`, `parse_error`, `java_runtime`, `scm`, `ssm`, `network`, `dependency`, `health_check`, `timeout`, `unknown`
 5. Build tool-context (class-specific): Jira tickets, GitHub commits, NewRelic slow txns, runbook excerpts, source.trace hits, service config from `repos/jenkins_pipeline/resources/config.json`
-6. Call LLM (default `gpt-4o-mini`, JSON mode, temp 0.1)
+6. Call LLM (default `gpt-4o`, JSON mode, temp 0.1)
 7. Verify each evidence citation against repos on disk
 8. Cache 24h in diskcache; record audit log
 9. Return RCA JSON to Jenkins, which renders the boxed console block
@@ -152,7 +152,7 @@ curl -X POST http://localhost:7070/v1/rca \
   -d @/tmp/payload_dt25.json | jq
 ```
 
-Typical latency: 30-60s (Jenkins log fetch + sanitize + LLM call). Typical cost: $0.002-0.005 with `gpt-4o-mini`.
+Typical latency: 30-60s (Jenkins log fetch + sanitize + LLM call). Typical cost: $0.04-0.06 with `gpt-4o` (bumped from `gpt-4o-mini` for stronger reasoning on multi-step compliance / canary cases).
 
 To inspect specific fields without scrolling the whole JSON:
 ```bash
@@ -190,38 +190,68 @@ script {
 
 Posts the signed webhook using raw `HttpURLConnection` (no `httpRequest` plugin dependency, since the HTTP Request plugin is **not** installed in the Jenkins controller). Helpers:
 
-- `triggerRcaWebhook()` — entry point called from `post.failure`
+- `triggerRcaWebhook()` — entry point called from `post.failure`; returns parsed RCA Map for Phase B/C reuse
 - `postWebhook(url, payload, sig)` — `@NonCPS`, pure-Java POST; throws on transport error
 - `parseJson(text)` — `@NonCPS` wraps `JsonSlurper.parseText`
-- `renderRca(rca)` — pretty-prints boxed RCA block + sets `currentBuild.description`
+- `renderRca(rca)` — prints compact console block + sets rich `currentBuild.description` with link to HTML report
+- `rcaReportUrl(requestId)` — canonical URL builder (`https://bbctl.blackbuck.com/rca/v1/report/<uuid>`); override base via `BBCTL_RCA_REPORT_BASE_URL` env
 - `hmacSha256(secret, body)` — `@NonCPS` HMAC-SHA256 for request signing
-- `buildAlertMessage(rca)` — one-paragraph summary for Phase B (VictorOps/Slack enrichment)
+- `buildAlertMessage(rca)` — one-paragraph summary for VictorOps + Slack enrichment
+
+### Notification helper (`src/com/blackbuck/utils/Notification.groovy`)
+
+New `rcaAlert(script, service, branch, slack_channel, rca)` static method posts the BB-AI RCA summary to the per-service Slack channel. Reuses the existing `slack-stagger-bot` Jenkins credential — no new Slack app or webhook URL needed. Orange color (`#ff8c00`) differentiates from red `Notification.failure` alerts.
 
 ### Credentials in Jenkins
 
 - **Secret text** with ID `bbctl-webhook-secret` matching `WEBHOOK_SECRET` in AWS Secrets Manager `bbctl-rca/prod`.
 
-### What the operator sees in the build console
+### What the operator sees in the build console (current — compact)
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
 ║               Jenkins Build RCA — Powered by BB-AI               ║
 ╚══════════════════════════════════════════════════════════════════╝
-  class:       health_check
-  failed_stage:Deploy
-  confidence:  0.9
+  class:        compliance
+  failed_stage: Jira Details
+  summary:      Jira ticket PEB-7 is missing the 'Signed Off Commit ID'...
 
-  Summary:    <one-line>
-  Root cause: <para with file:line citations>
-  Suggested fix:
-    [Action]  / [Finding] / [Verify]
-  Commands:   [safe|restricted] cmd → rationale
-  Evidence:   [✓/✗] source: snippet
-  request_id: <uuid>
-  audit log:  request_id <uuid> (full JSON stored on BB-AI server)
+  Full RCA report: https://bbctl.blackbuck.com/rca/v1/report/<uuid>
+  request_id:      <uuid>
 ```
 
-Build description (sidebar) also shows a one-line `RCA: <summary>` so the failure is triagable from the job list.
+Full RCA (Root cause, Suggested fix, Commands, Evidence, Metadata) lives at the HTML report URL — operator clicks through. Keeps Jenkins console scrollable.
+
+Build description (sidebar) shows two compact lines:
+```
+BB-AI: <code>class</code> · <code>stage</code>
+<trimmed summary>… Open RCA →   ← clickable link to full HTML report
+```
+
+### HTML report (`/rca/v1/report/<request_id>`)
+
+Polished, self-contained dark-theme HTML page served by FastAPI. Same URL appears in Jenkins console, sidebar description, Slack message, and VictorOps `details`. Loaded from `bbctl_rca/templates/rca_report.html`.
+
+**Sections (top → bottom):**
+- **Sticky topbar** — title + clickable build link + anchor nav (Summary / Root cause / Fix / Commands / Evidence)
+- **Hero card** — class pill (color-coded per `error_class`), stage pill, `needs_deeper` pill if set, service code chip, action pills linking to Jenkins build / Console log / Raw JSON
+- **Summary** — one-line LLM-generated summary
+- **Two-column grid** — Root cause | Suggested fix (Map form splits into Finding / Action / Verify dt-dd rows)
+- **Suggested commands** — dark terminal-style blocks with tier pill (`safe` green / `restricted` amber), one-line rationale, syntax-highlighted command, and a Copy button (clipboard)
+- **Evidence** — colored ✓/✗/? badges with source label + snippet
+- **Metadata** — request_id, provider, redactions, log_window_chars, recorded_at
+- **Footer** — `BB-AI · powered by bbctl-rca` + `Built by Hariharan G, DevOps`
+
+**Design choices:**
+- Dark navy palette (`#0a0f1c` bg) with subtle dot pattern, calm low-light feel
+- Translucent class-colored pills with matching borders → glow effect on dark
+- Inter-style system-font stack (`-apple-system`, `Segoe UI`, etc.) — zero CDN deps (works in restricted networks)
+- Self-contained CSS; no Tailwind / external fonts
+- Sticky frosted-glass topbar
+
+**Endpoints:**
+- `GET /rca/v1/report/<request_id>` — HTML page
+- `GET /rca/v1/report/<request_id>.json` — raw audit JSON (for scripts/debugging)
 
 ---
 
@@ -249,7 +279,7 @@ Build description (sidebar) also shows a one-line `RCA: <summary>` so the failur
 
 ### Cost guardrails
 
-- Per-call cost estimated from token counts (`gpt-4o-mini`: $0.15/1M input, $0.60/1M output)
+- Per-call cost estimated from token counts (`gpt-4o`: $2.50/1M input, $10.00/1M output)
 - Daily spend cap enforced via `cache.over_daily_cap()` → HTTP 429
 - Cached responses (24h) skip the LLM call entirely
 
@@ -466,6 +496,24 @@ If `suggested_fix` is a single String (some classes use this shape), only the fi
     - `docops/HealthCheckFailure.md` — new "Access pattern — use BBCTL" lead section + all verify commands rewritten to use `bbctl run`.
 13. **Live verification (round 2)** — same build 25 re-RCA'd cleanly. Output now contains real values everywhere: `bbctl shell i-02fc813e939bb2b39`, port `7005` (resolved from `target_port`), log path `/var/log/blackbuck/test-supply-wrapper-nonweb.log` (org-standard pattern), health endpoint `/admin/version`. All `suggested_commands` tier `safe`. No raw `ssh`, no `<placeholder>`. Cost: $0.003 / 19K input tokens / 62s latency.
 14. **Phase C wired (Slack)** — `Notification.rcaAlert(...)` static method added to `com.blackbuck.utils.Notification`; called from `main_stagger_prod_plus_one.groovy` post.failure right after the RCA webhook returns. Uses existing `slack-stagger-bot` Jenkins credential + per-service `config.slack_channel` (via `env["${SERVICE}:slack_channel"]`). No new Secrets Manager entry, no new Slack app, no webhook URL change — fully reuses existing org Slack infra. Orange-colored message lands in the same channel as the red `Notification.failure` so team sees failure + diagnosis side-by-side.
+15. **HTML report endpoint** — new `GET /rca/v1/report/<request_id>` route in FastAPI; renders the stored audit JSON as a polished HTML page. `audit.read_by_request_id(uuid)` added (with uuid regex validation as path-traversal defence). `build_url` now captured in the audit record so the report can link directly. Same URL appears in Jenkins console / sidebar / Slack / VictorOps `details` (key `rcaReportUrl`) — one canonical, shareable surface across all channels.
+16. **Compact Jenkins console** — `renderRca()` no longer dumps the full RCA into Jenkins console (~40 lines). New output is ~10 lines: header box, class / stage / one-line summary, full report URL, request_id. Rationale: operators don't have to scroll through a wall of text; the HTML report is one click away. Sidebar build description got a rich 2-line card with `Open RCA →` link.
+17. **Dark-theme HTML report** — Polished UI: navy `#0a0f1c` background with dot pattern, sticky frosted-glass topbar, hero card with gradient, per-class colored pills (translucent with matching borders), dark code blocks for commands with Copy button, colored ✓/✗/? evidence badges, two-column grid for root cause + suggested fix. Self-contained CSS (no Tailwind / Inter CDN) so it renders correctly in restricted corporate networks. Header has no bot emoji — clean professional brand. Footer: `Built by Hariharan G, DevOps`.
+18. **Confidence + cost + tokens hidden from operator UI** — `confidence` was a self-reported LLM score with no automation gates, so it was cosmetic. Removed from console box, sidebar description, Slack message, VictorOps details, and HTML report header. Still stored in audit JSON for retro analysis. Cost / token usage similarly hidden from the report header (operators don't care; finance can see in audit JSON).
+19. **BBCTL scoped to instance-access classes only** — earlier prompt iteration was suggesting `bbctl run i-... -- 'git fetch'` for compliance failures (wrong tool — compliance is fixed in Jira, not on an instance). Prompt now restricts `bbctl shell` / `bbctl run` to: `health_check` (always); `java_runtime` / `network` / `ssm` (when stack trace points at an instance). Forbidden for: `compliance`, `scm`, `aws_limit`, `parse_error`, `canary_*` — those are operator-action failures (Jira UI / GitHub / AWS console / config edits).
+20. **Compliance split into 5 distinct modes** — `prompts/rca_system.md` now has explicit Mode 1-5 guidance reading directly from `jira.tickets[].custom_fields["Signed Off Commit ID"]`:
+    - **Mode 1** — missing Signed Off Commit ID (most common; matches `ERROR: Compliance: ... has no Signed Off commit id`)
+    - **Mode 2** — commit-mismatch (uses the existing Option A / Option B template)
+    - **Mode 3** — Jira ticket status not in allowed list
+    - **Mode 4** — clone-of-clone chain detected
+    - **Mode 5** — merged PR title missing the Jira ticket ID
+    Prevents the previous "clone detection failed" hallucinations on logs where clone-detection actually passed.
+21. **Jira REST API curl suggestion banned** — operator edits the Signed Off Commit ID field in the Jira UI (custom-field PUT via REST often requires special perms; UI is org-standard path). Prompt explicitly forbids `curl -X PUT 'https://blackbuck.atlassian.net/rest/api/2/issue/...'` in `suggested_commands` or prose.
+22. **`SSH` / `ssh` wording banned from prose** — earlier output mixed `ssh -i ...` into Action prose even when commands used `bbctl run`. Prompt rule now: NEVER use `SSH` / `ssh` in prose; write `Use bbctl shell <instance_id>` or `Run bbctl run <instance_id> -- '<cmd>'`. `ssh ...` allowed only as a one-line fallback clause if BBCTL unavailable.
+23. **Real config field resolution** — `_SLIM_FIELDS` extended to surface this org's actual config.json field names (`target_port`, `filebeat_log_path`, `key_name`, `server_command`, `aws_region`, `service_identifier`, `service_type`). `llm.py` `health_check.service_config` block now resolves canonical → actual names (e.g. `port` ← `target_port`, `log_path` ← `filebeat_log_path`), parses `-Dlog.dir=` out of `server_command` as a fallback log-location hint, and derives `pem_path_hint` from `key_name`. Unresolvable fields shown as `NOT_IN_CONFIG` so LLM sees the gap rather than fabricating `<placeholder>` strings.
+24. **Unknown-class deep dive** — when classifier returns `unknown`, expand context: wider `source.trace` sweep (10 queries × 16 hits), full `docs.catalog` block listing every docops/*.md with first heading + 250-char preview, plus a 4-step `unknown_class.guide` telling the LLM to self-classify from source evidence + runbook previews. Marks `needs_deeper: true` when no fit is found.
+25. **Model bumped: gpt-4o-mini → gpt-4o** — `bbctl_rca/llm.py` `run_rca_openai` now uses `gpt-4o` (full model). Reasoning quality on multi-step compliance / canary cases is markedly better. Cost calc in `main.py` updated to `$2.50/1M input + $10.00/1M output` (gpt-4o pricing). Typical RCA: ~$0.04-0.06 vs $0.003 before. Daily spend cap in `cache.py::over_daily_cap` still enforces.
+26. **Live verification (compliance class, build 35)** — re-RCA cleanly cites Mode 1 ("Jira ticket PEB-7 is missing the 'Signed Off Commit ID' custom field"), Action template tells operator to edit the field in Jira UI (not REST API), Evidence includes both the `ERROR: Compliance: ... has no Signed Off commit id` log line AND the `jira.tickets` block confirming the missing custom field. No BBCTL commands. No clone-detection hallucination. No `<placeholder>` strings.
 
 ---
 

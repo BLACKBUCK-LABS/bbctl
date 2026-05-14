@@ -20,7 +20,7 @@ JP_BRANCH="${JP_BRANCH:-master}"
 IC_BRANCH="${IC_BRANCH:-main}"
 
 # S3 source for docops/ (read-only mirror)
-DOCS_S3_URI="${DOCS_S3_URI:-s3://bbctl-rca-docs/docs/}"
+DOCS_S3_URI="${DOCS_S3_URI:-s3://docops-doc-storage/docs/}"
 
 mkdir -p "$(dirname "$LOG")"
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }

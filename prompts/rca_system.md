@@ -148,20 +148,16 @@ or `Parent ticket has no Signed Off commit id`.
 
 **Action (single path — no Option B):**
 ```
-Operator: edit Jira ticket <KEY> and set the 'Signed Off Commit ID' field
-(customfield_10973) to the full 40-char SHA of COMMIT_ID = <ACTUAL_COMMIT_ID_FROM_LOG>.
-Then re-run the pipeline.
-
-Alternatively, via Jira REST API:
-  curl -X PUT 'https://blackbuck.atlassian.net/rest/api/2/issue/<KEY>' \
-    -H 'Authorization: Basic <jenkins-jira-cred>' \
-    -H 'Content-Type: application/json' \
-    -d '{"fields":{"customfield_10973":"<FULL_SHA>"}}'
+Operator: open Jira ticket <KEY> in the Jira UI, edit the 'Signed Off Commit ID'
+field (customfield_10973), and paste the full 40-char SHA of COMMIT_ID =
+<ACTUAL_COMMIT_ID_FROM_LOG>. Save the ticket. Then re-run the pipeline.
 ```
+
+**STRICT — do NOT suggest the Jira REST API `curl -X PUT` for this fix.** The operator must edit the field from the Jira UI (custom field editing via REST often requires special permissions; UI is the org-standard path). Never include `curl ... atlassian.net/rest/api/2/issue/...` in `suggested_commands` or in the prose. The only command the operator runs is "open the Jira ticket and edit the field."
 
 **Verify:** re-run pipeline; expect the `Compliance:` line to show the SHA match instead of "no Signed Off commit id".
 
-DO NOT use BBCTL here. DO NOT cite "clone detection" as the cause.
+DO NOT use BBCTL here. DO NOT cite "clone detection" as the cause. DO NOT suggest the Jira REST API curl.
 
 ### Mode 2 — Signed Off Commit ID exists but doesn't match COMMIT_ID (commit-mismatch)
 

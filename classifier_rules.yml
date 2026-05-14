@@ -66,13 +66,23 @@ rules:
     # it falsely matched `-XX:+HeapDumpOnOutOfMemoryError` JVM startup
     # flags in config.json dumps. Sanitizer now strips those lines, but
     # we keep the pattern strict here as defense-in-depth.
+    #
+    # Groovy DSL / Jenkins pipeline script exceptions are also routed here
+    # — they're JVM-level method-resolution / type errors raised at the same
+    # layer as java.lang.* and benefit from the same "read the stack trace,
+    # cite the file:line" treatment. Without this, the classifier returned
+    # `unknown` for Groovy MissingMethodException and the LLM drifted into
+    # an `scm` narrative because of a `release/REQ-...` branch name.
     patterns:
       - 'java\.lang\.\S+Exception'
       - 'java\.lang\.\S+Error'
       - 'Exception in thread "[^"]+"'
       - 'java\.lang\.OutOfMemoryError'
       - 'java\.lang\.StackOverflowError'
-    description: "Java runtime exception in application"
+      - 'groovy\.lang\.\S+Exception'
+      - 'No signature of method:'
+      - 'unable to resolve class'
+    description: "Java/Groovy runtime exception — read the stack trace, cite the file:line"
 
   - class: ssm
     patterns:

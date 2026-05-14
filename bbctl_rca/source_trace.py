@@ -13,6 +13,10 @@ from pathlib import Path
 REPOS_DIR = Path("/opt/bbctl-rca/repos")
 SEARCH_DIRS = ["jenkins_pipeline", "InfraComposer"]
 MAX_QUERIES = 4
+# Wider sweep when the classifier returned `unknown` — let the LLM see more
+# candidate origin points so it can self-classify from source evidence.
+MAX_QUERIES_DEEP = 10
+MAX_HITS_DEEP = 10
 
 # Lines we trace: "ERROR: ...", "FATAL: ...", "Exception: ...", Jenkins error('msg')
 _ERROR_LINE_RE = re.compile(
@@ -23,8 +27,8 @@ _ERROR_LINE_RE = re.compile(
 )
 
 
-def _extract_queries(log_window: str) -> list[str]:
-    """Pick distinctive substrings to grep for, capped at MAX_QUERIES."""
+def _extract_queries(log_window: str, max_queries: int = MAX_QUERIES) -> list[str]:
+    """Pick distinctive substrings to grep for, capped at max_queries."""
     queries: list[str] = []
     for line in log_window.splitlines():
         line = line.strip()
@@ -48,7 +52,7 @@ def _extract_queries(log_window: str) -> list[str]:
         q = re.sub(r"\s+", " ", q)
         if q and q not in queries and len(q) >= 8:
             queries.append(q)
-        if len(queries) >= MAX_QUERIES:
+        if len(queries) >= max_queries:
             break
     return queries
 
@@ -83,12 +87,19 @@ def _rg(query: str, search_dir: Path, max_hits: int = 5) -> list[str]:
     return lines
 
 
-def trace(log_window: str) -> list[dict]:
-    """Return list of {query, hits[]} for each distinctive error in log."""
+def trace(log_window: str, deep: bool = False) -> list[dict]:
+    """Return list of {query, hits[]} for each distinctive error in log.
+
+    `deep=True` runs a wider sweep — used when the classifier returned
+    `unknown` so the LLM has more candidate origin points to self-classify
+    from source evidence.
+    """
+    max_queries = MAX_QUERIES_DEEP if deep else MAX_QUERIES
+    max_hits = MAX_HITS_DEEP if deep else 5
     out = []
-    for q in _extract_queries(log_window):
+    for q in _extract_queries(log_window, max_queries=max_queries):
         hits = []
         for sd in SEARCH_DIRS:
-            hits.extend(_rg(q, REPOS_DIR / sd))
-        out.append({"query": q, "hits": hits[:8]})
+            hits.extend(_rg(q, REPOS_DIR / sd, max_hits=max_hits))
+        out.append({"query": q, "hits": hits[: (16 if deep else 8)]})
     return out

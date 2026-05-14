@@ -274,12 +274,16 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
         )
 
     # Trace error strings → source code. Only include queries with hits.
-    traces = [t for t in source_trace.trace(log_window) if t.get("hits")]
+    # For `unknown` class, run a wider sweep so the LLM has more candidate
+    # origin points to self-classify from source evidence.
+    deep_trace = (error_class == "unknown")
+    traces = [t for t in source_trace.trace(log_window, deep=deep_trace) if t.get("hits")]
     if traces:
         lines = ["## source.trace"]
+        hits_cap = 6 if deep_trace else 3
         for t in traces:
             lines.append(f"query: {t['query']}")
-            lines.extend(t["hits"][:3])  # cap hits per query
+            lines.extend(t["hits"][:hits_cap])
         parts.append("\n".join(lines))
 
     # Class-specific runbook doc — load only the sections most relevant to
@@ -290,6 +294,46 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
         if doc and not doc.startswith("doc not found"):
             extract = runbook.extract_relevant(doc, error_class, budget_chars=6000)
             parts.append(f"## docs.{doc_name}\n{extract}")
+
+    # Unknown class — give the LLM a catalog of available runbooks + class
+    # taxonomy so it can self-classify by reading. Wider source.trace already
+    # ran (deep=True). Include the first heading + first ~250 chars of each
+    # docops/*.md so the LLM can spot which runbook matches.
+    if error_class == "unknown":
+        try:
+            doc_names = mcp_tools.docs_list()
+        except Exception:
+            doc_names = []
+        catalog_lines = ["## docs.catalog (read these to self-classify)"]
+        for name in doc_names:
+            body = mcp_tools.docs_get(name)
+            if not body or body.startswith("doc not found"):
+                continue
+            # First non-blank line as a heading; first ~250 chars as preview.
+            heading = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+            preview = body.replace("\n", " ").strip()[:250]
+            catalog_lines.append(f"- **{name}** — {heading[:80]}")
+            catalog_lines.append(f"    preview: {preview}…")
+        if len(catalog_lines) > 1:
+            parts.append("\n".join(catalog_lines))
+
+        parts.append(
+            "## unknown_class.guide\n"
+            "The rule-based classifier could not match this failure to a known class. "
+            "Before composing the RCA:\n"
+            "  1. Read the `source.trace` hits above — they often point at the exact "
+            "Groovy/Terraform line that emitted the error message.\n"
+            "  2. Skim the `docs.catalog` previews above. If any docs entry's heading "
+            "or preview matches the failure pattern in the log, fetch its remediation "
+            "steps mentally and use them in your `suggested_fix`.\n"
+            "  3. Pick the best-fit `error_class` from the enum (compliance, canary_fail, "
+            "canary_script_error, health_check, aws_limit, parse_error, java_runtime, "
+            "scm, network, dependency, health_check, ssm, timeout). If truly nothing "
+            "fits, keep `error_class: \"unknown\"` and set `needs_deeper: true`.\n"
+            "  4. In Finding, name the specific evidence line + the source.trace path "
+            "that explains it. Do NOT speculate without evidence — better to say "
+            "'cannot determine from log alone' and `needs_deeper: true`."
+        )
 
     # Jira tickets — already slim from fetch_ticket
     ticket_keys = jira.extract_tickets(log_window)

@@ -169,15 +169,17 @@ def renderRca(Map rca) {
 
     echo lines.join('\n')
 
-    // Also set a short HTML description so the build list page shows it at a
-    // glance + a clickable link to the full HTML report.
-    def descLines = []
-    descLines << "<b>🤖 BB-AI RCA:</b> ${escapeHtml(summary)}"
-    descLines << "<b>class:</b> ${cls} | <b>stage:</b> ${stage}"
-    if (fix instanceof Map && fix.Finding) {
-        descLines << "<b>Finding:</b> ${escapeHtml((fix.Finding as String).take(200))}"
+    // Compact 2-line description for the Jenkins build list sidebar.
+    // Jenkins truncates long descriptions in that view, so we keep the
+    // visible text tight: line 1 = badges (class / stage), line 2 = trimmed
+    // summary + click-through link to the full HTML report.
+    def shortSummary = (summary as String).replaceAll(/\s+/, ' ').trim()
+    if (shortSummary.length() > 110) {
+        shortSummary = shortSummary.substring(0, 110).trim() + '…'
     }
-    descLines << "<a href='${reportUrl}' target='_blank'>📊 Open full RCA report →</a>"
+    def descLines = []
+    descLines << "<b>🤖 BB-AI:</b> <code>${cls}</code> · <code>${stage}</code>"
+    descLines << "${escapeHtml(shortSummary)} <a href='${reportUrl}' target='_blank'><b>📊 Open RCA →</b></a>"
     currentBuild.description = descLines.join('<br/>')
 }
 

@@ -240,12 +240,17 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     # Classes worth the agent's deeper trace through the actual source code.
     # Cheap one-shot stays good enough for the rest (timeout, ssm, network,
     # dependency, java_runtime when stack trace is self-explanatory).
-    # compliance is excluded: it's a Jira-field-missing problem, not a code-trace
-    # problem — primer already carries jira.tickets + runbook + mode 1-5 guidance,
-    # so the agent has nothing to trace and tends to drift into prose output.
+    # compliance + unknown are excluded:
+    #   - compliance is a Jira-field-missing problem, not a code-trace problem.
+    #   - unknown is the catch-all class — when the classifier can't fit the
+    #     error, the agent often has no clear source signal to trace either,
+    #     so it drifts and emits prose instead of JSON.
+    # Primer for both already carries jira.tickets + runbook + (for unknown)
+    # the wide source.trace + docs.catalog + self-classify guide, so the
+    # one-shot path is the right home for them.
     AGENT_CLASSES = {
         "canary_fail", "canary_script_error",
-        "health_check", "parse_error", "scm", "unknown",
+        "health_check", "parse_error", "scm",
     }
 
     if LLM_PROVIDER == "openai" and error_class in AGENT_CLASSES:

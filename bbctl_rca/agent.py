@@ -19,8 +19,16 @@ from . import mcp_tools
 from . import jenkins as jenkins_api
 
 
-MAX_TOOL_CALLS = 8
+MAX_TOOL_CALLS = 6           # ↓ from 8; typical successful runs use 4-5
 COST_CAP_USD = 0.25
+# Per-tool-result cap. Lower = less context-bloat per iteration. Older
+# results are also elided (see TRIM_HISTORY_AFTER) so this is mainly the
+# CURRENT iteration's read budget.
+PER_TOOL_RESULT_CAP = 3000   # ↓ from 8000 chars
+# After this many iterations, elide older tool-result bodies (keep the
+# tool-call shell intact so the LLM still sees what was asked). Cuts the
+# replay weight that drives input-token cost.
+TRIM_HISTORY_AFTER = 2
 # gpt-4o pricing (must match main.py)
 INPUT_USD_PER_TOKEN = 2.50 / 1_000_000
 OUTPUT_USD_PER_TOKEN = 10.00 / 1_000_000
@@ -323,13 +331,19 @@ async def run_agent(
             _log(f"iter {iteration} tool#{tool_call_count}: {tc.function.name}({list(args)})")
             result = await _dispatch_tool(tc.function.name, args, ctx)
             # Cap each tool result so a runaway grep doesn't blow the window
-            if len(result) > 8000:
-                result = result[:8000] + "\n…[truncated]"
+            if len(result) > PER_TOOL_RESULT_CAP:
+                result = result[:PER_TOOL_RESULT_CAP] + "\n…[truncated]"
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
                 "content": result,
             })
+
+        # Trim history: elide tool-result bodies from older iterations to
+        # cut the token-replay cost. Keep the tool-call shells so the LLM
+        # still sees the question + the fact it got answered.
+        _elide_old_tool_results(messages, current_iter=iteration,
+                                keep_recent=TRIM_HISTORY_AFTER)
 
     # Final JSON parse
     try:
@@ -352,6 +366,36 @@ async def run_agent(
     rca["agent_tool_calls"] = tool_call_count
     _log(f"done. tool_calls={tool_call_count} tokens={total_in}+{total_out}")
     return rca
+
+
+def _elide_old_tool_results(messages: list, *, current_iter: int, keep_recent: int) -> None:
+    """Replace tool-result bodies from iterations older than (current - keep_recent)
+    with a short placeholder. Preserves the assistant→tool message structure so
+    OpenAI still threads the tool_call_id chain, just drops the heavy content.
+
+    Each agent iteration appends 1 assistant message + N tool messages. We
+    walk the message list, and for any `role==tool` whose position is older
+    than the cutoff, swap its content for `[elided to save tokens — see
+    earlier reasoning]`.
+
+    Cheap heuristic: each iteration's tool messages are clustered after an
+    assistant message. We count assistant messages backwards and elide any
+    tool messages that belong to assistant turns older than the cutoff.
+    """
+    if current_iter < keep_recent:
+        return
+    # Walk backwards, counting assistant turns. Once we've passed
+    # `keep_recent` assistant turns, elide subsequent (older) tool messages.
+    assistant_seen = 0
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            assistant_seen += 1
+            continue
+        if role == "tool" and assistant_seen >= keep_recent:
+            if not (m.get("content") or "").startswith("[elided"):
+                m["content"] = "[elided to save tokens — see earlier reasoning]"
 
 
 def _build_primer(

@@ -116,7 +116,6 @@ def renderRca(Map rca) {
     def cls = rca.error_class ?: 'unknown'
     def stage = rca.failed_stage ?: '—'
     def summary = rca.summary ?: '—'
-    def conf = rca.confidence ?: '—'
     def reqId = rca.request_id ?: '—'
 
     // Build the formatted console block
@@ -127,7 +126,6 @@ def renderRca(Map rca) {
     lines << '╚══════════════════════════════════════════════════════════════════╝'
     lines << "  class:       ${cls}"
     lines << "  failed_stage:${stage}"
-    lines << "  confidence:  ${conf}"
     lines << ''
     lines << "  Summary:"
     lines << "    ${summary}"
@@ -175,7 +173,7 @@ def renderRca(Map rca) {
     // glance + a clickable link to the full HTML report.
     def descLines = []
     descLines << "<b>🤖 BB-AI RCA:</b> ${escapeHtml(summary)}"
-    descLines << "<b>class:</b> ${cls} | <b>stage:</b> ${stage} | <b>conf:</b> ${conf}"
+    descLines << "<b>class:</b> ${cls} | <b>stage:</b> ${stage}"
     if (fix instanceof Map && fix.Finding) {
         descLines << "<b>Finding:</b> ${escapeHtml((fix.Finding as String).take(200))}"
     }

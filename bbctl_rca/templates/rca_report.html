@@ -28,11 +28,10 @@
     · Generated {{ recorded_at }}
   </p>
 
-  <!-- Top-line: class / stage / confidence -->
+  <!-- Top-line: class / stage -->
   <div class="flex flex-wrap gap-2 mb-6">
     <span class="badge {{ class_color }}">class · {{ error_class }}</span>
     <span class="badge bg-slate-200 text-slate-700">stage · {{ failed_stage }}</span>
-    <span class="badge bg-slate-200 text-slate-700">confidence · {{ confidence }}</span>
     {% if needs_deeper %}<span class="badge bg-amber-200 text-amber-800">needs deeper analysis</span>{% endif %}
   </div>
 

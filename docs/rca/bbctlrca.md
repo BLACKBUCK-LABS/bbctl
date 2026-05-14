@@ -384,25 +384,47 @@ LLM is instructed to **never** cite SSH host-key warnings or NewRelic `Applicati
 
 - **Phase A (LIVE)** — Auto-RCA prints to console + build description on failure. Webhook is non-fatal; nothing about the existing alert flow changed.
 - **Phase B (LIVE)** — VictorOps incident `message` field now includes `buildAlertMessage(rca)` so on-call sees the RCA summary inside the page itself. RCA fields (`rcaErrorClass`, `rcaFailedStage`, `rcaConfidence`, `rcaSummary`, `rcaRequestId`) also injected into the VictorOps `details` panel for structured access. Base message still leads — existing VictorOps filters / dashboards keep working.
-- **Phase C (next — test 2026-05-14)** — Slack notification with RCA + suggested commands; "deep" mode triggered from a Slack button. The infra hooks (`slack.post(result, job, build)` is already invoked at the end of `_run_rca` in `main.py`) — needs a webhook URL configured in Secrets Manager + message-block formatting.
+- **Phase C (LIVE)** — Per-service Slack channel now receives a `BB-AI Auto-RCA` summary message on every failed pipeline. Uses the org's existing `slack-stagger-bot` Jenkins credential (same one as `Notification.failure`); channel routed via the per-service `config.slack_channel`. **No new infra, no new webhook URL, no Secrets Manager change.**
+- **Phase D (later)** — Slack interactive button "🔍 Deep analyze" → POSTs to a new `/v1/rca/deep` endpoint with `deep:true`, replies into the same thread. Requires Slack app with `interactivity` enabled + a public bbctl-rca endpoint (already covered by ALB).
 - **Future** — fetch real Kayenta canary scores via Kayenta API for `canary_fail` class instead of inferring from build log alone.
 
-### Phase C dry-run plan (for 2026-05-14)
+### Phase C — Slack message shape
 
-Pre-reqs to validate before testing:
+Triggered from `main_stagger_prod_plus_one.groovy` post.failure block via:
+```groovy
+com.blackbuck.utils.Notification.rcaAlert(this, params.SERVICE, branchVal, slackCh, rca)
+```
 
-1. **Secrets Manager** — add `BBCTL_SLACK_WEBHOOK_URL` (incoming webhook URL of the target channel, e.g. `#devops-alerts-rca` or `#prod-deployment-failures`). Update `bbctl_rca/secrets.py` to export it as env var.
-2. **`bbctl_rca/slack.py`** — `post(result, job, build)` is currently a stub. Wire it to:
-   - Build a Slack [Block Kit](https://api.slack.com/block-kit) message with: header (class/stage/confidence), section (summary), divider, section (suggested_fix), section (suggested_commands as `mrkdwn` code blocks).
-   - POST to the webhook URL.
-   - Non-blocking — wrap in try/except so a Slack failure never breaks the RCA response to Jenkins.
-3. **Deep-mode trigger** — add a Slack interactive button "🔍 Deep analyze". On click, the Slack message posts to a new `/v1/rca/deep` endpoint with `{job, build, deep: true}`. Returns updated RCA into the same thread.
-4. **Rate / cost guard** — Phase C will produce one Slack message per failed pipeline (already cached 24h). Deep-mode click can multiply cost — gate behind a "are you sure?" Slack confirmation or limit one deep call per build.
+Method lives at `src/com/blackbuck/utils/Notification.groovy::rcaAlert(...)`. Uses `slackSend tokenCredentialId: 'slack-stagger-bot'`. Posts to `env["${SERVICE}:slack_channel"]` (the same channel that already receives the `Notification.failure` alert).
 
-Test flow:
-- Trigger a known-failing build (e.g. retrigger `stagger-prod-plus-devops-test#25`)
-- Confirm Slack message lands in the channel within ~60s
-- Click "Deep analyze" — confirm a follow-up message with `deep:true` RCA arrives in the thread
+```
+Build#1234 Test-Supply-Wrapper-Nonweb — BB-AI Auto-RCA  🤖
+------------------------------------------------------
+Class: health_check   Stage: Deploy   Confidence: 0.85
+
+Summary: Deploy stage failed due to health check failure...
+
+Finding: <if Map-shaped suggested_fix>
+Action:  <if Map-shaped; else first 500 chars of fix string>
+
+Commands:
+• `[safe] bbctl shell i-02fc813e939bb2b39`
+• `[safe] bbctl run i-02fc813e939bb2b39 -- 'sudo ss -tlnp | grep 7005'`
+• `[safe] bbctl run i-02fc813e939bb2b39 -- 'curl -i http://localhost:7005/admin/version'`
+
+Job:       <blue-ocean-link>
+Branch:    <COMMIT_ID or tag>
+Console:   <build_url>/console
+RCA id:    <uuid>
+Timestamp: <IST>
+```
+
+Orange color (`#ff8c00`) distinguishes the RCA message from the red `FAILURE` alert. Both messages land in the same channel so the team sees the failure AND the diagnosis side-by-side.
+
+**Behavior:**
+- Non-fatal: any error in `rcaAlert` is caught + echoed; never breaks rollback or VictorOps flow.
+- Skipped silently if `rca == null` (webhook failed) or no `slack_channel` configured for the service.
+- Skipped for canary failures by the surrounding `if (PROD_PLUS_ONE_COMPLETED && !isCanaryFailure)` guard — same logic that already gates VictorOps.
 
 ### Phase B — VictorOps message shape
 
@@ -443,6 +465,7 @@ If `suggested_fix` is a single String (some classes use this shape), only the fi
     - `bbctl_rca/llm.py` — `health_check.guide` injects the org access pattern into the LLM prompt at runtime.
     - `docops/HealthCheckFailure.md` — new "Access pattern — use BBCTL" lead section + all verify commands rewritten to use `bbctl run`.
 13. **Live verification (round 2)** — same build 25 re-RCA'd cleanly. Output now contains real values everywhere: `bbctl shell i-02fc813e939bb2b39`, port `7005` (resolved from `target_port`), log path `/var/log/blackbuck/test-supply-wrapper-nonweb.log` (org-standard pattern), health endpoint `/admin/version`. All `suggested_commands` tier `safe`. No raw `ssh`, no `<placeholder>`. Cost: $0.003 / 19K input tokens / 62s latency.
+14. **Phase C wired (Slack)** — `Notification.rcaAlert(...)` static method added to `com.blackbuck.utils.Notification`; called from `main_stagger_prod_plus_one.groovy` post.failure right after the RCA webhook returns. Uses existing `slack-stagger-bot` Jenkins credential + per-service `config.slack_channel` (via `env["${SERVICE}:slack_channel"]`). No new Secrets Manager entry, no new Slack app, no webhook URL change — fully reuses existing org Slack infra. Orange-colored message lands in the same channel as the red `Notification.failure` so team sees failure + diagnosis side-by-side.
 
 ---
 

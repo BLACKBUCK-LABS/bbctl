@@ -133,7 +133,65 @@ If `newrelic.slow_transactions` block is missing or empty, in Path 1 still tell 
 - Re-run pipeline → check canary status JSON in log for previously failed config name
 - Confirm all `canary_run_status: "Pass"`
 
-## Compliance / commit-mismatch (CRITICAL)
+## Compliance failures — first decide WHICH compliance check failed
+
+There are FIVE distinct compliance failure modes. Read `jira.tickets[]` and the log carefully to pick ONE. Do NOT invent a different cause (e.g. "clone detection failed" if log shows clone-detection passed).
+
+### Mode 1 — Jira ticket has NO `Signed Off Commit ID` (most common)
+
+**Log signal:** `ERROR: Compliance: Jira ticket <KEY> has no Signed Off commit id`
+or `Parent ticket has no Signed Off commit id`.
+
+**Tool-context signal:** `jira.tickets[<KEY>].custom_fields["Signed Off Commit ID"]` is null / missing.
+
+**Finding:** "Jira ticket `<KEY>` is missing the `Signed Off Commit ID` custom field (customfield_10973). Without it, the compliance gate cannot verify the commit being deployed was sign-off-reviewed."
+
+**Action (single path — no Option B):**
+```
+Operator: edit Jira ticket <KEY> and set the 'Signed Off Commit ID' field
+(customfield_10973) to the full 40-char SHA of COMMIT_ID = <ACTUAL_COMMIT_ID_FROM_LOG>.
+Then re-run the pipeline.
+
+Alternatively, via Jira REST API:
+  curl -X PUT 'https://blackbuck.atlassian.net/rest/api/2/issue/<KEY>' \
+    -H 'Authorization: Basic <jenkins-jira-cred>' \
+    -H 'Content-Type: application/json' \
+    -d '{"fields":{"customfield_10973":"<FULL_SHA>"}}'
+```
+
+**Verify:** re-run pipeline; expect the `Compliance:` line to show the SHA match instead of "no Signed Off commit id".
+
+DO NOT use BBCTL here. DO NOT cite "clone detection" as the cause.
+
+### Mode 2 — Signed Off Commit ID exists but doesn't match COMMIT_ID (commit-mismatch)
+
+Use the BOTH-options template below.
+
+### Mode 3 — Ticket status not in allowed list
+
+**Log signal:** `Compliance: ... status is not <expected>` (e.g. ticket is `In Progress` but pipeline wants `READY FOR RELEASE`).
+
+**Action:** Operator moves the Jira ticket to the required status (typically `READY FOR RELEASE`) on the Jira board. Single path.
+
+### Mode 4 — Clone-of-clone chain
+
+**Log signal:** `Compliance: ... clone-of-clone chain detected` with chain like `X → Y → Z`.
+
+**Action:** Use the parent (not the grandparent) ticket. Operator picks the right ticket and re-runs.
+
+### Mode 5 — PR title missing Jira ticket ID
+
+**Log signal:** `Compliance: ... merged PR title does not contain <KEY>`.
+
+**Action:**
+```
+gh pr edit <PR_NUMBER> --title '<KEY> <existing title>'
+```
+Re-run pipeline.
+
+---
+
+## Compliance — commit-mismatch case (Mode 2 only)
 
 You MUST output BOTH Option A and Option B. Do not omit Option B even if Option A seems obviously right.
 
@@ -219,14 +277,31 @@ If service is up + health endpoint returns 200:
 Fallback (only if BBCTL unavailable): `aws ssm start-session --target <instance_id> --region <region>` or raw `ssh -i <pem_path_hint> ubuntu@<private_ip>`.
 ```
 
-**BBCTL command rules (STRICT — applies to suggested_commands AND prose in suggested_fix):**
-- BBCTL is the org's standard CLI for EC2 access. Use it EVERYWHERE — in `suggested_commands` AND in the natural-language `Action` / `Finding` / `Verify` prose inside `suggested_fix`.
+**BBCTL command rules — APPLIES ONLY to instance-access failures (STRICT):**
+
+BBCTL is the org's standard CLI for EC2 access. Use BBCTL commands ONLY when the operator needs to log into a deployed instance:
+- `health_check` class (always — service didn't become healthy; operator must check the instance)
+- `java_runtime` / `network` / `ssm` classes WHEN the stack trace or evidence points at a running service on a specific instance
+- Any class where `health_check.target.instance_id` is populated in the tool context
+
+DO NOT use BBCTL commands for the following classes — these are operator-action failures fixed in Jira / GitHub / AWS console, NOT on instances:
+- `compliance` → Jira field edits + GitHub PR title fixes
+- `scm` → GitHub PAT / repo permission fixes
+- `aws_limit` → AWS console / support quota request
+- `parse_error` → edit `config.json` in the jenkins_pipeline repo and push
+- `canary_fail` / `canary_script_error` → NewRelic + Kayenta config fixes (operator-side)
+
+**When BBCTL is appropriate (rules):**
 - DO NOT use the words `SSH`, `ssh`, `SSH into`, or `ssh -i` in the prose. Write `Use bbctl shell <instance_id>` or `Run bbctl run <instance_id> -- '<cmd>'` instead.
 - The phrase `SSH/SSM` or `ssh ...` is ONLY acceptable in a single short fallback clause at the end (e.g., "if BBCTL is unavailable, fall back to `aws ssm start-session ...`"). Default to BBCTL.
 - Use `bbctl shell <instance_id>` for interactive login (long debug sessions).
 - Use `bbctl run <instance_id> -- '<cmd>'` for one-shot commands (preferred for `suggested_commands` array — keeps each command self-contained for the operator to copy-paste).
 - Substitute the REAL `instance_id` from `health_check.target.instance_id`. Never emit `<instance-id>` or `<instance_ip>` placeholders.
 - Tier: `bbctl run ... 'sudo tail ...'` and `'curl ...'` are `safe`. Interactive `bbctl shell` is `safe`. Writes (`systemctl restart`, file edits) are `restricted`.
+
+**When NOT a BBCTL situation (compliance / scm / etc.):**
+- `suggested_commands` should be the actual operator commands needed: Jira REST POSTs to update fields, `gh pr edit` to fix PR titles, `aws ec2 ...` for AWS console actions, `git tag` / `git push` for SCM fixes.
+- NEVER emit `bbctl shell` or `bbctl run` for these classes — it's the wrong tool.
 
 **Prose rewrite examples** (Action / Finding / Verify):
 

@@ -30,16 +30,87 @@ def repo_search(repo: str, query: str, max_results: int = 20) -> str:
 
 
 def repo_read_file(repo: str, path: str, start: int = 0, end: int = 0) -> str:
-    """Read file from repo with optional line range."""
+    """Read file from repo with optional line range.
+
+    Line numbers in the returned text are the REAL file line numbers (not
+    array indices) so the agent can cite them directly in evidence.
+    """
     file_path = REPOS_DIR / repo / path
     if not file_path.exists():
         return f"file not found: {file_path}"
-    lines = file_path.read_text().splitlines()
+    lines = file_path.read_text(errors="replace").splitlines()
     if start and end:
-        lines = lines[start - 1:end]
-    elif start:
-        lines = lines[start - 1:start + 99]
+        sliced = lines[start - 1:end]
+        return '\n'.join(f"{start + i}: {l}" for i, l in enumerate(sliced))
+    if start:
+        sliced = lines[start - 1:start + 99]
+        return '\n'.join(f"{start + i}: {l}" for i, l in enumerate(sliced))
     return '\n'.join(f"{i+1}: {l}" for i, l in enumerate(lines))
+
+
+def repo_list_dir(repo: str, path: str = "") -> list[str]:
+    """List immediate children of a directory in the repo. Useful when the
+    agent doesn't know the exact filename yet (e.g. exploring `vars/`).
+    Directories are returned with a trailing `/`.
+    """
+    base = REPOS_DIR / repo / path
+    if not base.exists():
+        return [f"path not found: {path}"]
+    if not base.is_dir():
+        return [f"not a directory: {path}"]
+    out = []
+    for child in sorted(base.iterdir()):
+        if child.name.startswith(".git"):
+            continue
+        out.append(child.name + ("/" if child.is_dir() else ""))
+    return out
+
+
+def repo_find_function(repo: str, name: str, max_hits: int = 5) -> str:
+    """Find where a Groovy / Java / Python function is *defined* in a repo.
+
+    Matches the common definition patterns used in this codebase:
+      Groovy:  `def <name>(`, `static def <name>(`, `<name> = { ... }`
+      Java:    `<modifier...> ReturnType <name>(`  (handled via simple grep)
+      Python:  `def <name>(`
+
+    Returns ripgrep-style hits with line numbers, capped at max_hits.
+    """
+    repo_path = REPOS_DIR / repo
+    if not repo_path.exists():
+        return f"repo {repo} not found at {repo_path}"
+    # Two patterns OR'd: definition forms vs. assignment forms.
+    pattern = rf"(?:def\s+|static\s+def\s+|^\s*){__import__('re').escape(name)}\s*[\(\=]"
+    result = subprocess.run(
+        ["rg", "--line-number", "--no-heading", "--type-add", "groovy:*.groovy",
+         "-tgroovy", "-tjava", "-tpy",
+         "-m", str(max_hits), pattern, str(repo_path)],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode not in (0, 1):
+        return f"search error: {result.stderr.strip()[:200]}"
+    out = result.stdout.strip()
+    return out or f"no definitions found for '{name}' in {repo}"
+
+
+def repo_recent_commits(repo: str, n: int = 10) -> str:
+    """Return the last N commits with author + date + short message.
+
+    Helps the agent answer "what changed recently?" — often the actual root
+    cause of a freshly-failing pipeline is a commit landed in the last hour.
+    """
+    repo_path = REPOS_DIR / repo
+    if not (repo_path / ".git").exists():
+        return f"repo {repo} not a git clone"
+    fmt = "%h %ad %an | %s"
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "log", f"-n{n}",
+         "--date=short", f"--pretty=format:{fmt}"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return f"git log failed: {result.stderr.strip()[:200]}"
+    return result.stdout
 
 
 def docs_list() -> list[str]:

@@ -463,6 +463,17 @@ LLM_DISPATCH = {
 }
 
 
+async def build_initial_tool_ctx(
+    *, service: str, error_class: str, log_window: str,
+    build_meta: dict | None = None,
+) -> str:
+    """Public alias for the agent module — same pre-computed context block
+    used by the one-shot path. Stable name so other modules don't poke a
+    private function.
+    """
+    return await _build_tool_context(service, error_class, log_window, build_meta)
+
+
 async def run_rca(provider: str, **kwargs) -> dict:
     fn = LLM_DISPATCH.get(provider, run_rca_gemini)
     return await fn(**kwargs)

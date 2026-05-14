@@ -13,7 +13,9 @@ from .jenkins import get_console_log, get_build_meta
 from .window import extract_window, extract_failed_stage
 from .sanitize import sanitize
 from .classifier import classify
-from .llm import run_rca
+from .llm import run_rca, build_initial_tool_ctx
+from .agent import run_agent
+from .git_fresh import ensure_fresh_many
 from .cache import (
     is_duplicate, mark_processed, over_daily_cap, add_spend,
     get_rca, set_rca,
@@ -202,6 +204,14 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
 
     request_id = str(uuid.uuid4())
 
+    # Per-RCA freshness pull (hybrid model). Cheap shallow fetch on both
+    # repos so the agent / tool-context sees the latest commit. Cron at
+    # /etc/cron.d/bbctl-rca-sync is a backstop; this is the fast path.
+    freshness = ensure_fresh_many([
+        ("jenkins_pipeline", None),
+        ("InfraComposer", None),
+    ])
+
     raw_log = await get_console_log(job, build, JENKINS_URL, JENKINS_AUTH)
     build_meta = await get_build_meta(job, build, JENKINS_URL, JENKINS_AUTH)
 
@@ -222,15 +232,43 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
             build_meta = dict(build_meta)
         build_meta["_raw_log"] = raw_log
 
-    result = await run_rca(
-        LLM_PROVIDER,
-        api_key=LLM_API_KEY,
-        service=service,
-        build_meta=build_meta,
-        log_window=clean_window,
-        error_class=error_class,
-        deep=deep,
-    )
+    # Classes worth the agent's deeper trace through the actual source code.
+    # Cheap one-shot stays good enough for the rest (timeout, ssm, network,
+    # dependency, java_runtime when stack trace is self-explanatory).
+    AGENT_CLASSES = {
+        "compliance", "canary_fail", "canary_script_error",
+        "health_check", "parse_error", "scm", "unknown",
+    }
+
+    if LLM_PROVIDER == "openai" and error_class in AGENT_CLASSES:
+        # Run the agent. It still wants the same pre-computed tool context
+        # as a primer so it doesn't burn calls re-fetching cheap things.
+        initial_ctx = await build_initial_tool_ctx(
+            service=service, error_class=error_class,
+            log_window=clean_window, build_meta=build_meta,
+        )
+        result = await run_agent(
+            api_key=LLM_API_KEY,
+            job=job, build=build, service=service,
+            build_meta=build_meta,
+            log_window=clean_window,
+            error_class=error_class,
+            initial_tool_ctx=initial_ctx,
+            jenkins_url=JENKINS_URL, jenkins_auth=JENKINS_AUTH,
+        )
+    else:
+        result = await run_rca(
+            LLM_PROVIDER,
+            api_key=LLM_API_KEY,
+            service=service,
+            build_meta=build_meta,
+            log_window=clean_window,
+            error_class=error_class,
+            deep=deep,
+        )
+
+    # Stash freshness info on the result so it surfaces in the audit/report
+    result["repos_freshness"] = freshness
     # Strip raw_log from build_meta after LLM call so it doesn't leak into
     # audit log / response (it's massive).
     if isinstance(build_meta, dict) and "_raw_log" in build_meta:

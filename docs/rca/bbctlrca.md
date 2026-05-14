@@ -416,7 +416,85 @@ LLM is instructed to **never** cite SSH host-key warnings or NewRelic `Applicati
 - **Phase B (LIVE)** — VictorOps incident `message` field now includes `buildAlertMessage(rca)` so on-call sees the RCA summary inside the page itself. RCA fields (`rcaErrorClass`, `rcaFailedStage`, `rcaConfidence`, `rcaSummary`, `rcaRequestId`) also injected into the VictorOps `details` panel for structured access. Base message still leads — existing VictorOps filters / dashboards keep working.
 - **Phase C (LIVE)** — Per-service Slack channel now receives a `BB-AI Auto-RCA` summary message on every failed pipeline. Uses the org's existing `slack-stagger-bot` Jenkins credential (same one as `Notification.failure`); channel routed via the per-service `config.slack_channel`. **No new infra, no new webhook URL, no Secrets Manager change.**
 - **Phase D (later)** — Slack interactive button "🔍 Deep analyze" → POSTs to a new `/v1/rca/deep` endpoint with `deep:true`, replies into the same thread. Requires Slack app with `interactivity` enabled + a public bbctl-rca endpoint (already covered by ALB).
+- **Phase E (LIVE)** — Hybrid freshness + agent-mode RCA. Repos pulled per-RCA + agent iteratively reads code to trace the failure backwards from the Jenkins job config to the function that threw. See "Agent mode" below.
 - **Future** — fetch real Kayenta canary scores via Kayenta API for `canary_fail` class instead of inferring from build log alone.
+
+---
+
+## Agent mode (Phase E)
+
+For "deep" error classes — `compliance`, `canary_fail`, `canary_script_error`, `health_check`, `parse_error`, `scm`, `unknown` — the RCA is produced by an **OpenAI function-calling agent** instead of a single one-shot LLM call. Other classes (timeout, network, ssm, dependency, java_runtime with a clean stack trace) still use the cheaper one-shot path.
+
+**Architecture**
+
+```
+_run_rca()
+  ├─► git_fresh.ensure_fresh_many([jenkins_pipeline, InfraComposer])
+  │     └─ shallow fetch, 3s timeout/repo, 60s dedup, falls back to local
+  ├─► Jenkins API: log + build_meta
+  ├─► classify(log) → error_class
+  └─► IF error_class ∈ AGENT_CLASSES and provider=openai:
+        agent.run_agent(...)
+            ├─ Initial primer (one-shot tool context: service.lookup,
+            │   source.trace, docs.<class>.md, jira.tickets, github.commits…)
+            └─ Tool-use loop (max 8 calls, $0.25 cap):
+                 - get_jenkins_job_config(job)        ← almost always first
+                 - repo_read_file(...)                ← read entrypoint groovy
+                 - repo_find_function(...)            ← locate called helpers
+                 - repo_search(...)                   ← grep for error strings
+                 - repo_list_dir(...) | repo_recent_commits(...) | service_lookup(...)
+      ELSE:
+        run_rca(...)  ← one-shot path (cheap classes)
+```
+
+**Hybrid freshness model**
+
+- `bbctl_rca/git_fresh.py` runs at the start of every `_run_rca` call. Performs `git fetch --depth 1 && git reset --hard origin/<branch>` on both repos in parallel. Self-heals perms (`chmod -R u+w`) so a `chmod -R a-w` from elsewhere can't permanently break sync. In-memory dedup window of 60s prevents back-to-back fetches when concurrent webhooks fire.
+- The `/etc/cron.d/bbctl-rca-sync` cron is now a backstop (frequency can be relaxed from every 2h to every 6h since the per-RCA path keeps repos hot for any active build).
+- If a per-RCA fetch fails (GitHub down, network blip, timeout), we silently fall back to whatever's already on disk. The `repos_freshness` block is included in the audit JSON so the operator can see whether the agent saw the latest commit.
+
+**Tool palette exposed to the agent** (defined in `bbctl_rca/agent.py::TOOLS`)
+
+| Tool | Backed by | What it does |
+| --- | --- | --- |
+| `get_jenkins_job_config(job)` | `jenkins.get_job_config` | Fetch Jenkins job's `config.xml`; surface `scm_url`, `scm_branch`, `scriptPath`. Almost always the agent's first tool call. |
+| `repo_read_file(repo, path, start, end)` | `mcp_tools.repo_read_file` | Read a slice of a file. Returns real line numbers (1-based) so the agent can cite them in `evidence`. |
+| `repo_search(repo, query, max_results)` | `mcp_tools.repo_search` | ripgrep across a repo for a literal string. |
+| `repo_list_dir(repo, path)` | `mcp_tools.repo_list_dir` | List immediate children of a directory. |
+| `repo_find_function(repo, name)` | `mcp_tools.repo_find_function` | Find where a Groovy/Java/Python function is *defined* (definition site, not call sites). |
+| `repo_recent_commits(repo, n)` | `mcp_tools.repo_recent_commits` | Last N commits with author, date, short message — quickly answers "what changed?" |
+| `service_lookup(service)` | `mcp_tools.service_lookup` | Slim view of `config.json` entry for a service. |
+
+**Guards**
+
+- **Iteration cap**: 8 tool calls max per RCA. On the 9th iteration the agent is forced into JSON-only mode (no more tools).
+- **Cost cap**: $0.25 per RCA. When the running token spend hits this, the agent gets a "cost cap reached, emit JSON now" message.
+- **Per-tool truncation**: any tool result over 8K chars is sliced (prevents a runaway grep from blowing the context window).
+- **Logging**: every tool call is printed to stderr as `[agent] iter N tool#M: <name>({args})` — visible via `journalctl -u bbctl-rca -f`.
+
+**Cost expectation**
+
+Typical agent run: 4-6 tool calls, ~25-35K input tokens, ~600-900 output tokens → ~$0.07-0.10 per RCA (vs ~$0.05 for one-shot). Worst-case at the cap: ~$0.25.
+
+**Evidence quality**
+
+Because the agent reads real source, `evidence[].source` for agent-mode RCAs includes paths like `jenkins_pipeline/vars/canary.groovy:47` (with the actual line number from the tool call). This is more grounded than the one-shot path where citations come from `source.trace` hits only.
+
+**Falling back to one-shot**
+
+If `LLM_PROVIDER != "openai"` (e.g. running on Gemini) OR if `error_class` is one of the cheap classes, the dispatcher uses `run_rca(...)` exactly as before. No regression for those paths.
+
+### Files touched by Phase E
+
+| File | Purpose |
+| --- | --- |
+| `bbctl_rca/git_fresh.py` | NEW. Per-RCA shallow fetch + reset, 3s timeout, 60s dedup, fallback to local clone. |
+| `bbctl_rca/jenkins.py` | NEW `get_job_config(job)` — fetch + parse Jenkins `config.xml`. |
+| `bbctl_rca/mcp_tools.py` | NEW `repo_list_dir`, `repo_find_function`, `repo_recent_commits`; tightened `repo_read_file` to return real line numbers. |
+| `bbctl_rca/agent.py` | NEW. OpenAI function-calling loop with iteration + cost cap. |
+| `bbctl_rca/llm.py` | NEW public alias `build_initial_tool_ctx(...)` so the agent can reuse the one-shot primer. |
+| `bbctl_rca/main.py` | Dispatcher: `ensure_fresh_many` at the top of `_run_rca`; agent vs one-shot routing on `error_class`. |
+| `prompts/rca_agent_system.md` | NEW. Agent system prompt with the trace method, evidence rules, action rules. |
 
 ### Phase C — Slack message shape
 

@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .models import WebhookPayload, RCARequest, RCAResponse
-from .jenkins import get_console_log, get_build_meta
+from .jenkins import get_console_log, get_build_meta, get_stage_errors
 from .window import extract_window, extract_failed_stage
 from .sanitize import sanitize
 from .classifier import classify
@@ -219,8 +219,25 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
 
     raw_log = await get_console_log(job, build, JENKINS_URL, JENKINS_AUTH)
     build_meta = await get_build_meta(job, build, JENKINS_URL, JENKINS_AUTH)
+    # Fetch FAILED stage error messages via Jenkins workflow REST API.
+    # consoleText may not have flushed the trailing exception trace yet when
+    # this endpoint is called from a post.failure block. wfapi/describe
+    # populates error.message as soon as the stage transitions to FAILED,
+    # so it gives the real exception (e.g. groovy.lang.MissingMethodException)
+    # even when the console hasn't caught up.
+    stage_errors = await get_stage_errors(job, build, JENKINS_URL, JENKINS_AUTH)
 
     window = extract_window(raw_log, deep=deep)
+    # Prepend stage error messages so the classifier + LLM see the real
+    # exception string regardless of console-buffer timing.
+    if stage_errors:
+        err_block_lines = ["=== Failed stages (from Jenkins workflow API) ==="]
+        for se in stage_errors:
+            err_block_lines.append(f"Stage '{se['name']}' status={se['status']}")
+            if se.get("error_message"):
+                err_block_lines.append(se["error_message"])
+        err_block = "\n".join(err_block_lines) + "\n\n"
+        window = err_block + window
     clean_window, redactions = sanitize(window)
     error_class = classify(clean_window)
     # Annotate build_meta with the actual last-entered stage from the log so

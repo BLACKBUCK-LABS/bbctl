@@ -31,14 +31,15 @@ Automated Root Cause Analysis service for Jenkins `stagger-prod-plus-one` pipeli
 **Pipeline flow** (server side, `bbctl_rca/main.py::_run_rca`):
 
 1. Verify HMAC signature (`X-Bbctl-Signature: sha256=...`)
-2. Fetch console log via Jenkins REST API
-3. Sanitize log (regex-based redactions for secrets/credentials)
-4. Classify error → one of: `compliance`, `canary_fail`, `canary_script_error`, `aws_limit`, `parse_error`, `java_runtime`, `scm`, `ssm`, `network`, `dependency`, `health_check`, `timeout`, `unknown`
-5. Build tool-context (class-specific): Jira tickets, GitHub commits, NewRelic slow txns, runbook excerpts, source.trace hits, service config from `repos/jenkins_pipeline/resources/config.json`
-6. Call LLM (default `gpt-4o`, JSON mode, temp 0.1)
-7. Verify each evidence citation against repos on disk
-8. Cache 24h in diskcache; record audit log
-9. Return RCA JSON to Jenkins, which renders the boxed console block
+2. **Per-RCA freshness pull** — `git_fresh.ensure_fresh_many([jenkins_pipeline, InfraComposer])` does a shallow `git fetch && git reset --hard` on both repos (3s timeout each, 60s dedup, falls back to local on failure)
+3. Fetch console log + build_meta via Jenkins REST API
+4. Sanitize log (regex-based redactions for secrets/credentials)
+5. Classify error → one of: `compliance`, `canary_fail`, `canary_script_error`, `aws_limit`, `parse_error`, `java_runtime`, `scm`, `ssm`, `network`, `dependency`, `health_check`, `timeout`, `unknown`
+6. Build initial tool-context (class-specific): Jira tickets, GitHub commits, NewRelic slow txns, runbook excerpts, source.trace hits, service config from `repos/jenkins_pipeline/resources/config.json`
+7. **Dispatch**: if `error_class ∈ {compliance, canary_fail, canary_script_error, health_check, parse_error, scm, unknown}` → **agent mode** (`bbctl_rca/agent.py`, max 8 tool calls, $0.25 cap). Else → one-shot LLM call (default `gpt-4o`, JSON mode, temp 0.1)
+8. Verify each evidence citation against repos on disk
+9. Cache 24h in diskcache; record audit log (incl. `repos_freshness`)
+10. Return RCA JSON to Jenkins, which renders the compact console block + HTML report URL
 
 ---
 
@@ -592,15 +593,28 @@ If `suggested_fix` is a single String (some classes use this shape), only the fi
 24. **Unknown-class deep dive** — when classifier returns `unknown`, expand context: wider `source.trace` sweep (10 queries × 16 hits), full `docs.catalog` block listing every docops/*.md with first heading + 250-char preview, plus a 4-step `unknown_class.guide` telling the LLM to self-classify from source evidence + runbook previews. Marks `needs_deeper: true` when no fit is found.
 25. **Model bumped: gpt-4o-mini → gpt-4o** — `bbctl_rca/llm.py` `run_rca_openai` now uses `gpt-4o` (full model). Reasoning quality on multi-step compliance / canary cases is markedly better. Cost calc in `main.py` updated to `$2.50/1M input + $10.00/1M output` (gpt-4o pricing). Typical RCA: ~$0.04-0.06 vs $0.003 before. Daily spend cap in `cache.py::over_daily_cap` still enforces.
 26. **Live verification (compliance class, build 35)** — re-RCA cleanly cites Mode 1 ("Jira ticket PEB-7 is missing the 'Signed Off Commit ID' custom field"), Action template tells operator to edit the field in Jira UI (not REST API), Evidence includes both the `ERROR: Compliance: ... has no Signed Off commit id` log line AND the `jira.tickets` block confirming the missing custom field. No BBCTL commands. No clone-detection hallucination. No `<placeholder>` strings.
-
----
-
-## File pointers
+27. **Repos + docops auto-sync** — `infra/scripts/sync-repos.sh` + `/etc/cron.d/bbctl-rca-sync` keep the on-disk copies fresh without manual `git pull`. Pulls `jenkins_pipeline` (`master`), `InfraComposer` (`main`) via `git fetch && git reset --hard origin/<branch>`, syncs `docops/` from `s3://docops-doc-storage/docs/` via `aws s3 sync --delete`, then restarts `bbctl-rca` so the in-process `_config` cache reloads. Originally every 2h; can be relaxed to every 6h now that Phase E does per-RCA freshness pulls.
+28. **Sync script self-heal** — script preemptively `chown -R ubuntu:ubuntu` + `chmod -R u+w` on both repo directories before every `git reset`. Fixes the loop where a previous `chmod -R a-w` (locking) made `git reset --hard` fail with `unable to unlink old <file>: Permission denied`. Same self-heal copied into `bbctl_rca/git_fresh.py` for the per-RCA path.
+29. **Phase E shipped — hybrid git freshness + agent-mode RCA** — three coordinated changes (full architecture in the "Agent mode (Phase E)" section above):
+    - **`bbctl_rca/git_fresh.py`** (NEW) — at the top of every `_run_rca` call, runs `git fetch --depth 1 && git reset --hard origin/<branch>` on both repos in parallel. 3s timeout per repo, 60s in-memory dedup, falls back silently to whatever's on disk if GitHub is slow / offline. Self-heals permissions every run.
+    - **`bbctl_rca/agent.py`** (NEW) — OpenAI function-calling loop. Tool palette: `get_jenkins_job_config`, `repo_read_file`, `repo_search`, `repo_list_dir`, `repo_find_function`, `repo_recent_commits`, `service_lookup`. Max 8 tool calls, $0.25 cost cap, 8 KB per-tool truncation. Dispatched for: `compliance`, `canary_fail`, `canary_script_error`, `health_check`, `parse_error`, `scm`, `unknown`. Other classes stay on the cheaper one-shot path.
+    - **`prompts/rca_agent_system.md`** (NEW) — instructs the agent to start from `get_jenkins_job_config(job)`, read the entrypoint pipeline file, locate the failed stage block, `repo_find_function` each helper it calls, recurse one or two levels until it identifies the file:line that emitted the log error. Evidence citations now use real `<repo>/<file>:<line>` from the actual reads — grounded, not inferred.
+30. **Tool palette extensions in `mcp_tools.py`** — three new helpers backing the agent loop:
+    - `repo_list_dir(repo, path)` — list immediate children of a directory (trailing `/` on dirs).
+    - `repo_find_function(repo, name)` — ripgrep tuned for `def <name>(` / `static def <name>(` / `<name> = { ... }` patterns across Groovy/Java/Python. Returns the definition site (not call sites).
+    - `repo_recent_commits(repo, n)` — `git log -nN --pretty=...` so the agent can answer "what changed?". Often pinpoints a freshly-landed commit as the cause of a previously-green pipeline now failing.
+    - `repo_read_file` tightened to return REAL (1-based) file line numbers regardless of the `start` offset — agents can paste those line numbers into `evidence[].source` verbatim.
+31. **Jenkins job XML fetcher** — `bbctl_rca/jenkins.py::get_job_config(job)` GETs `/job/<name>/config.xml` and tolerantly regex-extracts `scm_url`, `scm_branch`, `scriptPath` (or `inline_script` if the pipeline isn't loaded from SCM). The raw XML is capped at 8 KB to keep prompts lean. This is almost always the agent's first tool call — it tells the agent which file in `jenkins_pipeline` is the actual entrypoint for the failing job (handles new jobs / non-standard pipelines automatically without naming-convention guessing).
+32. **Cost / latency expectations under Phase E** — agent typically uses 4-6 tool calls per RCA. Token usage ~25-35K input + ~600-900 output → **~$0.07-0.10 per RCA** (vs ~$0.05 for the previous one-shot path). Worst case at the cap: $0.25. Latency: ~60-90s typical (small overhead vs one-shot since most tool calls are local disk reads). Daily cost cap (`cache.py::over_daily_cap`) still enforces an upper bound.
 
 | What                              | Where                                                            |
 | --------------------------------- | ---------------------------------------------------------------- |
 | FastAPI entrypoint                | `bbctl_rca/main.py`                                              |
-| LLM dispatch & tool-context build | `bbctl_rca/llm.py`                                               |
+| LLM dispatch & tool-context build | `bbctl_rca/llm.py` (`build_initial_tool_ctx` is the public alias used by the agent) |
+| Agent loop (Phase E)              | `bbctl_rca/agent.py`                                             |
+| Per-RCA freshness pull            | `bbctl_rca/git_fresh.py`                                         |
+| Repo tool palette (`repo_*`)      | `bbctl_rca/mcp_tools.py`                                         |
+| Jenkins REST helpers              | `bbctl_rca/jenkins.py` (`get_job_config` added for the agent)    |
 | Error classifier (ordered rules)  | `bbctl_rca/classifier.py` + `classifier_rules.yml`               |
 | Log window extraction             | `bbctl_rca/window.py`                                            |
 | Per-canary-stage pass/fail        | `bbctl_rca/canary_analyzer.py`                                   |
@@ -609,9 +623,13 @@ If `suggested_fix` is a single String (some classes use this shape), only the fi
 | NewRelic slow-txn query           | `bbctl_rca/newrelic.py`                                          |
 | Runbook section extractor         | `bbctl_rca/runbook.py`                                           |
 | 24h diskcache + daily cap         | `bbctl_rca/cache.py`                                             |
-| Audit log writer                  | `bbctl_rca/audit.py`                                             |
+| Audit log writer                  | `bbctl_rca/audit.py` (+ `read_by_request_id` for HTML report)    |
+| HTML report endpoint              | `bbctl_rca/main.py::rca_report` + `bbctl_rca/templates/rca_report.html` |
 | systemd start script              | `infra/scripts/bbctl-rca-start.sh`                               |
+| Repos + docops auto-sync          | `infra/scripts/sync-repos.sh` + `/etc/cron.d/bbctl-rca-sync`     |
 | Jenkins post-failure groovy lib   | `infra/jenkins/post_failure_rca.groovy` (mirrored to `vars/triggerRcaWebhook.groovy` in jenkins_pipeline) |
 | Pipeline wiring                   | `jenkins_pipeline_master/main_stagger_prod_plus_one.groovy` (post.failure block) |
-| LLM prompts                       | `prompts/rca_system.md`, `prompts/rca_examples.md`               |
-| Per-class runbooks                | `docops/StaggerProdPlusOneDeploy.md`, `docops/JiraDetailsCompliance.md`, etc. |
+| Slack RCA helper                  | `jenkins_pipeline_master/src/com/blackbuck/utils/Notification.groovy::rcaAlert` |
+| LLM prompts (one-shot)            | `prompts/rca_system.md`, `prompts/rca_examples.md`               |
+| LLM prompt (agent)                | `prompts/rca_agent_system.md`                                    |
+| Per-class runbooks                | `docops/StaggerProdPlusOneDeploy.md`, `docops/JiraDetailsCompliance.md`, `docops/HealthCheckFailure.md`, … |

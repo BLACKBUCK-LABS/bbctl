@@ -594,10 +594,17 @@ async def run_agent(
                 if repo and path and not result.startswith(("error:", "[error", "ERROR:")):
                     read_files.add(f"{repo}/{path}")
 
-            _trace(f"ITER {iteration} TOOL #{tool_call_count} {tc.function.name}",
-                   f"args={json.dumps(args)}\n"
-                   f"result_first_2k=\n{result[:2000]}"
-                   + ("\n…[truncated]" if len(result) > 2000 else ""))
+            _result_str = result if isinstance(result, str) else str(result)
+            _DUMP_CAP = 8000
+            _trace(
+                f"ITER {iteration} TOOL #{tool_call_count} {tc.function.name}",
+                f"args={json.dumps(args)}\n"
+                f"result_len={len(_result_str)} chars\n"
+                f"result=\n{_result_str[:_DUMP_CAP]}"
+                + (f"\n…[truncated, +{len(_result_str) - _DUMP_CAP} more chars]"
+                   if len(_result_str) > _DUMP_CAP else "")
+                + ("\n[NOTE: tool returned empty string]" if not _result_str else ""),
+            )
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,

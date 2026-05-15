@@ -282,32 +282,68 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         "java_runtime",
     }
 
-    if LLM_PROVIDER == "openai" and error_class in AGENT_CLASSES:
-        # Run the agent. It still wants the same pre-computed tool context
-        # as a primer so it doesn't burn calls re-fetching cheap things.
-        initial_ctx = await build_initial_tool_ctx(
-            service=service, error_class=error_class,
-            log_window=clean_window, build_meta=build_meta,
-        )
-        result = await run_agent(
-            api_key=LLM_API_KEY,
-            job=job, build=build, service=service,
-            build_meta=build_meta,
-            log_window=clean_window,
-            error_class=error_class,
-            initial_tool_ctx=initial_ctx,
-            jenkins_url=JENKINS_URL, jenkins_auth=JENKINS_AUTH,
-        )
-    else:
-        result = await run_rca(
-            LLM_PROVIDER,
-            api_key=LLM_API_KEY,
-            service=service,
-            build_meta=build_meta,
-            log_window=clean_window,
-            error_class=error_class,
-            deep=deep,
-        )
+    try:
+        if LLM_PROVIDER == "openai" and error_class in AGENT_CLASSES:
+            # Run the agent. It still wants the same pre-computed tool context
+            # as a primer so it doesn't burn calls re-fetching cheap things.
+            initial_ctx = await build_initial_tool_ctx(
+                service=service, error_class=error_class,
+                log_window=clean_window, build_meta=build_meta,
+            )
+            result = await run_agent(
+                api_key=LLM_API_KEY,
+                job=job, build=build, service=service,
+                build_meta=build_meta,
+                log_window=clean_window,
+                error_class=error_class,
+                initial_tool_ctx=initial_ctx,
+                jenkins_url=JENKINS_URL, jenkins_auth=JENKINS_AUTH,
+            )
+        else:
+            result = await run_rca(
+                LLM_PROVIDER,
+                api_key=LLM_API_KEY,
+                service=service,
+                build_meta=build_meta,
+                log_window=clean_window,
+                error_class=error_class,
+                deep=deep,
+            )
+    except Exception as e:
+        # Catch OpenAI permission / quota / network failures and any other
+        # LLM-side crash so the caller (Jenkins post.failure block) gets a
+        # clean JSON error response instead of an HTTP 500 with an HTML
+        # stack trace. The pipeline can then echo it cleanly and continue
+        # the rest of the post block (input prompt, rollback).
+        err_class = e.__class__.__name__
+        err_msg = str(e)
+        rca_model = os.environ.get("BBCTL_RCA_MODEL", "gpt-4o")
+        print(f"[main] LLM call failed: {err_class}: {err_msg}",
+              file=__import__('sys').stderr, flush=True)
+        # Build a stub result that still goes through the normal audit /
+        # cache / response path so the operator sees the failure in the
+        # report URL like any other RCA.
+        hint = ""
+        if "model_not_found" in err_msg or "does not have access" in err_msg:
+            hint = (f" Model `{rca_model}` is not available in this OpenAI "
+                    f"project. Verify with `curl https://api.openai.com/v1/models "
+                    f"-H 'Authorization: Bearer $OPENAI_API_KEY' | jq '.data[].id'` "
+                    f"and either fix BBCTL_RCA_MODEL or request access on OpenAI dashboard.")
+        result = {
+            "summary": f"LLM call failed ({err_class}). RCA unavailable for this build.",
+            "failed_stage": build_meta.get("detected_failed_stage", "—"),
+            "error_class": error_class,
+            "root_cause": f"{err_class}: {err_msg[:300]}.{hint}",
+            "evidence": [],
+            "suggested_fix": "Check bbctl-rca journalctl for the full stack trace. "
+                             "If it's a model-access issue, fix BBCTL_RCA_MODEL.",
+            "suggested_commands": [],
+            "confidence": 0.0,
+            "needs_deeper": True,
+            "tokens_used": {"input": 0, "output": 0},
+            "_llm_error": True,
+            "_llm_error_class": err_class,
+        }
 
     # Stash freshness info on the result so it surfaces in the audit/report
     result["repos_freshness"] = freshness

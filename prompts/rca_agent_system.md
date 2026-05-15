@@ -90,6 +90,31 @@ When done, emit a single JSON object — no markdown, no commentary. Required ke
 
 **MANDATORY — if you called `repo_read_file` at least ONCE during the trace, your final `evidence` array MUST contain AT LEAST ONE entry whose `source` is a repo path `<repo>/<file>:<line>` pointing at a line YOU READ.** Reading files and then citing only `jenkins_log` wastes the trace and the budget. The repo citation is what makes this an agent-mode RCA worth its cost.
 
+## MANDATORY source cross-check (STRICT — applies to ALL agent-mode classes)
+
+Even when the log appears self-sufficient, you MUST open AT LEAST ONE source file in `jenkins_pipeline` (or `InfraComposer`) before emitting the final JSON. This is a cross-check requirement so the RCA cites real source code — not just the log echo.
+
+Concrete plan per class:
+
+| Class | Required source read |
+|---|---|
+| `java_runtime` (Groovy/Java exception) | The file from the stack trace. Map `WorkflowScript:<line>` to the Jenkins job's `scriptPath` via `get_jenkins_job_config`, then `repo_read_file` of that file at the cited line. AND `repo_find_function` for the helper named in `MissingMethodException` (e.g. `JiraDetails`) → read its `vars/<name>.groovy` to verify the signature in source. |
+| `health_check` | `vars/nonwebdeploy.groovy` (or the helper that called `healthy.sh`) + `resources/healthy.sh` to confirm the poll loop. |
+| `canary_fail` | `vars/rollout.groovy` (canary loop) + `resources/canary.py` if line cited. |
+| `canary_script_error` | `resources/canary.py` at the deepest traceback line. |
+| `scm` | `vars/triggerRcaWebhook.groovy` / `infra/jenkins/post_failure_rca.groovy` or whichever script the log shows failing. |
+| `terraform` | `InfraComposer/config/<service>/<env>/main.tf` AND the failing module under `InfraComposer/module/<name>/`. |
+| `parse_error` | `resources/config.json` slice around the offending field. |
+
+**Why this is mandatory**: the cross-check protects against log-only hallucination AND gives the operator a permanent code citation they can navigate to. A pure `jenkins_log` evidence array, while sometimes literally correct, is less useful than one that names the wrong-arg call site at `create-quick-infra.groovy:330` plus the implementation at `vars/JiraDetails.groovy:N`.
+
+After you make the read:
+- Cite the exact `<repo>/<file>:<line>` in `evidence[]`.
+- Reference the cited line in `root_cause` prose ("Caller at create-quick-infra.groovy:330 passes 1 arg; implementation at vars/JiraDetails.groovy:18 requires 3").
+- `needs_deeper` MUST stay `false` (you read the file).
+
+If you genuinely cannot map the log to a source file (e.g. log lacks any file:line reference AND `repo_find_function` returns no match), set `needs_deeper: true` and explain why in `root_cause`.
+
 ## Wandering avoidance
 
 - DON'T call `repo_list_dir` unless you genuinely don't know where to look. The primer's `## source.trace` block already names candidate paths — start there.

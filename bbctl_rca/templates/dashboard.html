@@ -56,36 +56,40 @@
   .hero h1 { font-size: 22px; margin-bottom: 8px; }
   .hero .stats { display: flex; gap: 28px; margin-top: 16px; color: var(--muted); font-size: 14px; }
   .hero .stats b { color: var(--text); font-size: 18px; font-weight: 700; }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-    gap: 16px;
-  }
-  .card {
+  table.pipelines {
+    width: 100%;
     background: var(--panel);
     border: 1px solid var(--border); border-radius: 12px;
-    padding: 18px 20px;
-    text-decoration: none; color: inherit;
-    transition: border-color 0.15s, transform 0.15s;
+    border-collapse: separate; border-spacing: 0;
+    overflow: hidden;
   }
-  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
-  .card .job-name {
-    font-size: 15px; font-weight: 700;
-    margin-bottom: 8px;
+  table.pipelines th, table.pipelines td {
+    text-align: left; padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    vertical-align: top;
+  }
+  table.pipelines th {
+    background: var(--panel-2);
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 11px;
+  }
+  table.pipelines tr:last-child td { border-bottom: none; }
+  table.pipelines tr.row { cursor: pointer; transition: background 0.1s; }
+  table.pipelines tr.row:hover td { background: rgba(111, 140, 255, 0.06); }
+  table.pipelines td a.row-link {
+    color: var(--text); text-decoration: none; font-weight: 600;
     word-break: break-all;
-    color: var(--text);
   }
-  .card .count {
-    font-size: 13px; color: var(--muted); margin-bottom: 12px;
-  }
-  .card .count b { color: var(--red); font-size: 16px; }
-  .card .latest {
-    font-size: 13px; color: var(--text); opacity: 0.85;
-    border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px;
-    line-height: 1.5;
-  }
-  .card .latest .meta { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
-  .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  table.pipelines td a.row-link:hover { color: var(--accent); }
+  td.col-count { font-weight: 700; color: var(--red); white-space: nowrap; }
+  td.col-time  { color: var(--muted); white-space: nowrap; font-family: ui-monospace, monospace; font-size: 12px; }
+  td.col-summary { color: var(--text); opacity: 0.9; line-height: 1.4; max-width: 480px; }
+  td.col-pills  { white-space: nowrap; }
+  .pills { display: flex; flex-wrap: wrap; gap: 4px; }
   .pill {
     display: inline-block; padding: 3px 10px; border-radius: 999px;
     font-size: 11px; font-weight: 600;
@@ -133,23 +137,36 @@
   </section>
 
   {% if pipelines %}
-  <div class="grid">
-    {% for p in pipelines %}
-    <a href="/rca/v1/dashboard/{{ p.job }}" class="card">
-      <div class="job-name">{{ p.job }}</div>
-      <div class="count"><b>{{ p.count }}</b> failure{{ '' if p.count == 1 else 's' }} in last {{ days }} day{{ '' if days == 1 else 's' }}</div>
-      <div class="latest">
-        <div class="meta">Latest: build #{{ p.latest.build }} · {{ p.latest.recorded_at[:19].replace('T', ' ') }}</div>
-        {{ p.latest.summary or 'No summary available' }}
-      </div>
-      <div class="pills">
-        {% for c in p.classes %}
-        <span class="pill {{ c }}">{{ c }}</span>
-        {% endfor %}
-      </div>
-    </a>
-    {% endfor %}
-  </div>
+  <table class="pipelines">
+    <thead>
+      <tr>
+        <th>Pipeline</th>
+        <th>Failures</th>
+        <th>Latest Build</th>
+        <th>When</th>
+        <th>Summary</th>
+        <th>Classes Seen</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in pipelines %}
+      <tr class="row" onclick="window.location='/rca/v1/dashboard/{{ p.job }}';">
+        <td><a class="row-link" href="/rca/v1/dashboard/{{ p.job }}">{{ p.job }}</a></td>
+        <td class="col-count">{{ p.count }}</td>
+        <td class="col-time">#{{ p.latest.build }}</td>
+        <td class="col-time">{{ p.latest.recorded_at[:19].replace('T', ' ') }}</td>
+        <td class="col-summary">{{ (p.latest.summary or 'No summary')[:140] }}{% if (p.latest.summary or '')|length > 140 %}…{% endif %}</td>
+        <td class="col-pills">
+          <div class="pills">
+            {% for c in p.classes %}
+            <span class="pill {{ c }}">{{ c }}</span>
+            {% endfor %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
   {% else %}
   <div class="empty">
     No RCAs recorded in the last {{ days }} day{{ '' if days == 1 else 's' }}.<br>

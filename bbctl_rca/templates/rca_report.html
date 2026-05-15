@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>BB-AI RCA · {{ service }} #{{ build }}</title>
+<title>Jenkins RCA · {{ service }} #{{ build }}</title>
 <style>
 :root {
   --bg: #0a0f1c;
@@ -59,6 +59,9 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
 }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; font-weight: 600; letter-spacing: -0.01em; color: var(--fg-strong); }
+.brand img.logo { height: 24px; width: auto; }
+.brand-fallback { font-weight: 800; letter-spacing: 1.5px; color: #ff7676; font-size: 14px; }
+.brand-title { font-weight: 700; color: var(--fg-strong); }
 .brand-soft { color: var(--fg-muted); font-weight: 400; }
 .brand-sep { color: var(--border-strong); }
 .brand-build { font-family: ui-monospace, monospace; font-size: 13px; color: var(--fg-muted); }
@@ -225,8 +228,12 @@ footer .author strong { color: var(--fg-strong); font-weight: 600; }
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
-      <a class="brand-build" href="/rca/v1/dashboard">BB-AI</a>
-      <span class="brand-soft">/ Auto-RCA</span>
+      <a href="/rca/v1/dashboard" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit;">
+        <img class="logo" src="https://rca-assistant.jinka.in/static/logo.png" alt="BlackBuck"
+             onerror="this.style.display='none'; document.getElementById('rca-brand-fallback').style.display='inline';">
+        <span id="rca-brand-fallback" class="brand-fallback" style="display:none;">BLACKBUCK</span>
+        <span class="brand-title">Jenkins RCA</span>
+      </a>
       <span class="brand-sep">·</span>
       <a class="brand-build" href="/rca/v1/dashboard/{{ job }}">{{ job }}</a>
       <span class="brand-sep">·</span>

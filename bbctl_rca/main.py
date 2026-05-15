@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import uuid
+from urllib.parse import unquote
 
 from fastapi import FastAPI, APIRouter, Request, HTTPException, Header, Depends
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
@@ -233,6 +234,10 @@ async def rca_pipeline_builds(job: str, days: int = 2, user: dict = Depends(oaut
 
     Each row links to /v1/report/<request_id> for the full RCA.
     """
+    # Browser may double-encode the path segment when our dashboard link
+    # contains literal '%' characters (legacy encoded job names). Decode
+    # the path param so it matches the normalized job stored in audit.
+    job = unquote(job)
     days = max(1, min(days, 30))
     records = list_recent(days=days)
     job_records = [r for r in records if r["job"] == job]
@@ -315,6 +320,11 @@ async def rca_cli(req: RCARequest):
 
 
 async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> dict:
+    # Normalize job name — Jenkins job names with spaces arrive URL-encoded
+    # when callers pass them through query params or hand-built JSON
+    # ("Stagger%20Prod%20Plus%20One"). Decode once at the boundary so cache
+    # key, dedup, audit file, and dashboard grouping all see the same value.
+    job = unquote(job)
     if over_daily_cap():
         raise HTTPException(status_code=429, detail="daily cost cap reached")
 

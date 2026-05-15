@@ -64,9 +64,19 @@ def list_recent(days: int = 2) -> list[dict]:
         if ts < cutoff:
             continue
         rca = rec.get("rca") or {}
+        # Legacy audit records may have URL-encoded job names (e.g.
+        # "Stagger%20Prod%20Plus%20One") from earlier curl-driven tests.
+        # Decode here so dashboard grouping merges them with newer records
+        # that store the decoded form.
+        raw_job = rec.get("job") or rca.get("job") or "(unknown)"
+        try:
+            from urllib.parse import unquote as _unq
+            raw_job = _unq(raw_job)
+        except Exception:
+            pass
         out.append({
             "request_id": rec.get("request_id"),
-            "job": rec.get("job") or rca.get("job") or "(unknown)",
+            "job": raw_job,
             "build": rec.get("build") or rca.get("build"),
             "service": rec.get("service") or rca.get("service") or "",
             "error_class": rca.get("error_class") or rec.get("error_class") or "unknown",

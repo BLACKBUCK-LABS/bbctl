@@ -132,8 +132,13 @@ def _default_branch(repo_path: Path) -> str:
             return ref.split("/", 1)[1]
     except Exception:
         pass
-    # Heuristic fallback for the two repos we care about
+    # Heuristic fallback for the two repos we care about.
+    # jenkins_pipeline currently tracks the active dev release branch.
+    # Override via env BBCTL_RCA_JP_BRANCH if a different branch is needed.
+    import os as _os
     name = repo_path.name
     if name == "jenkins_pipeline":
-        return "master"
+        return _os.environ.get("BBCTL_RCA_JP_BRANCH", "release/REQ-463-staggerprodplusupdate-v2")
+    if name == "InfraComposer":
+        return _os.environ.get("BBCTL_RCA_IC_BRANCH", "main")
     return "main"

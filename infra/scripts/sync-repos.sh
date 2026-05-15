@@ -16,7 +16,7 @@ DOCS_DIR="/opt/bbctl-rca/docops"
 LOG="/var/log/bbctl-rca/sync.log"
 
 # Branches to track per repo (override via env if needed)
-JP_BRANCH="${JP_BRANCH:-master}"
+JP_BRANCH="${JP_BRANCH:-release/REQ-463-staggerprodplusupdate-v2}"
 IC_BRANCH="${IC_BRANCH:-main}"
 
 # S3 source for docops/ (read-only mirror)

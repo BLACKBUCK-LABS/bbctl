@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // CommandRequest is the body for POST /v1/commands.
@@ -307,6 +308,20 @@ func (c *Client) postJSON(ctx context.Context, path string, body, out any) error
 		return c.parseError(resp)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+type MCPTokenResponse struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Email     string    `json:"email"`
+}
+
+func (c *Client) GenerateMCPToken(ctx context.Context) (*MCPTokenResponse, error) {
+	var resp MCPTokenResponse
+	if err := c.postJSON(ctx, "/v1/mcp/token", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (c *Client) addAuth(req *http.Request) {

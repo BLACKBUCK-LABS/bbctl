@@ -383,6 +383,33 @@ async def run_agent(
         except Exception as _e:
             _log(f"prompt dump failed: {_e}")
 
+    # Optional full-transcript dump (each iter's request, response, tool
+    # calls, tool results) — for manager-grade audit / training data.
+    # Enable: BBCTL_RCA_DEBUG_TRACE=1
+    # Reads:  cat /tmp/bbctl-rca-last-trace.txt
+    _trace_enabled = bool(os.environ.get("BBCTL_RCA_DEBUG_TRACE"))
+    _trace_path = "/tmp/bbctl-rca-last-trace.txt"
+    if _trace_enabled:
+        try:
+            with open(_trace_path, "w") as _f:
+                _f.write(f"=== AGENT TRACE — job={job} build={build} service={service} model={model} ===\n\n")
+                _f.write("=== INITIAL SYSTEM MESSAGE (truncated; full in /tmp/bbctl-rca-last-prompt.txt) ===\n")
+                _f.write(system_full[:4000] + ("\n…[truncated]\n" if len(system_full) > 4000 else "\n"))
+                _f.write("\n=== INITIAL USER MESSAGE ===\n")
+                _f.write(messages[1]["content"] + "\n\n")
+        except Exception as _e:
+            _log(f"trace init failed: {_e}")
+            _trace_enabled = False
+
+    def _trace(label: str, body: str) -> None:
+        if not _trace_enabled:
+            return
+        try:
+            with open(_trace_path, "a") as _f:
+                _f.write(f"\n--- {label} ---\n{body}\n")
+        except Exception:
+            pass
+
     ctx = {"jenkins_url": jenkins_url, "jenkins_auth": jenkins_auth}
     total_in = total_out = 0
     tool_call_count = 0
@@ -432,10 +459,18 @@ async def run_agent(
             kwargs["tools"] = TOOLS
             kwargs["tool_choice"] = "auto"
 
+        _trace(f"ITER {iteration} REQUEST",
+               f"force_final={force_final} cost_so_far=${cost_so_far:.4f} "
+               f"messages_count={len(messages)} tokens_so_far={total_in}+{total_out}")
         response = client.chat.completions.create(**kwargs)
         total_in += response.usage.prompt_tokens
         total_out += response.usage.completion_tokens
         msg = response.choices[0].message
+        _trace(f"ITER {iteration} RESPONSE",
+               f"prompt_tokens={response.usage.prompt_tokens} "
+               f"completion_tokens={response.usage.completion_tokens}\n"
+               f"content={(msg.content or '')[:1500]}\n"
+               f"tool_calls={[(tc.function.name, tc.function.arguments) for tc in (msg.tool_calls or [])]}")
 
         if force_final or not msg.tool_calls:
             final_text = msg.content
@@ -508,6 +543,10 @@ async def run_agent(
                 if repo and path and not result.startswith(("error:", "[error", "ERROR:")):
                     read_files.add(f"{repo}/{path}")
 
+            _trace(f"ITER {iteration} TOOL #{tool_call_count} {tc.function.name}",
+                   f"args={json.dumps(args)}\n"
+                   f"result_first_2k=\n{result[:2000]}"
+                   + ("\n…[truncated]" if len(result) > 2000 else ""))
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
@@ -550,6 +589,11 @@ async def run_agent(
     rca["agent_tool_calls"] = tool_call_count
     rca["files_read"] = sorted(read_files)
     _log(f"done. tool_calls={tool_call_count} tokens={total_in}+{total_out} read_files={len(read_files)}")
+    _trace("FINAL OUTPUT",
+           f"tool_calls={tool_call_count} tokens={total_in}+{total_out} "
+           f"cost=${total_in*in_per_tok + total_out*out_per_tok:.4f} "
+           f"files_read={sorted(read_files)}\n"
+           f"final_text=\n{(final_text or '')[:3000]}")
     return rca
 
 

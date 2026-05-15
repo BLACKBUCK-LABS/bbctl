@@ -466,9 +466,10 @@ async def run_rca_openai(
 
     # Model is configurable via BBCTL_RCA_MODEL env var so we can A/B
     # different OpenAI models (gpt-4o, gpt-4.1, gpt-5, o3-mini, …) without
-    # a code change. Default = gpt-4o.
+    # a code change. Default = gpt-4.1 — better reasoning + larger context
+    # than gpt-4o, similar price.
     import os as _os
-    rca_model = _os.environ.get("BBCTL_RCA_MODEL", "gpt-4o")
+    rca_model = _os.environ.get("BBCTL_RCA_MODEL", "gpt-4.1")
     print(f"[llm] one-shot model={rca_model}", file=__import__('sys').stderr, flush=True)
     response = client.chat.completions.create(
         model=rca_model,

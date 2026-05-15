@@ -317,7 +317,7 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         # the rest of the post block (input prompt, rollback).
         err_class = e.__class__.__name__
         err_msg = str(e)
-        rca_model = os.environ.get("BBCTL_RCA_MODEL", "gpt-4o")
+        rca_model = os.environ.get("BBCTL_RCA_MODEL", "gpt-4.1")
         print(f"[main] LLM call failed: {err_class}: {err_msg}",
               file=__import__('sys').stderr, flush=True)
         # Build a stub result that still goes through the normal audit /
@@ -359,7 +359,7 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     tokens_out = result["tokens_used"].get("output", 0)
     if LLM_PROVIDER == "openai":
         from .agent import _pricing_for
-        rca_model = os.environ.get("BBCTL_RCA_MODEL", "gpt-4o")
+        rca_model = os.environ.get("BBCTL_RCA_MODEL", "gpt-4.1")
         in_per_tok, out_per_tok = _pricing_for(rca_model)
         cost = tokens_in * in_per_tok + tokens_out * out_per_tok
         result["model_used"] = rca_model

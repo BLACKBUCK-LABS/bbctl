@@ -58,7 +58,9 @@ def _pricing_for(model: str) -> tuple[float, float]:
 # A/B test different models without code change. e.g.:
 #   sudo systemctl set-environment BBCTL_RCA_MODEL=gpt-5
 #   sudo systemctl restart bbctl-rca
-_DEFAULT_MODEL = os.environ.get("BBCTL_RCA_MODEL", "gpt-4o")
+# Default = gpt-4.1: better reasoning + 1M context vs gpt-4o, similar
+# price ($2/$8 vs $2.50/$10 per 1M tokens).
+_DEFAULT_MODEL = os.environ.get("BBCTL_RCA_MODEL", "gpt-4.1")
 
 # Back-compat: keep the old module-level constants pointing at the
 # default-model pricing so any external import doesn't break. Active
@@ -322,7 +324,7 @@ async def run_agent(
     etc.). We feed it to the agent as a primer so cheap classes still get
     instant grounding without burning tool calls.
 
-    `model` defaults to the BBCTL_RCA_MODEL env var (or gpt-4o). Cost cap
+    `model` defaults to the BBCTL_RCA_MODEL env var (or gpt-4.1). Cost cap
     uses per-model pricing so swapping to a cheaper / more expensive model
     just shifts the iteration ceiling at the dollar bound.
     """

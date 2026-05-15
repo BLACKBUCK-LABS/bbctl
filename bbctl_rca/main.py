@@ -7,6 +7,7 @@ from urllib.parse import unquote
 
 from fastapi import FastAPI, APIRouter, Request, HTTPException, Header, Depends
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -535,6 +536,13 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
 # path-based routing via jenkins-rca.jinka.in/rca/*). Both URL shapes work.
 app.include_router(router)
 app.include_router(router, prefix="/rca")
+
+# Static assets (theme.css, theme.js, logo fallback) mounted at both
+# /static and /rca/static so URLs resolve under either routing prefix.
+_STATIC_DIR = Path(__file__).parent / "static"
+if _STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+    app.mount("/rca/static", StaticFiles(directory=str(_STATIC_DIR)), name="static-rca")
 
 
 if __name__ == "__main__":

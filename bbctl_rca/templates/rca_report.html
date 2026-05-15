@@ -1,9 +1,21 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Jenkins RCA · {{ service }} #{{ build }}</title>
+<script>
+  // Inline theme bootstrap — runs before paint to avoid flash-of-wrong-theme.
+  (function () {
+    try {
+      var t = localStorage.getItem('jenkins-rca-theme');
+      if (t !== 'light' && t !== 'dark') {
+        t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
 <style>
 :root {
   --bg: #0a0f1c;
@@ -28,6 +40,46 @@
   --radius: 10px;
 }
 
+[data-theme="light"] {
+  --bg: #f7f8fc;
+  --bg-pattern: #e2e8f0;
+  --bg-card: #ffffff;
+  --bg-card-elev: #f3f4f9;
+  --bg-code: #0f172a;
+  --bg-code-header: #1e293b;
+  --fg: #0f172a;
+  --fg-strong: #020617;
+  --fg-muted: #64748b;
+  --fg-faint: #94a3b8;
+  --border: rgba(15, 23, 42, 0.10);
+  --border-soft: rgba(15, 23, 42, 0.05);
+  --border-strong: rgba(15, 23, 42, 0.18);
+  --accent: #4f46e5;
+  --accent-hover: #6366f1;
+  --safe: #059669;
+  --warn: #d97706;
+  --danger: #dc2626;
+  --shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.06), 0 8px 24px -8px rgba(15, 23, 42, 0.10);
+}
+
+/* Theme toggle button */
+.theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-card-elev);
+  color: var(--fg);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.theme-toggle:hover { background: var(--bg-card); border-color: var(--accent); }
+.theme-toggle svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+[data-theme="dark"] .theme-toggle .icon-sun { display: inline-block; }
+[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+[data-theme="light"] .theme-toggle .icon-sun { display: none; }
+[data-theme="light"] .theme-toggle .icon-moon { display: inline-block; }
+
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
@@ -49,9 +101,7 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 /* Sticky header bar */
 .topbar {
   position: sticky; top: 0; z-index: 10;
-  background: rgba(10, 15, 28, 0.85);
-  backdrop-filter: saturate(180%) blur(10px);
-  -webkit-backdrop-filter: saturate(180%) blur(10px);
+  background: var(--bg-card);
   border-bottom: 1px solid var(--border);
 }
 .topbar-inner {
@@ -239,13 +289,17 @@ footer .author strong { color: var(--fg-strong); font-weight: 600; }
       <span class="brand-sep">·</span>
       <a class="brand-build" href="{{ build_url }}">#{{ build }}</a>
     </div>
-    <nav class="anchors">
+    <nav class="anchors" style="display:flex;align-items:center;gap:18px;">
       <a href="/rca/v1/dashboard">All RCAs</a>
       <a href="#summary">Summary</a>
       <a href="#root-cause">Root cause</a>
       <a href="#fix">Fix</a>
       {% if suggested_commands %}<a href="#commands">Commands</a>{% endif %}
       {% if evidence %}<a href="#evidence">Evidence</a>{% endif %}
+      <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme" title="Toggle light / dark theme">
+        <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
     </nav>
   </div>
 </header>
@@ -378,5 +432,6 @@ function copyCmd(id, btn) {
   });
 }
 </script>
+<script src="/rca/static/theme.js"></script>
 </body>
 </html>

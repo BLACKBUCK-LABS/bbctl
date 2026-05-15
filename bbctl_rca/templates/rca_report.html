@@ -225,11 +225,15 @@ footer .author strong { color: var(--fg-strong); font-weight: 600; }
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
-      BB-AI <span class="brand-soft">/ Auto-RCA</span>
+      <a class="brand-build" href="/rca/v1/dashboard">BB-AI</a>
+      <span class="brand-soft">/ Auto-RCA</span>
       <span class="brand-sep">·</span>
-      <a class="brand-build" href="{{ build_url }}">{{ job }} #{{ build }}</a>
+      <a class="brand-build" href="/rca/v1/dashboard/{{ job }}">{{ job }}</a>
+      <span class="brand-sep">·</span>
+      <a class="brand-build" href="{{ build_url }}">#{{ build }}</a>
     </div>
     <nav class="anchors">
+      <a href="/rca/v1/dashboard">All RCAs</a>
       <a href="#summary">Summary</a>
       <a href="#root-cause">Root cause</a>
       <a href="#fix">Fix</a>

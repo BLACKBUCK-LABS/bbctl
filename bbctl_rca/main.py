@@ -21,7 +21,7 @@ from .cache import (
     get_rca, set_rca,
 )
 from .evidence import verify as verify_evidence
-from .audit import record as audit_record, read_by_request_id
+from .audit import record as audit_record, read_by_request_id, list_recent
 from .slack import post as slack_post
 import subprocess
 import yaml
@@ -124,6 +124,63 @@ async def rca_report(request_id: str):
     if not audit:
         raise HTTPException(status_code=404, detail="report not found")
     return _render_report(audit)
+
+
+@router.get("/v1/dashboard", response_class=HTMLResponse)
+async def rca_dashboard(days: int = 2):
+    """Landing page — pipelines (jobs) that had RCAs in the last N days.
+
+    Groups audit records by `job`. Per-pipeline card shows count + most
+    recent failure summary + class chip. Click → /v1/dashboard/<job>.
+    """
+    days = max(1, min(days, 30))  # clamp
+    records = list_recent(days=days)
+    # Group by job
+    by_job: dict[str, list[dict]] = {}
+    for r in records:
+        by_job.setdefault(r["job"], []).append(r)
+    # Build pipeline card list sorted by most-recent-failure DESC
+    pipelines = []
+    for job, recs in by_job.items():
+        recs.sort(key=lambda x: x["recorded_at"], reverse=True)
+        latest = recs[0]
+        pipelines.append({
+            "job": job,
+            "count": len(recs),
+            "latest": latest,
+            "classes": sorted({r["error_class"] for r in recs}),
+        })
+    pipelines.sort(key=lambda p: p["latest"]["recorded_at"], reverse=True)
+    tmpl = _jinja.get_template("dashboard.html")
+    return tmpl.render(
+        pipelines=pipelines,
+        total_rcas=len(records),
+        days=days,
+        class_colors=_CLASS_COLORS,
+    )
+
+
+@router.get("/v1/dashboard/{job}", response_class=HTMLResponse)
+async def rca_pipeline_builds(job: str, days: int = 2):
+    """Per-pipeline view — list of failed builds for one job.
+
+    Each row links to /v1/report/<request_id> for the full RCA.
+    """
+    days = max(1, min(days, 30))
+    records = list_recent(days=days)
+    job_records = [r for r in records if r["job"] == job]
+    if not job_records:
+        # Job had no RCAs in the window — show empty state, not 404
+        pass
+    job_records.sort(key=lambda x: x["recorded_at"], reverse=True)
+    tmpl = _jinja.get_template("pipeline_builds.html")
+    return tmpl.render(
+        job=job,
+        builds=job_records,
+        count=len(job_records),
+        days=days,
+        class_colors=_CLASS_COLORS,
+    )
 
 
 def _render_report(audit: dict) -> str:

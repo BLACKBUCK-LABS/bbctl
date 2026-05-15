@@ -33,6 +33,59 @@ def record(payload: dict) -> Path | None:
         return None
 
 
+def list_recent(days: int = 2) -> list[dict]:
+    """Return audit records from the last N days, newest first.
+
+    Used by the /dashboard view to surface every recent RCA grouped by
+    pipeline (job). Reads each file under LOG_DIR, filters by
+    `recorded_at >= now - days`, returns trimmed records (no full
+    `prompt` / `response` bodies — caller doesn't need them).
+
+    Filesystem cost: ~50 RCAs/day × 2 days = ~100 files, ~5 KB each.
+    Fast enough to scan per request. Cache in-memory later if it grows.
+    """
+    from datetime import timedelta
+    if not LOG_DIR.exists():
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    out: list[dict] = []
+    for path in LOG_DIR.glob("*.json"):
+        try:
+            rec = json.loads(path.read_text())
+        except Exception:
+            continue
+        # Filter by recorded_at if present, else file mtime
+        ts_str = rec.get("recorded_at")
+        try:
+            ts = datetime.fromisoformat(ts_str) if ts_str else datetime.fromtimestamp(
+                path.stat().st_mtime, tz=timezone.utc)
+        except Exception:
+            ts = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        if ts < cutoff:
+            continue
+        rca = rec.get("rca") or {}
+        out.append({
+            "request_id": rec.get("request_id"),
+            "job": rec.get("job") or rca.get("job") or "(unknown)",
+            "build": rec.get("build") or rca.get("build"),
+            "service": rec.get("service") or rca.get("service") or "",
+            "error_class": rca.get("error_class") or rec.get("error_class") or "unknown",
+            "failed_stage": rca.get("failed_stage") or "",
+            "summary": rca.get("summary") or "",
+            "recorded_at": ts.isoformat(),
+            "_ts": ts,
+            "cost_usd": rca.get("cost_usd"),
+            "model_used": rca.get("model_used"),
+            "needs_deeper": rca.get("needs_deeper", False),
+            "llm_error": rca.get("_llm_error", False),
+        })
+    out.sort(key=lambda r: r["_ts"], reverse=True)
+    # Strip internal _ts before returning
+    for r in out:
+        r.pop("_ts", None)
+    return out
+
+
 def read_by_request_id(request_id: str) -> dict | None:
     """Load an audit record by request_id. Returns the parsed dict or None.
 

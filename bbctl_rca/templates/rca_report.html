@@ -323,6 +323,7 @@ footer .author strong { color: var(--fg-strong); font-weight: 600; }
       <div class="hero-actions">
         <a class="pill pill-slate pill-link" href="{{ build_url }}">Jenkins build →</a>
         <a class="pill pill-slate pill-link" href="{{ build_url }}console">Console log →</a>
+        {% if jira_url %}<a class="pill pill-slate pill-link" href="{{ jira_url }}" target="_blank" rel="noopener">Jira ticket {{ jira_key }} →</a>{% endif %}
         <a class="pill pill-slate pill-link" href="/rca/v1/report/{{ request_id }}.json">Raw JSON →</a>
       </div>
     </div>

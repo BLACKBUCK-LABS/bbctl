@@ -268,6 +268,20 @@ def _render_report(audit: dict) -> str:
     build = audit.get("build", "")
     build_url = audit.get("build_url") or _guess_build_url(job, build)
 
+    # Extract Jira ticket key from RCA so the report header can deep-link
+    # to the ticket. Looks in summary + root_cause + evidence snippets.
+    # First match wins. Empty string when no ticket found.
+    from . import jira as _jira
+    _searchable = " ".join([
+        str(rca.get("summary") or ""),
+        str(rca.get("root_cause") or ""),
+        " ".join(str(e.get("snippet") or "") for e in (rca.get("evidence") or []) if isinstance(e, dict)),
+    ])
+    jira_keys = _jira.extract_tickets(_searchable)
+    jira_key = jira_keys[0] if jira_keys else ""
+    jira_base = os.environ.get("BBCTL_JIRA_URL", "https://blackbuck.atlassian.net").rstrip("/")
+    jira_url = f"{jira_base}/browse/{jira_key}" if jira_key else ""
+
     tmpl = _jinja.get_template("rca_report.html")
     return tmpl.render(
         request_id=audit.get("request_id", ""),
@@ -294,6 +308,8 @@ def _render_report(audit: dict) -> str:
         provider=audit.get("provider", "—"),
         redactions=", ".join(audit.get("redactions") or []) or None,
         log_window_chars=audit.get("log_window_chars", 0),
+        jira_key=jira_key,
+        jira_url=jira_url,
     )
 
 

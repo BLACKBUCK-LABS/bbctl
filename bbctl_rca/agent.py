@@ -410,6 +410,42 @@ async def run_agent(
         except Exception:
             pass
 
+    def _fmt_request_payload(msgs: list, kwargs: dict) -> str:
+        """Render the exact OpenAI request payload for trace logs.
+
+        Truncates per-message content to keep file size sane — full
+        unredacted prompt + tool schemas live in /tmp/bbctl-rca-last-prompt.txt.
+        """
+        PER_MSG_CHARS = 1500
+        lines = []
+        lines.append(f"model: {kwargs.get('model')}")
+        lines.append(f"temperature: {kwargs.get('temperature')}")
+        if "response_format" in kwargs:
+            lines.append(f"response_format: {kwargs['response_format']}")
+        if "tools" in kwargs:
+            tool_names = [t.get("function", {}).get("name", "?") for t in kwargs["tools"]]
+            lines.append(f"tools: {tool_names}")
+        if "tool_choice" in kwargs:
+            lines.append(f"tool_choice: {kwargs['tool_choice']}")
+        lines.append(f"messages ({len(msgs)} total):")
+        for i, m in enumerate(msgs):
+            role = m.get("role", "?")
+            content = m.get("content") or ""
+            if len(content) > PER_MSG_CHARS:
+                content = content[:PER_MSG_CHARS] + f"\n…[truncated, +{len(m.get('content',''))-PER_MSG_CHARS} chars]"
+            extras = []
+            if m.get("tool_calls"):
+                extras.append(f"tool_calls={[(tc['function']['name'], tc['function']['arguments'][:200]) for tc in m['tool_calls']]}")
+            if m.get("tool_call_id"):
+                extras.append(f"tool_call_id={m['tool_call_id']}")
+            if m.get("name"):
+                extras.append(f"name={m['name']}")
+            extra_str = (" " + " ".join(extras)) if extras else ""
+            lines.append(f"  [{i}] role={role}{extra_str}")
+            if content:
+                lines.append(f"      content: {content}")
+        return "\n".join(lines)
+
     ctx = {"jenkins_url": jenkins_url, "jenkins_auth": jenkins_auth}
     total_in = total_out = 0
     tool_call_count = 0
@@ -433,13 +469,20 @@ async def run_agent(
                 "role": "user",
                 "content": _FORCE_FINAL_PROMPT,
             })
-            response = client.chat.completions.create(
-                model=model, messages=messages,
-                response_format={"type": "json_object"}, temperature=0.1,
-            )
+            _cap_kwargs = {
+                "model": model, "messages": messages,
+                "response_format": {"type": "json_object"}, "temperature": 0.1,
+            }
+            _trace("COST-CAP FORCED FINAL REQUEST",
+                   _fmt_request_payload(messages, _cap_kwargs))
+            response = client.chat.completions.create(**_cap_kwargs)
             total_in += response.usage.prompt_tokens
             total_out += response.usage.completion_tokens
             final_text = response.choices[0].message.content
+            _trace("COST-CAP FORCED FINAL RESPONSE",
+                   f"prompt_tokens={response.usage.prompt_tokens} "
+                   f"completion_tokens={response.usage.completion_tokens}\n"
+                   f"content={(final_text or '')[:1500]}")
             break
 
         # On the final iteration, force JSON-only output (no more tools)
@@ -461,7 +504,8 @@ async def run_agent(
 
         _trace(f"ITER {iteration} REQUEST",
                f"force_final={force_final} cost_so_far=${cost_so_far:.4f} "
-               f"messages_count={len(messages)} tokens_so_far={total_in}+{total_out}")
+               f"messages_count={len(messages)} tokens_so_far={total_in}+{total_out}\n"
+               + _fmt_request_payload(messages, kwargs))
         response = client.chat.completions.create(**kwargs)
         total_in += response.usage.prompt_tokens
         total_out += response.usage.completion_tokens
@@ -485,14 +529,21 @@ async def run_agent(
                 _log("LLM bailed early with non-JSON content; "
                      "re-prompting with response_format=json_object")
                 messages.append({"role": "user", "content": _FORCE_FINAL_PROMPT})
-                retry = client.chat.completions.create(
-                    model=model, messages=messages,
-                    response_format={"type": "json_object"},
-                    temperature=0.1,
-                )
+                _retry_kwargs = {
+                    "model": model, "messages": messages,
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.1,
+                }
+                _trace("VOLUNTARY-BAIL RESCUE REQUEST",
+                       _fmt_request_payload(messages, _retry_kwargs))
+                retry = client.chat.completions.create(**_retry_kwargs)
                 total_in += retry.usage.prompt_tokens
                 total_out += retry.usage.completion_tokens
                 final_text = retry.choices[0].message.content
+                _trace("VOLUNTARY-BAIL RESCUE RESPONSE",
+                       f"prompt_tokens={retry.usage.prompt_tokens} "
+                       f"completion_tokens={retry.usage.completion_tokens}\n"
+                       f"content={(final_text or '')[:1500]}")
             break
 
         # Append assistant message + execute each tool call

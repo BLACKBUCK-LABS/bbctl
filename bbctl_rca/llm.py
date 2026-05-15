@@ -471,6 +471,20 @@ async def run_rca_openai(
     import os as _os
     rca_model = _os.environ.get("BBCTL_RCA_MODEL", "gpt-4.1")
     print(f"[llm] one-shot model={rca_model}", file=__import__('sys').stderr, flush=True)
+
+    # Optional prompt dump for debugging.
+    # Enable: sudo systemctl set-environment BBCTL_RCA_DEBUG_PROMPT=1
+    # Reads:  cat /tmp/bbctl-rca-last-prompt.txt
+    if _os.environ.get("BBCTL_RCA_DEBUG_PROMPT"):
+        try:
+            with open("/tmp/bbctl-rca-last-prompt.txt", "w") as _f:
+                _f.write("=== MODEL ===\n" + rca_model + "\n\n")
+                _f.write("=== MODE ===\none-shot\n\n")
+                _f.write("=== SYSTEM MESSAGE ===\n" + system + "\n\n")
+                _f.write("=== USER MESSAGE ===\n" + user_msg + "\n")
+        except Exception as _e:
+            print(f"[llm] prompt dump failed: {_e}", file=__import__('sys').stderr, flush=True)
+
     response = client.chat.completions.create(
         model=rca_model,
         messages=[

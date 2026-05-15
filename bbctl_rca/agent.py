@@ -366,6 +366,20 @@ async def run_agent(
         )},
     ]
 
+    # Optional prompt dump for debugging.
+    # Enable: sudo systemctl set-environment BBCTL_RCA_DEBUG_PROMPT=1
+    # Reads:  cat /tmp/bbctl-rca-last-prompt.txt
+    if os.environ.get("BBCTL_RCA_DEBUG_PROMPT"):
+        try:
+            with open("/tmp/bbctl-rca-last-prompt.txt", "w") as _f:
+                _f.write("=== MODEL ===\n" + model + "\n\n")
+                _f.write("=== MODE ===\nagent\n\n")
+                _f.write("=== SYSTEM MESSAGE (includes primer) ===\n" + system_full + "\n\n")
+                _f.write("=== INITIAL USER MESSAGE ===\n" + messages[1]["content"] + "\n\n")
+                _f.write("=== TOOLS SCHEMA ===\n" + json.dumps(TOOLS, indent=2) + "\n")
+        except Exception as _e:
+            _log(f"prompt dump failed: {_e}")
+
     ctx = {"jenkins_url": jenkins_url, "jenkins_auth": jenkins_auth}
     total_in = total_out = 0
     tool_call_count = 0

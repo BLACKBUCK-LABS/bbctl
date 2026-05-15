@@ -116,11 +116,24 @@ def _head_sha(repo_path: Path) -> str | None:
 
 
 def _default_branch(repo_path: Path) -> str:
-    """Resolve the default branch from the remote HEAD if not specified.
+    """Resolve the default branch for `repo_path`.
 
-    Cheap (cached by git after the first call). Falls back to common names if
-    the symbolic-ref isn't set.
+    Priority:
+      1. Hardcoded mapping for the two repos we care about (overridable via
+         env). This MUST come first — `origin/HEAD` on jenkins_pipeline points
+         at `master`, but we explicitly track the active release branch, so
+         deferring to symbolic-ref silently resets the clone to the wrong tip
+         on every RCA call.
+      2. `symbolic-ref refs/remotes/origin/HEAD` for any other repo (kept as
+         a generic fallback for future additions).
+      3. Literal "main" as last resort.
     """
+    import os as _os
+    name = repo_path.name
+    if name == "jenkins_pipeline":
+        return _os.environ.get("BBCTL_RCA_JP_BRANCH", "release/REQ-463-staggerprodplusupdate-v2")
+    if name == "InfraComposer":
+        return _os.environ.get("BBCTL_RCA_IC_BRANCH", "main")
     try:
         out = subprocess.run(
             ["git", "-C", str(repo_path), "symbolic-ref", "--short",
@@ -132,13 +145,4 @@ def _default_branch(repo_path: Path) -> str:
             return ref.split("/", 1)[1]
     except Exception:
         pass
-    # Heuristic fallback for the two repos we care about.
-    # jenkins_pipeline currently tracks the active dev release branch.
-    # Override via env BBCTL_RCA_JP_BRANCH if a different branch is needed.
-    import os as _os
-    name = repo_path.name
-    if name == "jenkins_pipeline":
-        return _os.environ.get("BBCTL_RCA_JP_BRANCH", "release/REQ-463-staggerprodplusupdate-v2")
-    if name == "InfraComposer":
-        return _os.environ.get("BBCTL_RCA_IC_BRANCH", "main")
     return "main"

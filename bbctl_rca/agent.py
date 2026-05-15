@@ -29,9 +29,41 @@ PER_TOOL_RESULT_CAP = 1500   # was 3000; agent rarely needs more than ~50 lines
 # tool-call shell intact so the LLM still sees what was asked). Cuts the
 # replay weight that drives input-token cost.
 TRIM_HISTORY_AFTER = 1       # was 2; tighter trim, only keep last iter full
-# gpt-4o pricing (must match main.py)
-INPUT_USD_PER_TOKEN = 2.50 / 1_000_000
-OUTPUT_USD_PER_TOKEN = 10.00 / 1_000_000
+
+# Per-model pricing in USD per 1M tokens. Used for cost cap enforcement
+# AND audit-record cost reporting. Update when OpenAI changes rates.
+# Unknown models fall through to gpt-4o pricing (conservative — over-
+# bills slightly rather than under-bills, so cost cap stays effective).
+_MODEL_PRICING = {
+    "gpt-4o":        {"in":  2.50, "out": 10.00},
+    "gpt-4o-mini":   {"in":  0.15, "out":  0.60},
+    "gpt-4.1":       {"in":  2.00, "out":  8.00},
+    "gpt-4.1-mini":  {"in":  0.40, "out":  1.60},
+    "gpt-5":         {"in":  3.00, "out": 15.00},   # approximate — verify before prod use
+    "gpt-5-mini":    {"in":  0.50, "out":  2.00},   # approximate — verify before prod use
+    "o1":            {"in": 15.00, "out": 60.00},
+    "o1-mini":       {"in":  1.10, "out":  4.40},
+    "o3-mini":       {"in":  1.10, "out":  4.40},
+}
+
+
+def _pricing_for(model: str) -> tuple[float, float]:
+    """(input_per_token, output_per_token) for the given model name.
+    Falls back to gpt-4o pricing if unknown."""
+    p = _MODEL_PRICING.get(model, _MODEL_PRICING["gpt-4o"])
+    return p["in"] / 1_000_000, p["out"] / 1_000_000
+
+
+# Default agent model. Override per-RCA via BBCTL_RCA_MODEL env var to
+# A/B test different models without code change. e.g.:
+#   sudo systemctl set-environment BBCTL_RCA_MODEL=gpt-5
+#   sudo systemctl restart bbctl-rca
+_DEFAULT_MODEL = os.environ.get("BBCTL_RCA_MODEL", "gpt-4o")
+
+# Back-compat: keep the old module-level constants pointing at the
+# default-model pricing so any external import doesn't break. Active
+# code in run_agent now reads pricing per-call via _pricing_for().
+INPUT_USD_PER_TOKEN, OUTPUT_USD_PER_TOKEN = _pricing_for(_DEFAULT_MODEL)
 
 
 def _log(msg: str) -> None:
@@ -281,7 +313,7 @@ async def run_agent(
     initial_tool_ctx: str,
     jenkins_url: str,
     jenkins_auth: tuple,
-    model: str = "gpt-4o",
+    model: str | None = None,
 ) -> dict:
     """Run a function-calling agent until it emits final RCA JSON or hits caps.
 
@@ -289,7 +321,16 @@ async def run_agent(
     one-shot path (service.lookup, source.trace, docs.<class>.md, jira.tickets,
     etc.). We feed it to the agent as a primer so cheap classes still get
     instant grounding without burning tool calls.
+
+    `model` defaults to the BBCTL_RCA_MODEL env var (or gpt-4o). Cost cap
+    uses per-model pricing so swapping to a cheaper / more expensive model
+    just shifts the iteration ceiling at the dollar bound.
     """
+    if model is None:
+        model = _DEFAULT_MODEL
+    in_per_tok, out_per_tok = _pricing_for(model)
+    _log(f"model={model} input=${in_per_tok*1_000_000:.2f}/M output=${out_per_tok*1_000_000:.2f}/M")
+
     from openai import OpenAI
     client = OpenAI(api_key=api_key)
 
@@ -325,7 +366,7 @@ async def run_agent(
     tool_call_cache: dict[tuple[str, str], tuple[int, str]] = {}
 
     for iteration in range(MAX_TOOL_CALLS + 1):
-        cost_so_far = total_in * INPUT_USD_PER_TOKEN + total_out * OUTPUT_USD_PER_TOKEN
+        cost_so_far = total_in * in_per_tok + total_out * out_per_tok
         if cost_so_far >= COST_CAP_USD:
             _log(f"cost cap hit at ${cost_so_far:.4f} — forcing final answer")
             messages.append({

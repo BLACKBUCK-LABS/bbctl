@@ -273,6 +273,13 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         # wedged. Runbook gives the LLM state-surgery procedures it can
         # surface as suggested_commands.
         "terraform",
+        # java_runtime: stack trace points at a file:line. Agent can read
+        # that file via repo_read_file and cite the exact line for the
+        # operator (e.g. WorkflowScript:330 → create-quick-infra.groovy:330
+        # showing the wrong-arg call). One-shot path lacks tool access so
+        # it can only paraphrase the stack trace without locating the bug
+        # in the source. ~3-4 tool calls typical, $0.10-0.15 added cost.
+        "java_runtime",
     }
 
     if LLM_PROVIDER == "openai" and error_class in AGENT_CLASSES:
@@ -310,12 +317,16 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         build_meta = {k: v for k, v in build_meta.items() if k != "_raw_log"}
     result["request_id"] = request_id
 
-    # cost estimate by provider
+    # cost estimate by provider. OpenAI side honors BBCTL_RCA_MODEL env so
+    # cost reflects the actual model used (delegates to agent._pricing_for).
     tokens_in = result["tokens_used"].get("input", 0)
     tokens_out = result["tokens_used"].get("output", 0)
     if LLM_PROVIDER == "openai":
-        # gpt-4o: $2.50/1M input, $10.00/1M output
-        cost = (tokens_in / 1_000_000 * 2.50) + (tokens_out / 1_000_000 * 10.00)
+        from .agent import _pricing_for
+        rca_model = os.environ.get("BBCTL_RCA_MODEL", "gpt-4o")
+        in_per_tok, out_per_tok = _pricing_for(rca_model)
+        cost = tokens_in * in_per_tok + tokens_out * out_per_tok
+        result["model_used"] = rca_model
     else:
         # gemini-2.0-flash: $0.075/1M input, $0.30/1M output
         cost = (tokens_in / 1_000_000 * 0.075) + (tokens_out / 1_000_000 * 0.30)

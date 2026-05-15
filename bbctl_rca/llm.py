@@ -464,8 +464,14 @@ async def run_rca_openai(
     block_titles = [ln.strip() for ln in tool_ctx.split("\n") if ln.startswith("## ")]
     print(f"[llm] tool_ctx blocks: {block_titles}", file=__import__('sys').stderr, flush=True)
 
+    # Model is configurable via BBCTL_RCA_MODEL env var so we can A/B
+    # different OpenAI models (gpt-4o, gpt-4.1, gpt-5, o3-mini, …) without
+    # a code change. Default = gpt-4o.
+    import os as _os
+    rca_model = _os.environ.get("BBCTL_RCA_MODEL", "gpt-4o")
+    print(f"[llm] one-shot model={rca_model}", file=__import__('sys').stderr, flush=True)
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=rca_model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},

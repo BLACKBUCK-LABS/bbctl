@@ -95,18 +95,32 @@ _FORCE_FINAL_PROMPT = (
     "If a tool errored earlier, that's fine — use the context you already "
     "have (primer + earlier tool results) to compose the JSON.\n"
     "\n"
-    "HONESTY RULE: If you have NOT identified a clear file:line cause from "
-    "a tool call you actually ran (i.e. you wandered, errored, or ran out "
-    "of budget before reaching the implementation site), DO NOT FABRICATE "
-    "a root_cause. Set:\n"
-    '  "summary": "<exception type> at <stage> — cause not determinable '
-    'from <N> tool calls",\n'
-    '  "root_cause": "Agent budget exhausted before reaching implementation '
-    'site. Last evidence: <whatever you have>.",\n'
-    '  "needs_deeper": true,\n'
-    '  "confidence": <= 0.4\n'
-    "A high-confidence wrong answer is worse than an honest \"cannot "
-    "determine\". Output the JSON object only — no prose before or after."
+    "USE THE EVIDENCE YOU HAVE. The log is often self-sufficient. Examples:\n"
+    "  • `MissingMethodException: No signature of method: X.call(...) is "
+    "applicable for argument types: (...). Possible solutions: "
+    "call(A,B,C)` — the FIX IS LITERALLY IN THE LOG. cite this, set "
+    "root_cause to \"Wrong arg count to X.call() — log shows required "
+    "signatures: ...\" and confidence ≥ 0.7. DO NOT say `needs_deeper`.\n"
+    "  • Stack trace with file:line in a file you READ — cite "
+    "`<repo>/<file>:<line>` exactly.\n"
+    "  • `Health Status: unhealthy` + you read healthy.sh — cite poll-loop "
+    "line and explain the timeout.\n"
+    "\n"
+    "OPERATOR-FACING LANGUAGE — banned terms in `summary` / `root_cause` / "
+    "`suggested_fix`:\n"
+    "  ✗ \"agent budget\", \"tool calls\", \"iterations\", \"implementation "
+    "site not reached\", \"could not be reached within the tool budget\", "
+    "\"my budget\", \"my reasoning\"\n"
+    "  ✓ Write as if a senior SRE diagnosed it from the log — concrete, "
+    "operator-actionable. Mention `vars/JiraDetails.groovy`, file paths, "
+    "line numbers, real signatures from the log.\n"
+    "\n"
+    "ONLY use `needs_deeper: true` if BOTH (a) you did not read any "
+    "relevant repo file AND (b) the log itself does not contain a clear "
+    "exception type with a usable hint. If the log spells out the answer, "
+    "`needs_deeper` is wrong — set it `false`.\n"
+    "\n"
+    "Output the JSON object only — no prose before or after."
 )
 
 

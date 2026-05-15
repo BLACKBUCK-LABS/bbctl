@@ -74,11 +74,39 @@ def repo_find_function(repo: str, name: str, max_hits: int = 5) -> str:
       Java:    `<modifier...> ReturnType <name>(`  (handled via simple grep)
       Python:  `def <name>(`
 
+    Special case — Jenkins shared library: a file `vars/<name>.groovy`
+    containing `def call(...)` IS the definition of step `<name>`. The
+    raw regex search can't see that (it would match the `def call`
+    inside, but the function-name token is "call" not "<name>"). When
+    the convention applies, prepend the `def call(` line as the
+    authoritative implementation citation before falling back to the
+    generic regex hits (which then surface as call-sites).
+
     Returns ripgrep-style hits with line numbers, capped at max_hits.
     """
     repo_path = REPOS_DIR / repo
     if not repo_path.exists():
         return f"repo {repo} not found at {repo_path}"
+
+    out_lines: list[str] = []
+
+    # Jenkins shared-lib special case: vars/<name>.groovy with `def call(`.
+    vars_file = repo_path / "vars" / f"{name}.groovy"
+    if vars_file.is_file():
+        try:
+            with open(vars_file, "r", errors="replace") as _f:
+                for i, line in enumerate(_f, start=1):
+                    if "def call(" in line or "def call (" in line:
+                        rel = vars_file.relative_to(repo_path)
+                        out_lines.append(f"{vars_file}:{i}:{line.rstrip()}")
+                        out_lines.append(
+                            f"# ↑ Jenkins shared-lib convention: "
+                            f"vars/{name}.groovy is the implementation of step '{name}()'"
+                        )
+                        break
+        except Exception:
+            pass
+
     # Two patterns OR'd: definition forms vs. assignment forms.
     pattern = rf"(?:def\s+|static\s+def\s+|^\s*){__import__('re').escape(name)}\s*[(=]"
     result = subprocess.run(
@@ -88,9 +116,18 @@ def repo_find_function(repo: str, name: str, max_hits: int = 5) -> str:
         capture_output=True, text=True, check=False,
     )
     if result.returncode not in (0, 1):
+        if out_lines:
+            return "\n".join(out_lines)
         return f"search error: {result.stderr.strip()[:200]}"
-    out = result.stdout.strip()
-    return out or f"no definitions found for '{name}' in {repo}"
+    rg_out = result.stdout.strip()
+    if rg_out:
+        if out_lines:
+            out_lines.append("# Other matches (call-sites or non-vars defs):")
+        out_lines.extend(rg_out.splitlines())
+
+    if not out_lines:
+        return f"no definitions found for '{name}' in {repo}"
+    return "\n".join(out_lines)
 
 
 def repo_recent_commits(repo: str, n: int = 10) -> str:

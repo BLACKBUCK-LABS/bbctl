@@ -54,7 +54,7 @@ _CLASS_COLORS = {
 
 app = FastAPI(title="bbctl-rca", version="0.1.0")
 # All routes go on this router so we can mount them at both root and /rca.
-# /rca prefix is for ALB path-based routing (bbctl.blackbuck.com/rca/*);
+# /rca prefix is for ALB path-based routing (bbctl-rca.jinka.in/rca/*);
 # root mount keeps direct-port access working for backward compat.
 router = APIRouter()
 
@@ -454,7 +454,7 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
 
 
 # Mount routes at both root (for direct port access) and /rca (for ALB
-# path-based routing via bbctl.blackbuck.com/rca/*). Both URL shapes work.
+# path-based routing via bbctl-rca.jinka.in/rca/*). Both URL shapes work.
 app.include_router(router)
 app.include_router(router, prefix="/rca")
 

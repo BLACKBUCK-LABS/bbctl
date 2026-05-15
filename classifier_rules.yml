@@ -28,6 +28,25 @@ rules:
       - '"canary_run_status":\s*"Fail"'
     description: "Canary analysis failed — Kayenta canary config did not pass threshold"
 
+  # terraform MUST come before aws_limit — Terraform state/lock errors
+  # often contain AWS-API capacity strings in their body, and aws_limit
+  # would otherwise eat them. State + lock errors are operator-action
+  # (devops state surgery), distinct from a pure AWS quota bump.
+  - class: terraform
+    patterns:
+      - 'Terraform state contains resources'
+      - 'Stopping pipeline execution due to non-empty Terraform state'
+      - 'Error acquiring the state lock'
+      - 'ConditionalCheckFailedException.*conditional request failed'
+      - 'Error: configuring Terraform AWS Provider'
+      - 'Error: BucketRegionError'
+      - 'Error: Provider produced inconsistent final plan'
+      - 'Inconsistent dependency lock file'
+      - 'Error: Failed to install provider'
+      - 'Error: Backend initialization required'
+      - 'terraform.*Error: error inspecting states'
+    description: "Terraform state / lock / apply / backend failure — see TerraformTroubleshoot.md"
+
   - class: aws_limit
     patterns:
       - 'TooMany[A-Z][a-zA-Z]+'

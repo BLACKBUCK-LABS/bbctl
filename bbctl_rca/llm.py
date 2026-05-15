@@ -21,6 +21,7 @@ CLASS_DOCS = {
     "aws_limit": "AwsLimitTroubleshoot.md",
     "parse_error": "ConfigJsonParseError.md",
     "health_check": "HealthCheckFailure.md",
+    "terraform": "TerraformTroubleshoot.md",
 }
 
 # Regex to extract TG ARN + instance + region from the `healthy.sh` invocation

@@ -268,6 +268,11 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     AGENT_CLASSES = {
         "canary_fail", "canary_script_error",
         "health_check", "parse_error", "scm",
+        # terraform errors benefit from agent code-trace: failed module
+        # in main.tf → read module body → identify which AWS resource is
+        # wedged. Runbook gives the LLM state-surgery procedures it can
+        # surface as suggested_commands.
+        "terraform",
     }
 
     if LLM_PROVIDER == "openai" and error_class in AGENT_CLASSES:

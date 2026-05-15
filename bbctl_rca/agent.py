@@ -59,8 +59,20 @@ _FORCE_FINAL_PROMPT = (
     '  "needs_deeper": false\n'
     "}\n"
     "If a tool errored earlier, that's fine — use the context you already "
-    "have (primer + earlier tool results) to compose the JSON. Output the "
-    "JSON object only — no prose before or after."
+    "have (primer + earlier tool results) to compose the JSON.\n"
+    "\n"
+    "HONESTY RULE: If you have NOT identified a clear file:line cause from "
+    "a tool call you actually ran (i.e. you wandered, errored, or ran out "
+    "of budget before reaching the implementation site), DO NOT FABRICATE "
+    "a root_cause. Set:\n"
+    '  "summary": "<exception type> at <stage> — cause not determinable '
+    'from <N> tool calls",\n'
+    '  "root_cause": "Agent budget exhausted before reaching implementation '
+    'site. Last evidence: <whatever you have>.",\n'
+    '  "needs_deeper": true,\n'
+    '  "confidence": <= 0.4\n'
+    "A high-confidence wrong answer is worse than an honest \"cannot "
+    "determine\". Output the JSON object only — no prose before or after."
 )
 
 
@@ -301,6 +313,16 @@ async def run_agent(
     total_in = total_out = 0
     tool_call_count = 0
     final_text = None
+    # Track every successful repo_read_file call so we can validate the
+    # final evidence array against it (post-parse hallucination guard).
+    # Key: "<repo>/<path>" — line range is ignored, any read counts.
+    read_files: set[str] = set()
+    # Dedup map: (tool_name, sorted_args_json) -> (iter, cached_result).
+    # If the LLM repeats an identical call, return the cached result with
+    # a hint to try a different approach. Saves disk I/O AND signals to
+    # the LLM that it's wandering (which the wandering-avoidance rule in
+    # the system prompt warns against).
+    tool_call_cache: dict[tuple[str, str], tuple[int, str]] = {}
 
     for iteration in range(MAX_TOOL_CALLS + 1):
         cost_so_far = total_in * INPUT_USD_PER_TOKEN + total_out * OUTPUT_USD_PER_TOKEN
@@ -362,10 +384,37 @@ async def run_agent(
             except json.JSONDecodeError:
                 args = {}
             _log(f"iter {iteration} tool#{tool_call_count}: {tc.function.name}({list(args)})")
-            result = await _dispatch_tool(tc.function.name, args, ctx)
-            # Cap each tool result so a runaway grep doesn't blow the window
-            if len(result) > PER_TOOL_RESULT_CAP:
-                result = result[:PER_TOOL_RESULT_CAP] + "\n…[truncated]"
+
+            # Tool-call dedup: same (name, args) within this RCA → serve
+            # cached result + hint to LLM to try a different approach.
+            # Saves I/O and breaks the "repeat the same search 3 times"
+            # wandering pattern.
+            fingerprint = (tc.function.name, json.dumps(args, sort_keys=True))
+            if fingerprint in tool_call_cache:
+                prev_iter, prev_result = tool_call_cache[fingerprint]
+                _log(f"  → DUP: same call ran in iter {prev_iter}; serving cached result")
+                result = (
+                    f"[DUP_CALL: this exact call was already executed in iter "
+                    f"{prev_iter}. Result was:]\n{prev_result}\n"
+                    f"[end of cached result — try a DIFFERENT query or read a "
+                    f"DIFFERENT file; repeating the same call wastes the budget.]"
+                )
+            else:
+                result = await _dispatch_tool(tc.function.name, args, ctx)
+                # Cap each tool result so a runaway grep doesn't blow the window
+                if len(result) > PER_TOOL_RESULT_CAP:
+                    result = result[:PER_TOOL_RESULT_CAP] + "\n…[truncated]"
+                tool_call_cache[fingerprint] = (iteration, result)
+
+            # Track repo_read_file paths so the final evidence array can
+            # be validated against actual reads. Only track on a successful
+            # (non-error) read so failed paths don't get whitelisted.
+            if tc.function.name == "repo_read_file":
+                repo = args.get("repo")
+                path = args.get("path")
+                if repo and path and not result.startswith(("error:", "[error", "ERROR:")):
+                    read_files.add(f"{repo}/{path}")
+
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
@@ -397,10 +446,50 @@ async def run_agent(
             "needs_deeper": True,
         }
 
+    # Evidence validator: drop fabricated repo-path citations.
+    # If evidence[i].source looks like `<repo>/<path>:<line>` but no
+    # repo_read_file ever opened that file, the LLM hallucinated the cite.
+    # Drop those entries so the operator doesn't follow them. Keep the
+    # non-repo sources (jenkins_log, jira.tickets, build_meta) untouched.
+    rca["evidence"] = _filter_fake_repo_evidence(rca.get("evidence", []), read_files)
+
     rca["tokens_used"] = {"input": total_in, "output": total_out}
     rca["agent_tool_calls"] = tool_call_count
-    _log(f"done. tool_calls={tool_call_count} tokens={total_in}+{total_out}")
+    rca["files_read"] = sorted(read_files)
+    _log(f"done. tool_calls={tool_call_count} tokens={total_in}+{total_out} read_files={len(read_files)}")
     return rca
+
+
+_REPO_PREFIXES = ("jenkins_pipeline/", "InfraComposer/")
+
+
+def _filter_fake_repo_evidence(evidence: list, read_files: set[str]) -> list:
+    """Drop evidence entries whose source is a repo path not actually read.
+
+    A repo-path source looks like `jenkins_pipeline/vars/foo.groovy:42`.
+    Strip the `:<line>` part; if `<repo>/<path>` is NOT in `read_files`,
+    the LLM made it up — drop the entry. Non-repo sources
+    (`jenkins_log`, `jira.tickets`, `build_meta`) pass through unchanged.
+    """
+    if not isinstance(evidence, list):
+        return evidence
+    kept = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            kept.append(item)
+            continue
+        src = (item.get("source") or "").strip()
+        if not any(src.startswith(p) for p in _REPO_PREFIXES):
+            kept.append(item)
+            continue
+        # Strip the :<line> suffix if present
+        path_part = src.rsplit(":", 1)[0] if ":" in src else src
+        if path_part in read_files:
+            kept.append(item)
+        else:
+            _log(f"  evidence validator: dropped fake cite source={src!r} "
+                 f"(not in read_files)")
+    return kept
 
 
 def _parse_final_json(text: str | None) -> dict | None:

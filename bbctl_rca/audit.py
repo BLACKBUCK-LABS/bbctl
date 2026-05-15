@@ -90,10 +90,23 @@ def list_recent(days: int = 2) -> list[dict]:
             "llm_error": rca.get("_llm_error", False),
         })
     out.sort(key=lambda r: r["_ts"], reverse=True)
-    # Strip internal _ts before returning
+    # Dedup by (job, build) — when an operator re-triggers the same build
+    # with `deep:true` multiple times, each call writes a fresh audit
+    # record. The dashboard should show only the latest per build.
+    # `out` is already sorted newest-first, so the first occurrence per
+    # (job, build) is the keeper.
+    seen: set[tuple] = set()
+    deduped: list[dict] = []
     for r in out:
+        key = (r["job"], r.get("build"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(r)
+    # Strip internal _ts before returning
+    for r in deduped:
         r.pop("_ts", None)
-    return out
+    return deduped
 
 
 def read_by_request_id(request_id: str) -> dict | None:

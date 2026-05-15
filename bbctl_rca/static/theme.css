@@ -280,6 +280,7 @@ td.col-count { font-weight: 700; color: var(--danger); white-space: nowrap; }
 td.col-mono  { color: var(--fg-muted); white-space: nowrap; font-family: var(--font-mono); font-size: 12px; }
 td.col-summary { color: var(--fg); line-height: 1.5; max-width: 480px; }
 td.col-pills  { white-space: nowrap; }
+td.col-actions { white-space: nowrap; width: 1%; }
 
 /* Pills */
 .pills { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -317,7 +318,8 @@ td.col-pills  { white-space: nowrap; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 14px;
+  gap: 4px;
+  padding: 5px 12px;
   border-radius: var(--radius-sm);
   background: var(--accent);
   color: #ffffff;
@@ -326,6 +328,8 @@ td.col-pills  { white-space: nowrap; }
   border: none;
   cursor: pointer;
   text-decoration: none;
+  white-space: nowrap;
+  line-height: 1.2;
   transition: background 0.15s, transform 0.05s;
 }
 .btn:hover { background: var(--accent-hov); color: #ffffff; }

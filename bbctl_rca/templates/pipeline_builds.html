@@ -75,8 +75,8 @@
           {% if b.needs_deeper %}<span class="muted needs-deeper">· needs deeper</span>{% endif %}
           {% if b.llm_error %}<span class="muted llm-error">· LLM error</span>{% endif %}
         </td>
-        <td>
-          <a href="/rca/v1/report/{{ b.request_id }}" class="btn">Open RCA →</a>
+        <td class="col-actions">
+          <a href="/rca/v1/report/{{ b.request_id }}" class="btn">Open RCA &rarr;</a>
         </td>
       </tr>
       {% endfor %}

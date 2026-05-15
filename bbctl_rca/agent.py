@@ -510,11 +510,23 @@ async def run_agent(
         total_in += response.usage.prompt_tokens
         total_out += response.usage.completion_tokens
         msg = response.choices[0].message
-        _trace(f"ITER {iteration} RESPONSE",
-               f"prompt_tokens={response.usage.prompt_tokens} "
-               f"completion_tokens={response.usage.completion_tokens}\n"
-               f"content={(msg.content or '')[:1500]}\n"
-               f"tool_calls={[(tc.function.name, tc.function.arguments) for tc in (msg.tool_calls or [])]}")
+        try:
+            _raw_resp = json.dumps(response.model_dump(), indent=2, default=str)
+        except Exception as _e:
+            _raw_resp = f"[model_dump failed: {_e}]"
+        _RESP_CAP = 12000
+        _trace(
+            f"ITER {iteration} RESPONSE",
+            f"prompt_tokens={response.usage.prompt_tokens} "
+            f"completion_tokens={response.usage.completion_tokens}\n"
+            f"finish_reason={response.choices[0].finish_reason}\n"
+            f"content={(msg.content or '')[:1500]}\n"
+            f"tool_calls={[(tc.function.name, tc.function.arguments) for tc in (msg.tool_calls or [])]}\n"
+            f"--- raw OpenAI response (model_dump, {len(_raw_resp)} chars) ---\n"
+            f"{_raw_resp[:_RESP_CAP]}"
+            + (f"\n…[truncated, +{len(_raw_resp) - _RESP_CAP} more chars]"
+               if len(_raw_resp) > _RESP_CAP else ""),
+        )
 
         if force_final or not msg.tool_calls:
             final_text = msg.content

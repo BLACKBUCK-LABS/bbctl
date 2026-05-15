@@ -80,7 +80,7 @@ def repo_find_function(repo: str, name: str, max_hits: int = 5) -> str:
     if not repo_path.exists():
         return f"repo {repo} not found at {repo_path}"
     # Two patterns OR'd: definition forms vs. assignment forms.
-    pattern = rf"(?:def\s+|static\s+def\s+|^\s*){__import__('re').escape(name)}\s*[\(\=]"
+    pattern = rf"(?:def\s+|static\s+def\s+|^\s*){__import__('re').escape(name)}\s*[(=]"
     result = subprocess.run(
         ["rg", "--line-number", "--no-heading", "--type-add", "groovy:*.groovy",
          "-tgroovy", "-tjava", "-tpy",

@@ -406,6 +406,25 @@ async def run_agent(
 
         if force_final or not msg.tool_calls:
             final_text = msg.content
+            # Voluntary-bail rescue: when the LLM stops emitting tool_calls
+            # mid-loop (it thinks it has enough info), this path was NOT
+            # bound by response_format=json_object — so the LLM is free to
+            # dump a markdown report ("### Summary\n...") which trips the
+            # fallback stub. If that happens, do ONE retry with the JSON
+            # constraint + force-final prompt. Adds ~$0.05 in worst case
+            # but rescues the otherwise-wasted 6 tool calls.
+            if not force_final and _parse_final_json(final_text) is None:
+                _log("LLM bailed early with non-JSON content; "
+                     "re-prompting with response_format=json_object")
+                messages.append({"role": "user", "content": _FORCE_FINAL_PROMPT})
+                retry = client.chat.completions.create(
+                    model=model, messages=messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                )
+                total_in += retry.usage.prompt_tokens
+                total_out += retry.usage.completion_tokens
+                final_text = retry.choices[0].message.content
             break
 
         # Append assistant message + execute each tool call

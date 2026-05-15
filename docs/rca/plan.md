@@ -352,7 +352,7 @@ withCredentials([string(credentialsId: 'BBCTL_WEBHOOK_SECRET', variable: 'SECRET
             consoleUrl: "${env.BUILD_URL}console"
         ])
         def sig = sha256Hmac(payload, SECRET)
-        def conn = (HttpURLConnection) new URL('https://bbctl-rca.jinka.in/v1/rca/webhook').openConnection()
+        def conn = (HttpURLConnection) new URL('https://jenkins-rca.jinka.in/v1/rca/webhook').openConnection()
         conn.setRequestMethod('POST')
         conn.setDoOutput(true)
         conn.setRequestProperty('Content-Type', 'application/json')

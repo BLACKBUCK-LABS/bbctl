@@ -9,7 +9,7 @@ Automated Root Cause Analysis service for Jenkins `stagger-prod-plus-one` pipeli
 ```
 ┌──────────────┐   POST signed webhook    ┌───────────────────────┐
 │   Jenkins    ├─────────────────────────▶│  ALB                  │
-│ (post.failure)│  HMAC-SHA256 sig        │  bbctl-rca.jinka.in    │
+│ (post.failure)│  HMAC-SHA256 sig        │  jenkins-rca.jinka.in    │
 └──────────────┘                          │  /rca/v1/rca/webhook  │
        ▲                                  └──────────┬────────────┘
        │ RCA JSON                                    │ :7070
@@ -102,7 +102,7 @@ sudo journalctl -u bbctl-rca -n 200 --no-pager
 curl -sf http://127.0.0.1:7070/healthz
 curl -sf http://127.0.0.1:7070/rca/healthz
 # public (through ALB)
-curl -sf https://bbctl-rca.jinka.in/rca/healthz
+curl -sf https://jenkins-rca.jinka.in/rca/healthz
 ```
 
 ### Deploy a code change
@@ -195,7 +195,7 @@ Posts the signed webhook using raw `HttpURLConnection` (no `httpRequest` plugin 
 - `postWebhook(url, payload, sig)` — `@NonCPS`, pure-Java POST; throws on transport error
 - `parseJson(text)` — `@NonCPS` wraps `JsonSlurper.parseText`
 - `renderRca(rca)` — prints compact console block + sets rich `currentBuild.description` with link to HTML report
-- `rcaReportUrl(requestId)` — canonical URL builder (`https://bbctl-rca.jinka.in/rca/v1/report/<uuid>`); override base via `BBCTL_RCA_REPORT_BASE_URL` env
+- `rcaReportUrl(requestId)` — canonical URL builder (`https://jenkins-rca.jinka.in/rca/v1/report/<uuid>`); override base via `BBCTL_RCA_REPORT_BASE_URL` env
 - `hmacSha256(secret, body)` — `@NonCPS` HMAC-SHA256 for request signing
 - `buildAlertMessage(rca)` — one-paragraph summary for VictorOps + Slack enrichment
 
@@ -217,7 +217,7 @@ New `rcaAlert(script, service, branch, slack_channel, rca)` static method posts 
   failed_stage: Jira Details
   summary:      Jira ticket PEB-7 is missing the 'Signed Off Commit ID'...
 
-  Full RCA report: https://bbctl-rca.jinka.in/rca/v1/report/<uuid>
+  Full RCA report: https://jenkins-rca.jinka.in/rca/v1/report/<uuid>
   request_id:      <uuid>
 ```
 
@@ -275,7 +275,7 @@ Polished, self-contained dark-theme HTML page served by FastAPI. Same URL appear
 ### ALB routing
 
 - Listener: HTTPS:443 on `app/stagger-FE/...`
-- Rule: host `bbctl-rca.jinka.in` + path `/rca/*` → target group `bbctl-rca-tg` → bbctl-ec2:7070
+- Rule: host `jenkins-rca.jinka.in` + path `/rca/*` → target group `bbctl-rca-tg` → bbctl-ec2:7070
 - FastAPI mounts the same `APIRouter` at both `/` and `/rca/` so direct-port access (`:7070/healthz`) and ALB-routed (`/rca/healthz`) both work.
 
 ### Cost guardrails
@@ -356,7 +356,7 @@ Common causes: missing/expired Jenkins API token, OpenAI quota, malformed log wi
 ALB target group health, security group ingress, or HTTPS cert. Quick checks:
 ```bash
 curl -sf http://127.0.0.1:7070/healthz                # service alive
-curl -sf https://bbctl-rca.jinka.in/rca/healthz      # ALB path works
+curl -sf https://jenkins-rca.jinka.in/rca/healthz      # ALB path works
 # AWS console: target group bbctl-rca-tg → Targets → status
 ```
 

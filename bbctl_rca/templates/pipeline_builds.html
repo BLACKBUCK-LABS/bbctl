@@ -28,7 +28,15 @@
     -webkit-backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--border);
     padding: 14px 28px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
   }
+  .user-pill {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--muted); font-size: 13px;
+  }
+  .user-pill .email { color: var(--text); font-weight: 600; }
+  .user-pill a { color: var(--accent); text-decoration: none; margin-left: 6px; }
+  .user-pill a:hover { text-decoration: underline; }
   .brand {
     display: flex; align-items: center; gap: 14px;
     text-decoration: none; color: inherit;
@@ -115,6 +123,12 @@
     <span id="brand-fallback" class="fallback" style="display:none;">BLACKBUCK</span>
     <span class="subtitle">Jenkins Error RCA</span>
   </a>
+  {% if user and user.email and user.email != "anon@local" %}
+  <div class="user-pill">
+    <span class="email">{{ user.email }}</span>
+    <a href="/rca/v1/auth/logout">Logout</a>
+  </div>
+  {% endif %}
 </header>
 
 <main>

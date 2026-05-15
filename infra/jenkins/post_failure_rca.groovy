@@ -24,7 +24,7 @@ def call() {
 // Returns parsed RCA Map on success, null on failure. Always renders to
 // console + sets build description.
 def triggerRcaWebhook() {
-    def rcaUrl = env.BBCTL_RCA_URL ?: 'https://bbctl-rca.jinka.in/rca/v1/rca/webhook'
+    def rcaUrl = env.BBCTL_RCA_URL ?: 'https://jenkins-rca.jinka.in/rca/v1/rca/webhook'
     def service = (params?.SERVICE ?: env.SERVICE ?: env.JOB_NAME) as String
     def payload = groovy.json.JsonOutput.toJson([
         job: env.JOB_NAME,
@@ -155,7 +155,7 @@ def renderRca(Map rca) {
 // at runtime via BBCTL_RCA_REPORT_BASE_URL if testing against a different ALB
 // / endpoint. The route `/rca/v1/report/<uuid>` is served by FastAPI.
 def rcaReportUrl(String requestId) {
-    def base = env.BBCTL_RCA_REPORT_BASE_URL ?: 'https://bbctl-rca.jinka.in'
+    def base = env.BBCTL_RCA_REPORT_BASE_URL ?: 'https://jenkins-rca.jinka.in'
     return "${base}/rca/v1/report/${requestId}"
 }
 

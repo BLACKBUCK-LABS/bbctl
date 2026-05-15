@@ -4,8 +4,9 @@ import json
 import os
 import uuid
 
-from fastapi import FastAPI, APIRouter, Request, HTTPException, Header
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi import FastAPI, APIRouter, Request, HTTPException, Header, Depends
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .models import WebhookPayload, RCARequest, RCAResponse
@@ -22,6 +23,7 @@ from .cache import (
 )
 from .evidence import verify as verify_evidence
 from .audit import record as audit_record, read_by_request_id, list_recent
+from . import auth as oauth
 from .slack import post as slack_post
 import subprocess
 import yaml
@@ -53,8 +55,20 @@ _CLASS_COLORS = {
 }
 
 app = FastAPI(title="bbctl-rca", version="0.1.0")
+# Session middleware for Google SSO dashboard auth. Cookie is signed with
+# BBCTL_RCA_SESSION_SECRET via itsdangerous (HMAC). If the env var is
+# unset, session reads return {} and auth is effectively disabled (dev
+# mode — see bbctl_rca/auth.py::is_enabled).
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=oauth.SESSION_SECRET or "insecure-dev-only-please-set-BBCTL_RCA_SESSION_SECRET",
+    session_cookie="bbctl_rca_session",
+    https_only=True,
+    same_site="lax",
+    max_age=24 * 60 * 60,  # 24h
+)
 # All routes go on this router so we can mount them at both root and /rca.
-# /rca prefix is for ALB path-based routing (bbctl-rca.jinka.in/rca/*);
+# /rca prefix is for ALB path-based routing (jenkins-rca.jinka.in/rca/*);
 # root mount keeps direct-port access working for backward compat.
 router = APIRouter()
 
@@ -126,8 +140,60 @@ async def rca_report(request_id: str):
     return _render_report(audit)
 
 
+@router.get("/v1/auth/login")
+async def auth_login(request: Request, next: str = "/rca/v1/dashboard"):
+    """Kick off Google OAuth web flow. Redirects browser to Google."""
+    if not oauth.is_enabled():
+        # Auth not configured — go straight to the requested page
+        return RedirectResponse(url=next, status_code=302)
+    state = oauth.new_state_token()
+    request.session["oauth_state"] = state
+    request.session["oauth_next"]  = next
+    return RedirectResponse(url=oauth.login_url(state), status_code=302)
+
+
+@router.get("/v1/auth/callback")
+async def auth_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    """Receive the authorization code from Google, exchange for id_token,
+    verify email domain, set session cookie."""
+    if error:
+        raise HTTPException(status_code=400, detail=f"OAuth error from Google: {error}")
+    if not code:
+        raise HTTPException(status_code=400, detail="missing authorization code")
+    expected_state = request.session.pop("oauth_state", None)
+    if not expected_state or state != expected_state:
+        raise HTTPException(status_code=400, detail="invalid state — possible CSRF")
+    try:
+        tokens = await oauth.exchange_code(code)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"token exchange failed: {e}")
+    id_token = tokens.get("id_token", "")
+    claims = oauth.decode_id_token(id_token)
+    email = claims.get("email", "")
+    if not oauth.email_allowed(email):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied. Only {oauth.ALLOWED_DOMAIN} accounts are allowed. (got: {email or 'no email'})",
+        )
+    # Verified — set session
+    request.session["user"] = {
+        "email":   email,
+        "name":    claims.get("name", ""),
+        "picture": claims.get("picture", ""),
+    }
+    next_url = request.session.pop("oauth_next", "/rca/v1/dashboard")
+    return RedirectResponse(url=next_url, status_code=302)
+
+
+@router.get("/v1/auth/logout")
+async def auth_logout(request: Request):
+    """Clear the session cookie + redirect to landing."""
+    request.session.clear()
+    return RedirectResponse(url="/rca/v1/dashboard", status_code=302)
+
+
 @router.get("/v1/dashboard", response_class=HTMLResponse)
-async def rca_dashboard(days: int = 2):
+async def rca_dashboard(days: int = 2, user: dict = Depends(oauth.require_auth)):
     """Landing page — pipelines (jobs) that had RCAs in the last N days.
 
     Groups audit records by `job`. Per-pipeline card shows count + most
@@ -157,11 +223,12 @@ async def rca_dashboard(days: int = 2):
         total_rcas=len(records),
         days=days,
         class_colors=_CLASS_COLORS,
+        user=user,
     )
 
 
 @router.get("/v1/dashboard/{job}", response_class=HTMLResponse)
-async def rca_pipeline_builds(job: str, days: int = 2):
+async def rca_pipeline_builds(job: str, days: int = 2, user: dict = Depends(oauth.require_auth)):
     """Per-pipeline view — list of failed builds for one job.
 
     Each row links to /v1/report/<request_id> for the full RCA.
@@ -180,6 +247,7 @@ async def rca_pipeline_builds(job: str, days: int = 2):
         count=len(job_records),
         days=days,
         class_colors=_CLASS_COLORS,
+        user=user,
     )
 
 
@@ -454,7 +522,7 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
 
 
 # Mount routes at both root (for direct port access) and /rca (for ALB
-# path-based routing via bbctl-rca.jinka.in/rca/*). Both URL shapes work.
+# path-based routing via jenkins-rca.jinka.in/rca/*). Both URL shapes work.
 app.include_router(router)
 app.include_router(router, prefix="/rca")
 

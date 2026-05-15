@@ -34,7 +34,7 @@ BBCTLLLM/
 
 **Internal packages:**
 
-- `internal/client` — HTTP client → backend at `bbctl-rca.jinka.in`
+- `internal/client` — HTTP client → backend at `jenkins-rca.jinka.in`
 - `internal/config` — `~/.bbctl/config.yaml` + token, embedded defaults, account-alias resolver
 - `internal/ec2` — multi-account instance picker, cache, fuzzy finder
 - `internal/shell` — readline shell, completer, file-reference parsing, welcome banner
@@ -144,7 +144,7 @@ This is the pipeline that publishes the backend to the target instance.
 | # | Item | Status / Action |
 |---|---|---|
 | 1 | Instance reachable on port 8080 from internal CIDR | OK — SG rule present |
-| 2 | DNS `bbctl-rca.jinka.in` resolves to this instance / its ALB | **Verify** — config default points here |
+| 2 | DNS `jenkins-rca.jinka.in` resolves to this instance / its ALB | **Verify** — config default points here |
 | 3 | IAM role `bbctl-backend-service` has SSM + S3 + Jira creds | **Verify** policies attached |
 | 4 | SSM agent registered (instance shows in `DescribeInstanceInformation`) | **Verify** — current creds lack `ssm:DescribeInstanceInformation` |
 | 5 | supervisord / systemd unit running the backend binary | **Verify** via SSM or Jenkins canary log |

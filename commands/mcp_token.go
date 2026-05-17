@@ -40,21 +40,14 @@ func runMCPToken(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("generate MCP token: %w", err)
 	}
 
-	fmt.Printf("\nMCP token generated for %s\n", resp.Email)
+	fmt.Printf("\n✅ MCP token generated for %s\n", resp.Email)
 	fmt.Printf("   Expires: %s\n\n", resp.ExpiresAt.Format("2006-01-02"))
-	fmt.Printf("Add this to your Claude Code MCP config:\n\n")
-	fmt.Printf("~/.claude.json (or Claude Desktop config):\n")
-	fmt.Printf(`{
-  "mcpServers": {
-    "bbctl": {
-      "type": "sse",
-      "url": "%s/mcp",
-      "headers": {
-        "Authorization": "Bearer %s"
-      }
-    }
-  }
-}`+"\n\n", cfg.BackendURL, resp.Token)
+	fmt.Printf("Run this command to add bbctl to Claude Code:\n\n")
+	fmt.Printf("  claude mcp add --transport http bbctl --scope user %s/mcp \\\n",
+		cfg.BackendURL)
+	fmt.Printf("    --header \"Authorization: Bearer %s\"\n\n", resp.Token)
+
+	fmt.Printf("Then restart Claude Code.\n\n")
 
 	tokenPath := filepath.Join(cfgDir, "mcp_token")
 	if err := os.WriteFile(tokenPath, []byte(resp.Token), 0600); err != nil {

@@ -118,6 +118,24 @@ def _err(msg: str) -> dict:
     return {"error": msg}
 
 
+def _check_arn_placeholder(arn: str) -> str | None:
+    """Return an error message if the ARN contains a placeholder/redacted
+    segment that boto3 will reject. None if the ARN looks clean."""
+    if not arn:
+        return "ARN is empty"
+    if any(tok in arn for tok in ("<account>", "<region>", "<redacted>",
+                                  "<masked>", "ACCOUNT", "REGION")):
+        return (
+            f"ARN '{arn}' contains a placeholder (e.g. <account>). The "
+            "sanitizer used to mask account IDs in log_window — check "
+            "sanitize_rules.yml. Substitute the real 12-digit account "
+            "ID (zinka=735317561518, bbfinserv=075903075452, "
+            "divum=597070799581, tzf=476114138058) and retry. Or use "
+            "service_lookup(<svc>).rule_arn which contains the real ARN."
+        )
+    return None
+
+
 # ─── Tool implementations ──────────────────────────────────────────────
 
 
@@ -125,6 +143,9 @@ def describe_target_health(target_group_arn: str,
                             aws_region: str | None = None,
                             aws_account: str | None = None) -> dict:
     """Return live target-health state for every target in the TG."""
+    bad = _check_arn_placeholder(target_group_arn)
+    if bad:
+        return _err(bad)
     try:
         account_id = _resolve_account_id(arn=target_group_arn,
                                           aws_account=aws_account)
@@ -152,6 +173,9 @@ def describe_target_group(target_group_arn: str,
                           aws_region: str | None = None,
                           aws_account: str | None = None) -> dict:
     """Return the TG's health-check config (path, port, interval, etc.)."""
+    bad = _check_arn_placeholder(target_group_arn)
+    if bad:
+        return _err(bad)
     try:
         account_id = _resolve_account_id(arn=target_group_arn,
                                           aws_account=aws_account)
@@ -217,6 +241,9 @@ def describe_listener_rule(rule_arn: str,
                             aws_account: str | None = None) -> dict:
     """Return ALB listener rule conditions + actions (incl. forward
     weights, the canary traffic-split source of truth)."""
+    bad = _check_arn_placeholder(rule_arn)
+    if bad:
+        return _err(bad)
     try:
         account_id = _resolve_account_id(arn=rule_arn, aws_account=aws_account)
         region = aws_region or _region_from_arn(rule_arn) or "ap-south-1"

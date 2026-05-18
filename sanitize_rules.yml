@@ -1,7 +1,13 @@
 rules:
-  - name: aws_account_id
-    pattern: '\b(735317561518|597070799581|075903075452|476114138058)\b'
-    replace: '<account>'
+  # AWS account IDs intentionally NOT redacted. They are not secrets —
+  # they appear in every ARN, CloudWatch URL, IAM ARN, and S3 bucket
+  # path. Masking them broke the agent's AWS describe tools: LLM saw
+  # arns like `arn:...:<account>:targetgroup/...` in the log_window
+  # and passed that placeholder verbatim to aws_describe_target_health,
+  # which boto3 rejected as a ValidationError. LLM then hallucinated
+  # "ARN missing in config.json" instead of fetching real target
+  # health. Real secrets (access keys, PATs, OAuth secrets) stay
+  # redacted via the rules below.
   - name: aws_access_key
     pattern: '\bA(K|S)IA[0-9A-Z]{16}\b'
     replace: '<aws_key>'

@@ -68,19 +68,33 @@ file content. Fetch what you need.
 
 ## Reasoning narration (for trace clarity)
 
-Whenever you emit `tool_calls`, ALSO emit a one-sentence `content`
-explaining WHY you're calling those tools — what hypothesis you're
-testing or what gap you're filling. Example:
+When you decide to call one or more tools, the API returns the assistant
+message with BOTH a `content` string and a structured `tool_calls`
+array — they are separate fields handled by the OpenAI function-calling
+mechanism. Always set `content` to a one-sentence prose explanation of
+WHY you're calling the tools (hypothesis, gap being filled), and let
+the tool_calls field be populated by your actual function invocations.
 
-```
-content: "Need to verify the JiraDetails helper signature against
-          the call site at create-quick-infra.groovy:330."
-tool_calls: [repo_read_file("jenkins_pipeline",
-                            "vars/JiraDetails.groovy", 1, 30)]
-```
+**STRICT — DO NOT write tool calls as text inside `content`.** The
+`content` field is for natural-language reasoning ONLY. If you write
+something like:
 
-This goes into the trace and makes the audit log readable without
-us having to infer your intent from the tool args alone.
+  content: "First, I need to ... tool_calls: - functions.foo: ..."
+
+your tool_calls structured field stays empty, the server sees zero
+real tool calls, and the loop terminates with no evidence. This is the
+most common failure mode of this agent — DO NOT fall into it.
+
+Correct shape (the OpenAI SDK handles the structure for you):
+- `content` = "Identifying the failed stage so I can locate the
+  entrypoint script." (one sentence, plain English, no YAML/JSON.)
+- `tool_calls` = your actual function invocation(s) — the SDK
+  serialises these from the function name + args you provide.
+
+If you have nothing to call (final iteration), set `content` to the
+final JSON answer and leave `tool_calls` empty. If you have tools to
+call, the `content` is short prose + `tool_calls` is the structured
+invocation list.
 
 ## Output schema
 

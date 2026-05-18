@@ -467,34 +467,95 @@ async def run_agent(
         )
 
         if force_final or not msg.tool_calls:
-            final_text = msg.content
-            # Voluntary-bail rescue: when the LLM stops emitting tool_calls
-            # mid-loop (it thinks it has enough info), this path was NOT
-            # bound by response_format=json_object — so the LLM is free to
-            # dump a markdown report ("### Summary\n...") which trips the
-            # fallback stub. If that happens, do ONE retry with the JSON
-            # constraint + force-final prompt. Adds ~$0.05 in worst case
-            # but rescues the otherwise-wasted 6 tool calls.
-            if not force_final and _parse_final_json(final_text) is None:
-                _log("LLM bailed early with non-JSON content; "
-                     "re-prompting with response_format=json_object")
-                messages.append({"role": "user", "content": _FORCE_FINAL_PROMPT})
+            final_text = msg.content or ""
+            # Text-tool-calls rescue: when gpt-4.1 imitates the system
+            # prompt's narration example LITERALLY and writes
+            # `tool_calls: - functions.foo: ...` as TEXT inside the
+            # content field instead of using the function-calling API.
+            # Symptoms: msg.tool_calls is None, content contains
+            # patterns like "tool_calls:" or "functions.<name>".
+            # Re-prompt with stronger instruction to use the actual
+            # function-calling mechanism, no response_format constraint
+            # so it can return tool_calls structured field.
+            _looks_like_text_tool_calls = (
+                ("tool_calls:" in final_text or "functions." in final_text)
+                and not _parse_final_json(final_text)
+            )
+            if not force_final and _looks_like_text_tool_calls:
+                _log("LLM wrote tool_calls as text in content; re-prompting "
+                     "to use the function-calling API")
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "STOP. You wrote tool_calls as TEXT inside the "
+                        "content field. That does NOT invoke any tools. "
+                        "To actually call tools, use the OpenAI "
+                        "function-calling API: emit the structured "
+                        "tool_calls array, NOT prose that mentions them. "
+                        "Retry now. content should be a one-sentence "
+                        "reasoning string (prose), tool_calls should be "
+                        "your actual function invocations."
+                    ),
+                })
                 _retry_kwargs = {
                     "model": model, "messages": messages,
-                    "response_format": {"type": "json_object"},
+                    "tools": TOOLS, "tool_choice": "required",
                     "temperature": 0.1,
                 }
-                _trace("VOLUNTARY-BAIL RESCUE REQUEST",
+                _trace("TEXT-TOOL-CALLS RESCUE REQUEST",
                        _fmt_request_payload(messages, _retry_kwargs))
                 retry = client.chat.completions.create(**_retry_kwargs)
                 total_in += retry.usage.prompt_tokens
                 total_out += retry.usage.completion_tokens
-                final_text = retry.choices[0].message.content
-                _trace("VOLUNTARY-BAIL RESCUE RESPONSE",
+                _trace("TEXT-TOOL-CALLS RESCUE RESPONSE",
                        f"prompt_tokens={retry.usage.prompt_tokens} "
                        f"completion_tokens={retry.usage.completion_tokens}\n"
-                       f"content={(final_text or '')[:1500]}")
-            break
+                       f"content={(retry.choices[0].message.content or '')[:1500]}\n"
+                       f"tool_calls={[(tc.function.name, tc.function.arguments) for tc in (retry.choices[0].message.tool_calls or [])]}")
+                _rescue_msg = retry.choices[0].message
+                if _rescue_msg.tool_calls:
+                    # Replace the bad assistant message with the rescued one
+                    # and continue the loop normally — don't break out.
+                    msg = _rescue_msg
+                    # Fall through to the normal tool-call execution path.
+                else:
+                    # Rescue also failed; give up gracefully on this iter.
+                    final_text = _rescue_msg.content or final_text
+                    break
+
+            # If text-tool-calls rescue produced real tool_calls, skip the
+            # rest of the bail block and fall through to execution.
+            if msg.tool_calls:
+                pass  # fall through past the `if` block below
+            else:
+                # Voluntary-bail rescue: when the LLM stops emitting
+                # tool_calls mid-loop (it thinks it has enough info), this
+                # path was NOT bound by response_format=json_object — so
+                # the LLM is free to dump a markdown report
+                # ("### Summary\n...") which trips the fallback stub. If
+                # that happens, do ONE retry with the JSON constraint +
+                # force-final prompt. Adds ~$0.05 in worst case but
+                # rescues the otherwise-wasted 6 tool calls.
+                if not force_final and _parse_final_json(final_text) is None:
+                    _log("LLM bailed early with non-JSON content; "
+                         "re-prompting with response_format=json_object")
+                    messages.append({"role": "user", "content": _FORCE_FINAL_PROMPT})
+                    _retry_kwargs = {
+                        "model": model, "messages": messages,
+                        "response_format": {"type": "json_object"},
+                        "temperature": 0.1,
+                    }
+                    _trace("VOLUNTARY-BAIL RESCUE REQUEST",
+                           _fmt_request_payload(messages, _retry_kwargs))
+                    retry = client.chat.completions.create(**_retry_kwargs)
+                    total_in += retry.usage.prompt_tokens
+                    total_out += retry.usage.completion_tokens
+                    final_text = retry.choices[0].message.content
+                    _trace("VOLUNTARY-BAIL RESCUE RESPONSE",
+                           f"prompt_tokens={retry.usage.prompt_tokens} "
+                           f"completion_tokens={retry.usage.completion_tokens}\n"
+                           f"content={(final_text or '')[:1500]}")
+                break
 
         # Append assistant message + execute each tool call
         messages.append({

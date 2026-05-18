@@ -645,8 +645,22 @@ async def run_agent(
                     )
             else:
                 result = await _dispatch_tool(tc.function.name, args, ctx)
-                # Cap each tool result so a runaway grep doesn't blow the window
-                if len(result) > PER_TOOL_RESULT_CAP:
+                # Cap each tool result so a runaway grep doesn't blow the
+                # window. SKIP cap for authored/curated reads:
+                #   - read_runbook: small (≤10 KB), runbook tail often holds
+                #     MANDATORY rules that the cap would silently chop off
+                #     (build 46 v2: DescribeTargetGroups MANDATORY rule sits
+                #     at byte ~3 KB; old 1500-char cap hid it → LLM skipped
+                #     the call → no port-mismatch detection).
+                #   - repo_read_file / github_read_file: LLM already picks a
+                #     tight start/end line range, so double-capping by bytes
+                #     is just silent loss.
+                # Untrusted/large outputs (grep, search, aws describe, ...)
+                # keep the cap.
+                _skip_cap = tc.function.name in (
+                    "read_runbook", "repo_read_file", "github_read_file",
+                )
+                if not _skip_cap and len(result) > PER_TOOL_RESULT_CAP:
                     result = result[:PER_TOOL_RESULT_CAP] + "\n…[truncated]"
                 tool_call_cache[fingerprint] = (iteration, result, 0)
 

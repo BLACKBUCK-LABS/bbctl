@@ -83,18 +83,37 @@ file content. Fetch what you need.
    = Option A / Option B). Follow the runbook's action template exactly,
    including its STRICT "do not write" lists.
 
-4. **Use domain tools based on what stage code reveals:**
-   - Jira gate failure → `jira_get_ticket(<key>)`, `jira_search(...)`.
-   - SCM / commit / PR issue → `github_get_commit(repo, sha)`,
-     `github_find_pr_for_commit(repo, sha)`.
-   - Service-repo source code → `github_read_file(repo, path, ref, ...)`.
-   - ALB / EC2 / SSM checks → `aws_describe_target_health`,
-     `aws_describe_instance`, `aws_describe_target_group`,
-     `aws_describe_listener_rule`, `aws_run_ssm_command`.
-   - Local pipeline / infra repo file → `repo_read_file(...)`,
-     `repo_search(...)`, `repo_find_function(...)`,
-     `repo_recent_commits(...)`.
-   - Nontrivial code fix verification → `code_review(diff_or_path, prompt)`.
+4. **PARALLEL TOOL CALLS IN ITER 0 — minimise iterations.** Each loop
+   iteration resends the full conversation, so 14 iters with 14 tool
+   calls cost ~3× more than 2 iters with 14 tool calls in parallel.
+   Emit ALL applicable tools at once in iter 0 instead of sequencing
+   them across many iters. Typical iter 0 batch (compose based on
+   error class):
+
+   - ALWAYS: `get_jenkins_job_config(job)`,
+             `repo_read_file("jenkins_pipeline", "vars/<helper>.groovy", 1, 80)`,
+             `read_runbook("<class>")`
+   - Compliance class also: `jira_get_ticket(<KEY>)`
+   - SCM / commit class also: `github_get_commit(<repo>, <sha>)`,
+                              `github_find_pr_for_commit(<repo>, <sha>)`
+   - Health_check class also: `aws_describe_target_health(<tg_arn>)`,
+                              `aws_describe_target_group(<tg_arn>)`,
+                              `aws_describe_instance(<instance_id>, <aws_account>, <aws_region>)`
+   - Canary class also:       `aws_describe_target_group(<canary_tg_arn>)`,
+                              `aws_describe_listener_rule(<rule_arn>)`,
+                              `repo_read_file("jenkins_pipeline", "resources/canary.py", 1, 100)`
+   - Terraform class also:    `repo_read_file("InfraComposer", "config/<svc>/<env>/main.tf", 1, 80)`,
+                              `aws_describe_instance(...)` if resource conflict
+   - Parse_error class also:  `repo_read_file("jenkins_pipeline", "resources/config.json", <line-5>, <line+5>)`
+
+   **STRICT — no instance shell.** `aws_run_ssm_command` is REMOVED.
+   RCA never logs into instances. For service-side detail (e.g. WHY
+   the service is unhealthy) the LLM tells the operator to use
+   `bbctl shell <instance_id>` themselves; do NOT try to fetch it.
+
+   Iter 1 is for follow-up reads that depend on iter 0 results (e.g.
+   read the inner helper named in the outer helper's body). Aim to
+   emit final JSON by iter 2-3 max.
 
 5. **Stop when you have clear RCA.** You can name file:line, ticket
    field, AWS resource state, or a specific commit as the cause. No

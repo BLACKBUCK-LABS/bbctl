@@ -499,44 +499,10 @@ TOOLS: list[dict] = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "aws_run_ssm_command",
-            "description": (
-                "Run a WHITELISTED shell command on an EC2 instance via SSM "
-                "SendCommand (AWS-RunShellScript). Server enforces a "
-                "command-pattern whitelist; anything outside returns an "
-                "error. Allowed patterns: "
-                "tail -n <N> <path>, "
-                "ss -tlnp [| grep <port>], "
-                "curl -i http://localhost:<port><path>, "
-                "systemctl status <svc>, "
-                "cat <path under /var/log/ or /etc/blackbuck/>, "
-                "ls <path under /var/log/blackbuck/ or /opt/>, "
-                "journalctl -n <N> -u <svc>, "
-                "ps aux | grep <name>, "
-                "df -h | free -m | uptime. "
-                "Returns {stdout, stderr, exit_code, command_id}."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "instance_id": {"type": "string"},
-                    "cmd": {
-                        "type": "string",
-                        "description": "Shell command. Must match the whitelist.",
-                    },
-                    "aws_account": {
-                        "type": "string",
-                        "description": "Account name from service.lookup.",
-                    },
-                    "aws_region": {"type": "string"},
-                },
-                "required": ["instance_id", "cmd", "aws_account", "aws_region"],
-            },
-        },
-    },
+    # aws_run_ssm_command — REMOVED per Option C decision. RCA never
+    # logs into instances; service-side root cause stays out of scope.
+    # For health_check / java_runtime instance-level failures the LLM
+    # tells the operator to use `bbctl shell <instance_id>` themselves.
 
     # ─── SANITY (1) ───────────────────────────────────────────────────
     {

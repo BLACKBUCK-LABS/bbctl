@@ -14,7 +14,7 @@ agent.py's dispatcher reads TOOL_DISPATCH to resolve LLM-requested
 tool names → Python callables. Each value is sync or async; the
 dispatcher awaits coroutines.
 """
-from . import github, jira, mcp_tools
+from . import aws_tools, github, jira, mcp_tools
 
 
 TOOL_DISPATCH: dict[str, callable] = {
@@ -44,12 +44,14 @@ TOOL_DISPATCH: dict[str, callable] = {
     "github_read_file":            github.read_file,
     "github_recent_commits":       github.recent_commits,
 
-    # ── AWS cross-account (Phase 5) ──
-    # "aws_describe_target_health":   aws_tools.describe_target_health,
-    # "aws_describe_target_group":    aws_tools.describe_target_group,
-    # "aws_describe_instance":        aws_tools.describe_instance,
-    # "aws_describe_listener_rule":   aws_tools.describe_listener_rule,
-    # "aws_run_ssm_command":          aws_tools.run_ssm_command,
+    # ── AWS cross-account describes (Phase 5) ──
+    # SSM SendCommand is intentionally NOT exposed — Option C decision:
+    # RCA never logs into instances; operator uses `bbctl shell <id>`
+    # themselves when service-side detail is needed.
+    "aws_describe_target_health":   aws_tools.describe_target_health,
+    "aws_describe_target_group":    aws_tools.describe_target_group,
+    "aws_describe_instance":        aws_tools.describe_instance,
+    "aws_describe_listener_rule":   aws_tools.describe_listener_rule,
 
     # ── Sanity (Phase 6) ──
     # "code_review":                  claude_review.code_review,

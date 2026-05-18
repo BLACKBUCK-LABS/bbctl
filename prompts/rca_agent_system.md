@@ -181,14 +181,19 @@ file content. Fetch what you need.
    - Compliance class also: `jira_get_ticket(<KEY>)`
    - SCM / commit class also: `github_get_commit(<repo>, <sha>)`,
                               `github_find_pr_for_commit(<repo>, <sha>)`
-   - Health_check class also: `aws_describe_target_health(<tg_arn>)`,
-                              `aws_describe_target_group(<tg_arn>)`,
-                              `aws_describe_instance(<instance_id>, <aws_account>, <aws_region>)`
-   - Canary class also:       `aws_describe_target_group(<canary_tg_arn>)`,
-                              `aws_describe_listener_rule(<rule_arn>)`,
-                              `repo_read_file("jenkins_pipeline", "resources/canary.py", 1, 100)`
-   - Terraform class also:    `repo_read_file("InfraComposer", "config/<svc>/<env>/main.tf", 1, 80)`,
-                              `aws_describe_instance(...)` if resource conflict
+   - Health_check class also:
+       `aws_describe(service='elbv2', operation='DescribeTargetHealth', params={'TargetGroupArn': <tg_arn>}, aws_account=..., aws_region=...)`
+       `aws_describe(service='elbv2', operation='DescribeTargetGroups', params={'TargetGroupArns': [<tg_arn>]}, ...)`
+       `aws_describe(service='ec2',   operation='DescribeInstances',    params={'InstanceIds': [<instance_id>]}, ...)`
+   - Canary class also:
+       `aws_describe(service='elbv2', operation='DescribeRules',        params={'RuleArns': [<rule_arn>]}, ...)`
+       `repo_read_file("jenkins_pipeline", "resources/canary.py", 1, 100)`
+   - Terraform class also:
+       `repo_read_file("InfraComposer", "config/<svc>/<env>/main.tf", 1, 80)`
+       `aws_describe(service='ec2', operation='DescribeInstances', ...)` if resource conflict
+   - AWS-limit class (e.g. TooManyUniqueTargetGroupsPerLoadBalancer):
+       `aws_describe(service='elbv2', operation='DescribeRules',        params={'RuleArns': [<rule_arn>]}, ...)`  ← gets ALB ARN
+       `aws_describe(service='elbv2', operation='DescribeTargetGroups', params={'LoadBalancerArn': <alb_arn>}, ...)` ← count TGs on ALB
    - Parse_error class also:  `repo_read_file("jenkins_pipeline", "resources/config.json", <line-5>, <line+5>)`
 
    **STRICT — no instance shell.** `aws_run_ssm_command` is REMOVED.

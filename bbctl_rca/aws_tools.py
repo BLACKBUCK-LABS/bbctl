@@ -118,6 +118,18 @@ def _err(msg: str) -> dict:
     return {"error": msg}
 
 
+# Read-only operation whitelist. Server rejects any operation that
+# isn't a verbatim Describe*/Get*/List*/Lookup*. Cheap defense beyond
+# the IAM policy (which is ReadOnlyAccess) — keeps the LLM from even
+# trying to call write actions and surfaces a clear error if it does.
+_OP_WHITELIST_RE = re.compile(r"^(Describe|Get|List|Lookup|Search|Show|Estimate)\w+$")
+
+
+def _pascal_to_snake(name: str) -> str:
+    """DescribeTargetHealth → describe_target_health"""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
 def _check_arn_placeholder(arn: str) -> str | None:
     """Return an error message if the ARN contains a placeholder/redacted
     segment that boto3 will reject. None if the ARN looks clean."""
@@ -271,4 +283,69 @@ def describe_listener_rule(rule_arn: str,
         "conditions": r.get("Conditions"),
         "actions": actions_out,
         "is_default": r.get("IsDefault"),
+    }
+
+
+# ─── Generic describe (Option A: one tool covers all AWS read APIs) ──
+
+
+def describe(service: str, operation: str, params: dict | None,
+             aws_account: str, aws_region: str) -> dict:
+    """Call any AWS read-only API via boto3.
+
+    The four named tools above (describe_target_health, _target_group,
+    _instance, _listener_rule) are retained as convenience wrappers
+    over the most-common cases; this generic tool covers everything
+    else (RDS, Lambda, CloudWatch Logs, AutoScaling, IAM Get*, etc.)
+    without needing a new tool definition per call site.
+
+    Safety: operation must match ^(Describe|Get|List|Lookup|Search|
+    Show|Estimate)\\w+$. Cross-account routing same as the specific
+    tools — STS AssumeRole into <account>:role/BBCTLRcaReadOnly.
+
+    Args:
+        service     — boto3 service code, e.g. 'elbv2', 'ec2', 'rds',
+                      'lambda', 'logs', 'cloudwatch', 'autoscaling',
+                      'iam', 'sts'
+        operation   — PascalCase boto3 operation, e.g.
+                      'DescribeTargetHealth', 'DescribeInstances',
+                      'DescribeDBInstances', 'ListFunctions'
+        params      — dict of operation parameters (passed as kwargs)
+        aws_account — service.lookup.aws_account (name or 12-digit ID)
+        aws_region  — region string, e.g. 'ap-south-1'
+
+    Returns whatever the AWS API returned (dict). On error returns
+    {"error": "<message>"}.
+    """
+    if not _OP_WHITELIST_RE.match(operation or ""):
+        return _err(
+            f"operation '{operation}' rejected — must start with "
+            f"Describe/Get/List/Lookup/Search/Show/Estimate. Write "
+            f"actions are not allowed."
+        )
+    try:
+        account_id = _resolve_account_id(aws_account=aws_account)
+        client = _get_client(service, account_id=account_id, region=aws_region)
+    except (BotoCoreError, ClientError) as e:
+        return _err(f"client init failed: {e}")
+    method_name = _pascal_to_snake(operation)
+    method = getattr(client, method_name, None)
+    if method is None:
+        return _err(
+            f"unknown operation: {service}.{operation} "
+            f"(boto3 method '{method_name}' not found)"
+        )
+    try:
+        resp = method(**(params or {}))
+    except (BotoCoreError, ClientError) as e:
+        return _err(f"{service}.{operation} failed: {e}")
+    # Strip ResponseMetadata to keep output slim
+    if isinstance(resp, dict):
+        resp.pop("ResponseMetadata", None)
+    return {
+        "service": service,
+        "operation": operation,
+        "account_id": account_id,
+        "region": aws_region,
+        "result": resp,
     }

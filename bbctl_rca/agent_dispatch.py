@@ -44,14 +44,15 @@ TOOL_DISPATCH: dict[str, callable] = {
     "github_read_file":            github.read_file,
     "github_recent_commits":       github.recent_commits,
 
-    # ── AWS cross-account describes (Phase 5) ──
+    # ── AWS cross-account (Option A — single generic describe) ──
+    # Replaces the four narrow tools (describe_target_health,
+    # _target_group, _instance, _listener_rule). Same coverage, less
+    # spec spam, auto-extends to RDS / Lambda / Logs / etc. without
+    # new tool definitions.
     # SSM SendCommand is intentionally NOT exposed — Option C decision:
     # RCA never logs into instances; operator uses `bbctl shell <id>`
     # themselves when service-side detail is needed.
-    "aws_describe_target_health":   aws_tools.describe_target_health,
-    "aws_describe_target_group":    aws_tools.describe_target_group,
-    "aws_describe_instance":        aws_tools.describe_instance,
-    "aws_describe_listener_rule":   aws_tools.describe_listener_rule,
+    "aws_describe":                 aws_tools.describe,
 
     # ── Sanity (Phase 6) ──
     # "code_review":                  claude_review.code_review,

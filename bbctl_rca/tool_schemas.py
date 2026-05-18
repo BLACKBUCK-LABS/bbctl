@@ -406,70 +406,77 @@ TOOLS: list[dict] = [
         },
     },
 
-    # ─── AWS CROSS-ACCOUNT (5) ────────────────────────────────────────
+    # ─── AWS CROSS-ACCOUNT (1 generic — Option A) ─────────────────────
+    # Single tool covers all AWS read APIs (Describe*/Get*/List*/Lookup*/
+    # Search*/Show*/Estimate*). Server validates the operation name + does
+    # STS AssumeRole into BBCTLRcaReadOnly for the target account. This
+    # replaced the four narrow tools (describe_target_health, _target_
+    # group, _instance, _listener_rule) — same coverage, less spec spam,
+    # auto-extends to RDS / Lambda / Logs / Autoscaling / IAM Get* etc.
+    # without a new tool definition per call site.
     {
         "type": "function",
         "function": {
-            "name": "aws_describe_target_health",
+            "name": "aws_describe",
             "description": (
-                "ALB target group's current target-health states. Returns "
-                "list of {target_id, port, state, reason, description}. "
-                "Account/region inferred from the ARN. STS AssumeRoles "
-                "BBCTLRcaReadOnly when cross-account."
+                "Call any AWS read-only API (Describe*/Get*/List*/Lookup*"
+                "/Search*/Show*/Estimate*). Server rejects write actions. "
+                "Use this for: target health, target groups, instances, "
+                "listener rules, security groups, CloudWatch logs, RDS, "
+                "Lambda, Auto Scaling, IAM gets, etc. Cross-account STS "
+                "AssumeRole into BBCTLRcaReadOnly is handled by the "
+                "server when aws_account != host. Examples:\n"
+                "  aws_describe(service='elbv2', "
+                "operation='DescribeTargetHealth', "
+                "params={'TargetGroupArn': 'arn:...'}, "
+                "aws_account='zinka', aws_region='ap-south-1')\n"
+                "  aws_describe(service='ec2', "
+                "operation='DescribeInstances', "
+                "params={'InstanceIds': ['i-0e8411d8d8817fe32']}, "
+                "aws_account='zinka', aws_region='ap-south-1')\n"
+                "  aws_describe(service='elbv2', "
+                "operation='DescribeTargetGroups', "
+                "params={'LoadBalancerArn': 'arn:...'}, ...)  "
+                "← good for counting TGs on an ALB"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "target_group_arn": {
+                    "service": {
                         "type": "string",
-                        "description": "Full ARN of the target group.",
+                        "description": (
+                            "boto3 service code, e.g. 'elbv2', 'ec2', "
+                            "'rds', 'lambda', 'logs', 'cloudwatch', "
+                            "'autoscaling', 'iam', 'sts', 'route53', "
+                            "'s3', 'elasticloadbalancing'."
+                        ),
                     },
-                },
-                "required": ["target_group_arn"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "aws_describe_target_group",
-            "description": (
-                "ALB target group's static config: name, protocol, port, "
-                "health_check_path, health_check_port, "
-                "health_check_interval_seconds, healthy_threshold_count, "
-                "unhealthy_threshold_count, vpc_id."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target_group_arn": {"type": "string"},
-                },
-                "required": ["target_group_arn"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "aws_describe_instance",
-            "description": (
-                "EC2 instance state, network, tags. Returns state, "
-                "instance_type, private_ip, public_ip, vpc_id, subnet_id, "
-                "security_groups, tags, launch_time, ami_id."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "instance_id": {
+                    "operation": {
                         "type": "string",
-                        "description": "EC2 instance ID, e.g. 'i-0a1b2c3d4e5f6g7h8'.",
+                        "description": (
+                            "PascalCase boto3 operation name, MUST start "
+                            "with Describe / Get / List / Lookup / Search "
+                            "/ Show / Estimate. Examples: "
+                            "'DescribeTargetHealth', 'DescribeInstances', "
+                            "'DescribeDBInstances', 'ListFunctions', "
+                            "'GetMetricStatistics'."
+                        ),
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": (
+                            "Operation parameters as a JSON object, e.g. "
+                            "{'TargetGroupArn': 'arn:...'} or "
+                            "{'InstanceIds': ['i-...']} or {} when no "
+                            "params are required."
+                        ),
                     },
                     "aws_account": {
                         "type": "string",
                         "description": (
                             "Account name from service.lookup "
-                            "(zinka|bbfinserv|divum|tzf). Determines which "
-                            "BBCTLRcaReadOnly role to assume."
+                            "(zinka|bbfinserv|divum|tzf) or the 12-digit "
+                            "account ID. Determines STS AssumeRole target."
                         ),
                     },
                     "aws_region": {
@@ -477,25 +484,8 @@ TOOLS: list[dict] = [
                         "description": "AWS region, e.g. 'ap-south-1'.",
                     },
                 },
-                "required": ["instance_id", "aws_account", "aws_region"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "aws_describe_listener_rule",
-            "description": (
-                "ALB listener rule's conditions + actions. For weighted "
-                "forward actions (used by canary traffic shifts) returns "
-                "the {target_group_arn, weight} pairs."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "rule_arn": {"type": "string"},
-                },
-                "required": ["rule_arn"],
+                "required": ["service", "operation", "params",
+                             "aws_account", "aws_region"],
             },
         },
     },

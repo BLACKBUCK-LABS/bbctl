@@ -324,13 +324,18 @@ async def run_agent(
             except Exception:
                 pass
 
-    def _fmt_request_payload(msgs: list, kwargs: dict) -> str:
+    def _fmt_request_payload(msgs: list, kwargs: dict, hide_system: bool = False) -> str:
         """Render the exact OpenAI request payload for trace logs.
 
         Truncates per-message content to keep file size sane — full
         unredacted prompt + tool schemas live in /tmp/bbctl-rca-last-prompt.txt.
+        When hide_system=True (iter > 0), elides the giant system message
+        body since it's already dumped in full at the top of the trace.
+        Tool-result messages are also capped tighter — body is already
+        in the corresponding `ITER N TOOL #X` block above.
         """
         PER_MSG_CHARS = 1500
+        TOOL_MSG_CHARS = 200   # tool results already dumped in ITER N TOOL #X
         lines = []
         lines.append(f"model: {kwargs.get('model')}")
         lines.append(f"temperature: {kwargs.get('temperature')}")
@@ -345,8 +350,12 @@ async def run_agent(
         for i, m in enumerate(msgs):
             role = m.get("role", "?")
             content = m.get("content") or ""
-            if len(content) > PER_MSG_CHARS:
-                content = content[:PER_MSG_CHARS] + f"\n…[truncated, +{len(m.get('content',''))-PER_MSG_CHARS} chars]"
+            if role == "system" and hide_system:
+                lines.append(f"  [{i}] role=system [omitted — see INITIAL SYSTEM MESSAGE at top]")
+                continue
+            cap = TOOL_MSG_CHARS if role == "tool" else PER_MSG_CHARS
+            if len(content) > cap:
+                content = content[:cap] + f"\n…[truncated, +{len(m.get('content',''))-cap} chars; full body in ITER N TOOL block above]"
             extras = []
             if m.get("tool_calls"):
                 extras.append(f"tool_calls={[(tc['function']['name'], tc['function']['arguments'][:200]) for tc in m['tool_calls']]}")
@@ -359,6 +368,14 @@ async def run_agent(
             if content:
                 lines.append(f"      content: {content}")
         return "\n".join(lines)
+
+    # Per-iter accounting for the SUMMARY block prepended at end of trace.
+    # Each entry: dict(iter, in, out, finish, reasoning, tools_chosen[]).
+    _iter_log: list[dict] = []
+    # Opt-in raw OpenAI response dump. Structured (content + tool_calls) is
+    # already shown — the raw model_dump JSON is duplicate noise unless you
+    # are debugging openai-client behavior. Set BBCTL_RCA_RAW_DUMP=1 to keep.
+    _emit_raw_dump = bool(os.environ.get("BBCTL_RCA_RAW_DUMP"))
 
     ctx = {"jenkins_url": jenkins_url, "jenkins_auth": jenkins_auth}
     total_in = total_out = 0
@@ -445,28 +462,43 @@ async def run_agent(
         _trace(f"ITER {iteration} REQUEST",
                f"force_final={force_final} cost_so_far=${cost_so_far:.4f} "
                f"messages_count={len(messages)} tokens_so_far={total_in}+{total_out}\n"
-               + _fmt_request_payload(messages, kwargs))
+               + _fmt_request_payload(messages, kwargs, hide_system=(iteration > 0)))
         response = client.chat.completions.create(**kwargs)
         total_in += response.usage.prompt_tokens
         total_out += response.usage.completion_tokens
         msg = response.choices[0].message
-        try:
-            _raw_resp = json.dumps(response.model_dump(), indent=2, default=str)
-        except Exception as _e:
-            _raw_resp = f"[model_dump failed: {_e}]"
-        _RESP_CAP = 12000
-        _trace(
-            f"ITER {iteration} RESPONSE",
+        _resp_body = (
             f"prompt_tokens={response.usage.prompt_tokens} "
             f"completion_tokens={response.usage.completion_tokens}\n"
             f"finish_reason={response.choices[0].finish_reason}\n"
-            f"content={(msg.content or '')[:1500]}\n"
-            f"tool_calls={[(tc.function.name, tc.function.arguments) for tc in (msg.tool_calls or [])]}\n"
-            f"--- raw OpenAI response (model_dump, {len(_raw_resp)} chars) ---\n"
-            f"{_raw_resp[:_RESP_CAP]}"
-            + (f"\n…[truncated, +{len(_raw_resp) - _RESP_CAP} more chars]"
-               if len(_raw_resp) > _RESP_CAP else ""),
+            f"reasoning={(msg.content or '').strip()[:1500] or '(none)'}\n"
+            f"tool_calls={[(tc.function.name, tc.function.arguments) for tc in (msg.tool_calls or [])]}"
         )
+        if _emit_raw_dump:
+            try:
+                _raw_resp = json.dumps(response.model_dump(), indent=2, default=str)
+            except Exception as _e:
+                _raw_resp = f"[model_dump failed: {_e}]"
+            _RESP_CAP = 12000
+            _resp_body += (
+                f"\n--- raw OpenAI response (model_dump, {len(_raw_resp)} chars) ---\n"
+                f"{_raw_resp[:_RESP_CAP]}"
+                + (f"\n…[truncated, +{len(_raw_resp) - _RESP_CAP} more chars]"
+                   if len(_raw_resp) > _RESP_CAP else "")
+            )
+        _trace(f"ITER {iteration} RESPONSE", _resp_body)
+        # Per-iter accounting for the SUMMARY block.
+        _iter_log.append({
+            "iter": iteration,
+            "in": response.usage.prompt_tokens,
+            "out": response.usage.completion_tokens,
+            "finish": response.choices[0].finish_reason,
+            "reasoning": (msg.content or "").strip(),
+            "tools_chosen": [
+                (tc.function.name, tc.function.arguments)
+                for tc in (msg.tool_calls or [])
+            ],
+        })
 
         if force_final or not msg.tool_calls:
             final_text = msg.content or ""
@@ -680,12 +712,121 @@ async def run_agent(
     rca["agent_tool_calls"] = tool_call_count
     rca["files_read"] = sorted(read_files)
     _log(f"done. tool_calls={tool_call_count} tokens={total_in}+{total_out} read_files={len(read_files)}")
+    _final_cost = total_in * in_per_tok + total_out * out_per_tok
     _trace("FINAL OUTPUT",
            f"tool_calls={tool_call_count} tokens={total_in}+{total_out} "
-           f"cost=${total_in*in_per_tok + total_out*out_per_tok:.4f} "
+           f"cost=${_final_cost:.4f} "
            f"files_read={sorted(read_files)}\n"
            f"final_text=\n{(final_text or '')[:3000]}")
+
+    # Prepend a compact RCA SUMMARY block at the top of the trace file so
+    # readers don't have to scroll 1500 lines to learn what happened. Body
+    # iter-by-iter detail stays untouched below.
+    if _trace_enabled:
+        _prepend_summary_header(
+            _trace_paths, _iter_log, sorted(read_files), tool_call_count,
+            total_in, total_out, _final_cost, rca,
+        )
+
     return rca
+
+
+def _prepend_summary_header(trace_paths: list[str], iter_log: list[dict],
+                            files_read: list[str], tool_calls: int,
+                            tok_in: int, tok_out: int, cost: float,
+                            rca: dict) -> None:
+    """Build the SUMMARY block and splice it after the trace header line.
+
+    Each iter shows: tool count, finish_reason, reasoning narration,
+    and the tool calls the LLM chose (compact one-per-line). Tail lists
+    files_read / runbooks / aws_apis derived from the iter log so the
+    reader sees the full surgical-read footprint at a glance.
+    """
+    aws_apis: list[str] = []
+    runbooks: list[str] = []
+    for entry in iter_log:
+        for name, args_json in entry["tools_chosen"]:
+            try:
+                args = json.loads(args_json) if isinstance(args_json, str) else args_json
+            except Exception:
+                args = {}
+            if name == "aws_describe":
+                svc = args.get("service", "?")
+                op = args.get("operation", "?")
+                aws_apis.append(f"{svc}.{op}")
+            elif name == "read_runbook":
+                runbooks.append(args.get("name", "?"))
+
+    cause = (rca.get("root_cause") or "")[:200] if isinstance(rca, dict) else ""
+    cls = (rca.get("error_class") or "?") if isinstance(rca, dict) else "?"
+
+    lines = []
+    lines.append("=== RCA SUMMARY ===")
+    lines.append(
+        f"iters={len(iter_log)}  tool_calls={tool_calls}  "
+        f"tokens={tok_in}+{tok_out}  cost=${cost:.4f}  "
+        f"result={cls}"
+    )
+    if cause:
+        lines.append(f"cause: {cause}")
+    lines.append("")
+    for entry in iter_log:
+        tc_count = len(entry["tools_chosen"])
+        header = (
+            f"Iter {entry['iter']} [{tc_count} tool{'s' if tc_count != 1 else ''}, "
+            f"tokens={entry['in']}+{entry['out']}, finish={entry['finish']}]"
+        )
+        lines.append(header)
+        reasoning = entry["reasoning"]
+        if reasoning:
+            # First 240 chars of reasoning narration, single line
+            r = reasoning.replace("\n", " ").strip()[:240]
+            lines.append(f"  reasoning: {r}")
+        for name, args_json in entry["tools_chosen"]:
+            try:
+                args = json.loads(args_json) if isinstance(args_json, str) else args_json
+            except Exception:
+                args = args_json
+            # Compact tool arg display per tool type
+            if name == "repo_read_file":
+                display = f"{args.get('repo','?')}/{args.get('path','?')} [{args.get('start','?')}-{args.get('end','?')}]"
+            elif name == "aws_describe":
+                display = f"{args.get('service','?')}.{args.get('operation','?')} @ {args.get('aws_account','?')}/{args.get('aws_region','?')}"
+            elif name == "read_runbook":
+                display = args.get("name", "?")
+            elif name == "get_jenkins_job_config":
+                display = args.get("job", "?")
+            elif name in ("jira_get_ticket", "jira_search"):
+                display = str(args)[:120]
+            elif name.startswith("github_"):
+                display = str(args)[:120]
+            elif name in ("repo_search", "repo_find_function", "repo_recent_commits"):
+                display = str(args)[:120]
+            else:
+                display = str(args)[:120]
+            lines.append(f"  → {name}({display})")
+        lines.append("")
+    lines.append(f"files_read[{len(files_read)}]: {files_read}")
+    lines.append(f"aws_apis[{len(aws_apis)}]: {aws_apis}")
+    lines.append(f"runbooks[{len(runbooks)}]: {runbooks}")
+    lines.append("=== END SUMMARY ===")
+    lines.append("")
+    summary = "\n".join(lines)
+
+    for p in trace_paths:
+        try:
+            with open(p) as f:
+                body = f.read()
+            # Splice after the first === AGENT TRACE === line so the run header stays first.
+            nl = body.find("\n")
+            if nl == -1:
+                new_body = summary + "\n" + body
+            else:
+                new_body = body[: nl + 1] + "\n" + summary + body[nl + 1:]
+            with open(p, "w") as f:
+                f.write(new_body)
+        except Exception:
+            pass
 
 
 _REPO_PREFIXES = ("jenkins_pipeline/", "InfraComposer/")

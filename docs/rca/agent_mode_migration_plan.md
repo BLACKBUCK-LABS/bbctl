@@ -1,102 +1,136 @@
-# bbctl-rca Agent-Mode Migration Plan
+# bbctl-rca Agent-Only Migration Plan
 
-**Status:** DRAFT — awaiting sign-off before implementation.
+**Status:** APPROVED — implementation pending one final check.
 **Branch:** `feature/bbctl-rca-agent-only`
 **Author:** g.hariharan
-**Date:** 2026-05-18
+**Last revised:** 2026-05-18
 
 ---
 
-## Motivation
+## Locked architecture decisions
 
-Manager review of build-15 (compliance class) trace flagged that the LLM
-received fully pre-fetched context (Jira tickets, runbook, GitHub commits)
-in the user message and emitted a verdict on the first turn — i.e. the
-LLM "decided nothing." Target architecture: every RCA goes through the
-agent loop, the LLM reads the error log first, then *chooses* which
-tool to call (Jira API, GitHub API, AWS API, repo file, runbook).
+### 1. Boot-pack — 3 blocks ONLY
 
-## Scope
-
-In:
-- Drop pre-fetched `jira.tickets`, `github.commits`, `docs.<NAME>.md`
-  from the user-message primer; expose each as a tool the LLM calls
-  on demand.
-- Convert every `error_class` to use `agent.py` loop (kill the one-shot
-  `llm.py` path for OpenAI).
-- Add AWS read tools (cross-account assume-role across zinka, bbfinserv,
-  divum, tzf).
-- Add GitHub raw-file tool so service-repo source code is fetched
-  on demand (no N-clones-on-disk).
-- Add Claude code-review integration for evidence cross-checking.
-
-Out (deferred):
-- Migrating from gpt-4.1 to Claude as the agent model. Stays gpt-4.1
-  for now; Claude only used in code-review tool role.
-- Slack approval workflows for `restricted`-tier suggested_commands.
-
-## Boot-pack (kept in primer)
-
-These remain in the initial user message because they are cheap, local,
-deterministic, and hand the LLM the IDs it needs to query everything else:
+Every RCA's initial user message contains these and nothing else:
 
 | Block | Source | Why kept |
 |---|---|---|
-| `log_window` | Jenkins `wfapi/describe` + `consoleText` | The starting evidence |
-| `build_meta` | Jenkins `/api/json` | job, build, result, duration |
-| `detected_failed_stage` | regex over log | LLM doesn't have to scan log for stage markers |
-| `service.lookup(<svc>)` | local `config.json` | Hands LLM the AWS resource IDs (rule_arn, target_port, account, region, log paths) — without these the LLM cannot query AWS tools meaningfully |
-| `source.trace` (HINTS only) | regex against repo file list | List of *candidate paths* matched on error string. NOT file contents — LLM still calls `repo_read_file` to see them. |
-| `error_class` | classifier | Hint only; LLM may override |
+| `log_window` | Jenkins `wfapi/describe` + `consoleText` | Starting evidence |
+| `build_meta` | Jenkins `/api/json` | job, build_id, result, url, timestamp |
+| `service.lookup(<svc>)` | local `config.json` | LLM needs `aws_account`, `aws_region`, `rule_arn`, `target_port`, `git_repo`, `log_path` to call AWS tools — without these, LLM cannot operate. Pure local lookup, no decision pre-baked. |
 
-Dropped from primer (now tools):
+**Dropped from boot-pack** (LLM fetches via tools instead):
+- `error_class` — LLM classifies on its own from log content
+- `detected_failed_stage` — LLM scans `[Pipeline] { (...)` markers itself
+- `source.trace` hints — LLM uses `repo_search` if needed
+- `jira.tickets` — `jira_get_ticket` tool
+- `github.commits` — `github_get_commit` tool
+- `docs.<NAME>.md` runbook content — `read_runbook` tool
 
-| Was | Now |
-|---|---|
-| `jira.tickets[]` block | `jira_get_ticket(key)` tool |
-| `github.commits[]` block | `github_get_commit(repo, sha)` + `github_find_pr_for_commit(repo, sha)` |
-| `docs.<NAME>.md` runbook | `read_runbook(name)` tool |
+### 2. Classification — LLM autonomous via runbook files
 
-## New tools
+System prompt holds only generic method. Per-class drill plans live in markdown
+runbooks under `/opt/bbctl-rca/docops/runbooks/`. LLM discovers them with
+`list_runbooks()`, reads with `read_runbook(name)`, follows the plan inside.
 
-### Jira
-- `jira_get_ticket(key)` → `{summary, status, assignee, components, fix_versions, resolution, description, custom_fields}`
-- `jira_search(jql, max=10)` → list of ticket summaries (for clone-chain discovery)
+Runbook files to author:
+```
+compliance.md       parse_error.md      java_runtime.md
+health_check.md     canary_fail.md      canary_script_error.md
+terraform.md        scm.md              aws_limit.md
+unknown.md
+```
 
-### GitHub
-- `github_get_commit(repo, sha)` → `{author, date, message, files_changed[]}`
-- `github_find_pr_for_commit(repo, sha)` → `{number, title, merged_at, author}` or null
-- `github_read_file(repo, path, ref, start?, end?)` → file slice via raw.githubusercontent.com (replaces N service-repo clones)
-- `github_recent_commits(repo, branch, n=10)` — already covered by `repo_recent_commits` for jenkins_pipeline/InfraComposer; add this for service repos
+Each runbook contains:
+- **Detect signals** — log patterns that confirm this class
+- **Modes** — common sub-types of this failure
+- **Drill plan** — exact tool sequence to call
+- **Fix templates** — Finding / Action / Verify scaffolding
 
-### AWS (cross-account)
-- `aws_describe_target_health(target_group_arn)` → list of `{target_id, state, reason, description}`
-- `aws_describe_target_group(target_group_arn)` → health check path/port/protocol/interval/threshold
-- `aws_describe_instance(instance_id)` → state, private_ip, sg ids, launch_time, tags
-- `aws_describe_listener_rule(rule_arn)` → conditions, actions, weights
-- `aws_run_ssm_command(instance_id, cmd)` → ONLY tagged-as-`safe` shell commands (whitelist: `tail`, `ss`, `curl localhost`, `systemctl status`, `cat`, `ls`); no `sudo systemctl restart`, no file writes. Returns stdout+stderr.
+`unknown.md` is the fallback when no other runbook matches. Its drill plan is
+generic: regex log for Jira keys / SHAs / instance IDs / ARNs / Java
+exceptions / Groovy stack frames; for each match, call the matching tool;
+keep going until clear RCA.
 
-Account resolution: each AWS tool reads `aws_account` + `aws_region` from
-the service's `service.lookup` block in primer. Server-side STS assume-role
-to the matching account before each call. Cached for the RCA's lifetime
-(2nd call to same account reuses creds).
+### 3. Mandatory pipeline-stage cross-check (ALL classes)
 
-### Runbooks
-- `read_runbook(name)` → `docs/runbooks/<name>.md` content
+Every RCA, regardless of class, must:
+1. Identify failed stage by scanning log for last `[Pipeline] { (<name>)` marker
+2. Call `get_jenkins_job_config(job)` → resolve `scriptPath`
+3. Call `repo_read_file("jenkins_pipeline", <scriptPath>, ...)` around the stage block
+4. Cite at least one `jenkins_pipeline/<file>:<line>` in `evidence[]`
 
-### Claude code review
-- `claude_code_review(diff_or_path, prompt)` → calls Claude (claude-opus-4-7 or claude-sonnet-4-6 via Anthropic API) to:
-  - validate that a suggested code fix in `suggested_fix.Action` is sane against the current source
-  - sanity-check evidence (does the cited file:line actually contain what the LLM claims?)
-  - second-opinion on confidence score
-  Used by post-RCA evidence validator + optionally as an agent tool the LLM can call mid-loop.
+Enforced in system prompt + post-RCA validator.
 
-## Cross-account AWS IAM provisioning
+### 4. Stopping rule — LLM decides
 
-New Terraform module: `InfraComposer/module/bbctl_rca_reader/`
+LLM stops iterating when it has clear RCA. No confidence-threshold bail.
+Server enforces three hard safety caps only:
+
+| Cap | Value | Purpose |
+|---|---|---|
+| `MAX_TOOL_CALLS` | 25 | Runaway-loop guard |
+| `WALL_CLOCK_SEC` | 180 (3 min) | Jenkins post-block timeout |
+| `COST_HARD_KILL_USD` | 5.00 | Panic killswitch — single RCA should never spend $5; if it does, something is broken |
+
+Hitting any cap appends "BUDGET_EXHAUSTED" system message, forces JSON-only
+response, sets `needs_deeper: true` automatically.
+
+### 5. Confidence field
+
+Removed from output schema. LLM iterates until it finds clear RCA; no
+self-rated score gating the loop. Dashboard ranks by `needs_deeper` flag
++ evidence count instead.
+
+Final output schema:
+```json
+{
+  "summary": "string",
+  "failed_stage": "string",
+  "error_class": "string",
+  "root_cause": "string with citations",
+  "evidence": [{"source": "...", "snippet": "..."}],
+  "suggested_fix": {"Finding": "...", "Action": "...", "Verify": "..."},
+  "suggested_commands": [{"cmd": "...", "tier": "safe|restricted", "rationale": "..."}],
+  "needs_deeper": false
+}
+```
+
+### 6. Tool list (19 total)
+
+| # | Tool | Purpose |
+|---|---|---|
+| 1 | `jira_get_ticket(key)` | Jira ticket fields + custom_fields |
+| 2 | `jira_search(jql, max=10)` | JQL search (clone-chain discovery) |
+| 3 | `github_get_commit(repo, sha)` | Commit metadata + files |
+| 4 | `github_find_pr_for_commit(repo, sha)` | PR for commit |
+| 5 | `github_read_file(repo, path, ref, start?, end?)` | Read service-repo file via raw API |
+| 6 | `github_recent_commits(repo, branch, n)` | Recent commits on non-cloned repo |
+| 7 | `repo_read_file(repo, path, start, end)` | Local clone read (jenkins_pipeline / InfraComposer) |
+| 8 | `repo_search(repo, query)` | ripgrep across local clone |
+| 9 | `repo_find_function(repo, name)` | Find function def (incl. vars/ convention) |
+| 10 | `repo_recent_commits(repo, n)` | Recent commits on local clone |
+| 11 | `get_jenkins_job_config(job)` | Jenkins job XML config |
+| 12 | `list_runbooks()` | List available runbook files + 1-line summary |
+| 13 | `read_runbook(name)` | Read `docops/runbooks/<name>.md` |
+| 14 | `aws_describe_target_health(tg_arn)` | ALB target health |
+| 15 | `aws_describe_target_group(tg_arn)` | TG health-check config |
+| 16 | `aws_describe_instance(instance_id)` | EC2 state, IP, tags |
+| 17 | `aws_describe_listener_rule(rule_arn)` | ALB rule conditions/actions |
+| 18 | `aws_run_ssm_command(instance_id, cmd)` | Whitelisted shell via SSM |
+| 19 | `claude_code_review(diff_or_path, prompt)` | Anthropic sanity check |
+
+### 7. AWS cross-account access — single IAM role per account
+
+Approach: **`BBCTLRcaReadOnly`** role in each of 4 accounts (zinka, bbfinserv,
+divum, tzf). Each role:
+
+- **Trust:** bbctl-rca host's EC2 instance role (only)
+- **Permissions:** AWS-managed `ReadOnlyAccess` policy + custom inline policy
+  for SSM SendCommand (since `ReadOnlyAccess` doesn't include SendCommand)
 
 ```hcl
-# main.tf
+# InfraComposer/module/bbctl_rca_reader/main.tf
 resource "aws_iam_role" "bbctl_rca_reader" {
   name = "BBCTLRcaReadOnly"
   assume_role_policy = jsonencode({
@@ -109,30 +143,29 @@ resource "aws_iam_role" "bbctl_rca_reader" {
   })
 }
 
-resource "aws_iam_role_policy" "bbctl_rca_reader" {
+# Broad read coverage — managed policy
+resource "aws_iam_role_policy_attachment" "readonly" {
+  role       = aws_iam_role.bbctl_rca_reader.name
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+}
+
+# Narrow SSM execute — inline policy
+resource "aws_iam_role_policy" "ssm_send" {
+  name = "bbctl-rca-ssm-send"
   role = aws_iam_role.bbctl_rca_reader.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect = "Allow"
       Action = [
-        "elasticloadbalancing:Describe*",
-        "ec2:Describe*",
-        "logs:Get*", "logs:Filter*", "logs:Describe*",
-        "ssm:DescribeInstanceInformation",
+        "ssm:SendCommand",
         "ssm:GetCommandInvocation",
-        "ssm:SendCommand"
+        "ssm:DescribeInstanceInformation"
       ]
       Resource = "*"
-    }, {
-      Effect = "Allow"
-      Action = "ssm:SendCommand"
-      Resource = [
-        "arn:aws:ssm:*::document/AWS-RunShellScript"
-      ]
       Condition = {
         StringEquals = {
-          "ssm:resourceTag/Owner" = "blackbuck"
+          "ssm:DocumentName": ["AWS-RunShellScript"]
         }
       }
     }]
@@ -140,129 +173,172 @@ resource "aws_iam_role_policy" "bbctl_rca_reader" {
 }
 ```
 
-Apply to all 4 accounts. Trust principal = bbctl-rca EC2 instance role
-(currently `bbctl-rca-host`).
+Applied 4× (one per account workspace). bbctl-rca host role granted
+`sts:AssumeRole` on all 4 target ARNs.
 
-bbctl-rca host role gets:
-```json
-{
-  "Effect": "Allow",
-  "Action": "sts:AssumeRole",
-  "Resource": [
-    "arn:aws:iam::<zinka-id>:role/BBCTLRcaReadOnly",
-    "arn:aws:iam::<bbfinserv-id>:role/BBCTLRcaReadOnly",
-    "arn:aws:iam::<divum-id>:role/BBCTLRcaReadOnly",
-    "arn:aws:iam::<tzf-id>:role/BBCTLRcaReadOnly"
-  ]
-}
-```
+**Why `ReadOnlyAccess` (managed) instead of narrow custom policy:**
+- LLM can call any describe/list/get without us pre-listing every API
+- Future-proof — adding `aws_describe_<new_resource>` tool doesn't need
+  another IAM change
+- ReadOnlyAccess is AWS-vetted; no risk of accidental write permission
+- Single inline policy isolates the only non-read action we use (SSM SendCommand)
 
-## Service repos — no clones
+### 8. SSM safe-command whitelist
 
-Today: `jenkins_pipeline` + `InfraComposer` cloned to `/opt/bbctl-rca/repos/`.
-Service repos (alchemist, fms-*, demand, etc.) NOT cloned.
+LLM-callable but server enforces the command-pattern matches the whitelist
+before calling AWS SSM. Anything outside this set → tool returns error
+"command not in whitelist".
 
-Going forward: keep that. For the rare RCA that needs service code,
-LLM calls `github_read_file("alchemist", "src/main/...", ref=<COMMIT_ID>)`
-which fetches via GitHub raw API. ~200ms per call vs local disk, but:
-- No 40-repo sync infra
-- Always reads the COMMIT_ID actually deployed (not whatever's on disk)
-- GitHub rate-limit (5000 req/hr per PAT) more than enough for ~50 RCAs/day
+| Pattern | Purpose |
+|---|---|
+| `tail -n <N> <path>` | Read end of log file |
+| `ss -tlnp \| grep <port>` | Check listening ports |
+| `curl -i http://localhost:<port><path>` | Probe local health endpoint |
+| `systemctl status <svc>` | Service state |
+| `cat <path>` (under `/var/log/` or `/etc/blackbuck/`) | Read config / log |
+| `ls <path>` (under `/var/log/blackbuck/` or `/opt/`) | List artifacts |
+| `journalctl -n <N> -u <svc>` | systemd logs |
+| `ps aux \| grep <name>` | Process listing |
+| `df -h` / `free -m` / `uptime` | System health |
 
-## Cost / latency projections
+Whitelist enforced in `bbctl_rca/aws_tools.py:_validate_ssm_command()`. Each
+command parsed, command-name + arg-pattern checked against allow-table.
+Reject everything else with explanatory error.
 
-Per-RCA estimates after Option C:
+### 9. Claude code-review integration
 
-| Class | Today | After |
-|---|---|---|
-| compliance | $0.02 / 5s | $0.05 / 15s |
-| parse_error | $0.02 / 5s | $0.04 / 12s |
-| aws_limit | $0.02 / 5s | $0.04 / 10s |
-| java_runtime | $0.10 / 30s | $0.10 / 30s (no change) |
-| health_check | $0.08 / 25s | $0.12 / 35s (more AWS calls) |
-| canary_fail | $0.10 / 30s | $0.10 / 30s |
+**Mode:** validator + optional mid-loop tool (both).
 
-Average per-RCA: ~$0.06–0.08 (vs $0.04 today). Cap stays at $0.20.
+- **Post-RCA validator** (automatic): after LLM emits final JSON, server calls
+  Claude to verify each `evidence[].source` actually exists and the cited
+  snippet appears at the cited line. Drops hallucinated citations.
+- **Mid-loop tool** (LLM-callable): `claude_code_review` exposed in tool
+  list. LLM can call it to get a code-quality second opinion on its
+  suggested fix or to sanity-check a diff. Used sparingly (~5-10% of RCAs
+  where the suggested fix involves nontrivial code change).
+
+Model: `claude-sonnet-4-6` (cost ~$0.003 per validator call, ~$0.01 per
+mid-loop call).
+
+API key: `ANTHROPIC_API_KEY` via systemd drop-in.
+
+---
 
 ## Implementation phases
 
-### Phase 1 — System-prompt + tool list (no code yet) [READY TO START]
-- Rewrite `prompts/rca_agent_system.md` to handle all 7 error classes
-  (compliance / parse_error / aws_limit / java_runtime / health_check /
-  canary_fail / scm) — each with mandatory cross-check rules.
-- Document all new tool schemas in OpenAI function-calling format.
+### Phase 1 — System prompt + tool schemas + runbook files [READY]
 
-### Phase 2 — New tools (Jira / GitHub / runbook) [NO AWS YET]
-- `mcp_tools.py`: add `jira_get_ticket`, `github_get_commit`, `github_find_pr_for_commit`, `github_read_file`, `github_recent_commits`, `read_runbook`.
-- Reuse existing `jira_client.py` / `github_client.py` modules where
-  possible (currently called from `tool_context.py` to pre-fetch).
-- Cache: per-RCA dict, so the same `jira_get_ticket(MB-7545)` called
-  twice = one API call.
+No Python yet. Just markdown + JSON schemas.
 
-### Phase 3 — Route all classes to agent.py [BREAKING CHANGE]
-- `main.py` `_run_rca`: drop the "compliance/aws_limit/parse_error → one-shot"
-  branch. Always call `run_agent_rca`.
-- Strip pre-fetched Jira/GitHub/runbook blocks from `_build_tool_context`.
-- Keep `service.lookup` + `source.trace` HINTS + `log_window`.
-- Rollout: env var `BBCTL_RCA_FORCE_AGENT_MODE=1` to opt-in for testing;
-  flip default once validated.
+Deliverables:
+- Rewrite `bbctl/prompts/rca_agent_system.md` to ~50-line generic method
+- Author 10 runbook files in `bbctl/docops/runbooks/`
+- Write OpenAI function-calling schemas for all 19 tools in a single
+  `bbctl/bbctl_rca/tool_schemas.py` file
 
-### Phase 4 — AWS Terraform + cross-account assume-role [INFRA WORK]
-- Author `InfraComposer/module/bbctl_rca_reader/`.
-- Coordinate with infra team to apply across 4 accounts.
-- Update bbctl-rca host role with the 4 assume-role permissions.
-- Test STS assume + describe call against each account.
+### Phase 2 — Tool implementations (Jira / GitHub / runbook) [NO AWS YET]
+
+Deliverables:
+- `bbctl_rca/mcp_tools.py`: add `jira_get_ticket`, `jira_search`,
+  `github_get_commit`, `github_find_pr_for_commit`, `github_read_file`,
+  `github_recent_commits`, `list_runbooks`, `read_runbook`
+- Reuse existing `jira_client.py` / `github_client.py` where present
+- Per-RCA tool cache (same call within RCA = 1 API hit)
+
+### Phase 3 — Route ALL classes to agent.py [BREAKING]
+
+Deliverables:
+- `main.py:_run_rca`: drop one-shot branch. Always call `run_agent_rca`.
+- Strip pre-fetched Jira / GitHub / runbook from `_build_tool_context`
+- Boot-pack reduced to log + meta + service.lookup
+- Env-flag `BBCTL_RCA_FORCE_AGENT_MODE=1` for opt-in testing on EC2
+- Flip default after 2-week soak
+
+### Phase 4 — AWS Terraform [INFRA WORK, BLOCKS PHASE 5]
+
+Deliverables:
+- Author `InfraComposer/module/bbctl_rca_reader/`
+- Coordinate with infra team for apply across zinka / bbfinserv / divum / tzf
+- bbctl-rca host role gets `sts:AssumeRole` for all 4 target ARNs
+- Test STS + describe call against each account from EC2
 
 ### Phase 5 — AWS tools [NEEDS PHASE 4 COMPLETE]
-- `aws_describe_target_health`, `aws_describe_target_group`,
-  `aws_describe_instance`, `aws_describe_listener_rule`, `aws_run_ssm_command`.
-- All use `boto3` Session with sts.assume_role per account.
-- Whitelist `aws_run_ssm_command` command set strictly.
+
+Deliverables:
+- `bbctl_rca/aws_tools.py`: 5 tools with cross-account STS assume-role
+- SSM command whitelist + `_validate_ssm_command()`
+- Per-RCA STS credential cache (1 assume-role per account, reused within RCA)
 
 ### Phase 6 — Claude code-review integration
-- New module `bbctl_rca/claude_review.py` using `anthropic` SDK.
-- Two integration points:
-  1. **Post-RCA validator**: after agent emits final JSON, call Claude
-     to verify each `evidence[].source` line actually exists and matches
-     the snippet. Drop any hallucinated citations. Optionally adjust
-     `confidence` downward.
-  2. **As-a-tool**: expose `claude_code_review` in the agent's tool
-     list so the LLM can request a code-quality second opinion on
-     suggested fixes mid-loop.
-- Auth: `ANTHROPIC_API_KEY` env var via systemd drop-in.
-- Model: `claude-sonnet-4-6` for cost (each review = ~1K tokens in,
-  500 out, ~$0.003/review).
 
-### Phase 7 — Tests + dashboard surfacing
-- Sample-webhook test bench: replay last 30 days of audit logs through
-  the new agent path, diff RCAs against current.
-- Dashboard: show "Agent mode: X iters, Y tool calls, $Z" badge per RCA.
+Deliverables:
+- `bbctl_rca/claude_review.py` using `anthropic` SDK
+- Post-RCA validator wired into `main.py:_run_rca` after agent returns
+- `claude_code_review` tool added to agent tool list
+- `ANTHROPIC_API_KEY` systemd env
+
+### Phase 7 — Tests + dashboard
+
+Deliverables:
+- Replay last 30 days of audit logs through new agent path
+- Diff RCAs vs current; sanity-check 5 sample failures per class
+- Dashboard: per-RCA "Agent mode: X iters, Y tools, $Z" badge
+- Per-build trace download endpoint at `/rca/v1/dashboard/<job>/<build>/trace.txt`
 
 ### Phase 8 — Cleanup
-- Delete `llm.py:run_rca_openai` one-shot path once Phase 3 stable for 2 weeks.
-- Move `_build_tool_context` boot-pack-only assembly to `agent.py` (it's
-  the only consumer now).
 
-## Open questions for sign-off
+Deliverables:
+- Delete `llm.py:run_rca_openai` one-shot path
+- Move `_build_tool_context` boot-pack-only assembly into `agent.py`
+- Update `docs/rca/bbctlrca.md` with new architecture
 
-1. **AWS account IDs** — need exact 12-digit IDs for zinka, bbfinserv, divum, tzf.
-2. **bbctl-rca host role ARN** — what's the current EC2 instance role? Need it for the trust policy.
-3. **Claude code-review mode**:
-   - (a) post-RCA validator only, OR
-   - (b) also expose as a tool the LLM can call mid-loop?
-   - (b) is more agentic, costlier, slower. (a) is cheaper safety net.
-4. **Rollout strategy**: env-flag opt-in for compliance class first (test 2 weeks), then default-on for all, then delete one-shot. Or all-at-once? Prefer phased.
-5. **Service-repo source fetching**: `github_read_file` via PAT is fine for read-only. Want me to scope down `jenkins-git-bb` PAT to read-only on service repos, or use a separate PAT?
-6. **SSM `aws_run_ssm_command` whitelist** — confirm the safe-command set: `tail`, `ss -tlnp`, `curl localhost:*`, `systemctl status`, `cat /var/log/blackbuck/*.log`, `ls`, `journalctl -n N -u <svc>`. Anything else?
+---
+
+## Open items (need answer before Phase 1)
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Boot-pack = log + meta + service.lookup | ✅ locked |
+| 2 | LLM auto-classifies via runbook MD files | ✅ locked |
+| 3 | Mandatory pipeline cross-check | ✅ locked |
+| 4 | No confidence score in schema | ✅ locked |
+| 5 | Caps: 25 tools / 180s / $5 panic | ✅ locked |
+| 6 | AWS role = ReadOnlyAccess + SSM inline | ✅ locked |
+| 7 | Claude review = validator + tool | ✅ locked |
+| 8 | SSM whitelist | ✅ locked (9 patterns) |
+| 9 | **AWS account IDs** for zinka/bbfinserv/divum/tzf | ⚠️ NEED FROM USER |
+| 10 | **bbctl-rca host role ARN** (current EC2 instance role) | ⚠️ NEED FROM USER |
+| 11 | **GitHub PAT** for github_read_file — reuse `jenkins-git-bb` or fresh? | ⚠️ NEED FROM USER |
+| 12 | **ANTHROPIC_API_KEY** — exists in any account? | ⚠️ NEED FROM USER |
+
+---
+
+## Cost projections (no cap, LLM iterates freely)
+
+| Class | Before (one-shot or current agent) | After Option C |
+|---|---|---|
+| compliance | $0.02 / 5s | $0.10 / 30s |
+| parse_error | $0.02 / 5s | $0.09 / 25s |
+| aws_limit | $0.02 / 5s | $0.08 / 22s |
+| java_runtime | $0.10 / 30s | $0.15 / 40s |
+| health_check | $0.08 / 25s | $0.22 / 60s |
+| canary_fail | $0.10 / 30s | $0.18 / 45s |
+| terraform | $0.10 / 30s | $0.16 / 42s |
+| scm | $0.02 / 5s | $0.10 / 30s |
+| unknown | $0.05 / 15s | $0.40 / 120s (worst case) |
+
+Avg ~$0.14/RCA. Burst ~$0.50 in pathological cases.
+
+---
 
 ## Acceptance criteria
 
-- [ ] Build 15 (compliance) RCA goes through agent loop in trace
-  (visible `--- ITER 0 RESPONSE ---` with tool_calls, not direct final JSON).
-- [ ] Compliance RCA cites Jira ticket data via tool fetch, not primer.
-- [ ] Health-check RCA queries AWS target health via tool, includes
-  live `state=unhealthy reason=...` in evidence.
-- [ ] Total RCA cost stays under $0.20 cap for all classes.
-- [ ] Average RCA cost ≤ $0.10.
-- [ ] All 7 error classes pass end-to-end smoke test (sample webhook → final JSON).
-- [ ] Trace file shows real LLM agency (≥2 distinct tool kinds called per RCA).
+- [ ] Build 15 (compliance) goes through agent loop — trace shows ≥3 distinct tool kinds called
+- [ ] Compliance RCA evidence cites Jira ticket via tool fetch (not primer)
+- [ ] Health check RCA calls AWS target health + SSM tail log
+- [ ] Every RCA cites at least one `jenkins_pipeline/<file>:<line>` (mandatory cross-check)
+- [ ] No RCA hits $5 hard killswitch in 30-day soak
+- [ ] Average RCA latency ≤ 60s; p95 ≤ 120s
+- [ ] All 10 runbook files authored and discoverable via `list_runbooks()`
+- [ ] Trace file shows full LLM agency — REQUEST + RESPONSE (raw model_dump) + TOOL per iter
+- [ ] Post-RCA Claude validator drops any hallucinated evidence citation

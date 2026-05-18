@@ -24,6 +24,7 @@ from .cache import (
     get_rca, set_rca,
 )
 from .evidence import verify as verify_evidence
+from . import mcp_tools  # for service_lookup in post-RCA value validator
 from .audit import record as audit_record, read_by_request_id, list_recent
 from . import auth as oauth
 from .slack import post as slack_post
@@ -509,6 +510,18 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
             "_llm_error": True,
             "_llm_error_class": err_class,
         }
+
+    # Post-RCA value validator. Strips hallucinated training-data defaults
+    # (port 8080, /admin/version, /var/log/blackbuck/gps.log when service
+    # isn't gps) and substitutes real values from service.lookup. Records
+    # every correction in result["validator_notes"][]. Mechanical Python,
+    # no LLM cost. See bbctl_rca/value_validator.py.
+    try:
+        from .value_validator import validate_and_fix
+        validate_and_fix(result, service, mcp_tools.service_lookup(service))
+    except Exception as _ve:
+        print(f"[main] value validator failed: {_ve}",
+              file=__import__('sys').stderr, flush=True)
 
     # Stash freshness info on the result so it surfaces in the audit/report
     result["repos_freshness"] = freshness

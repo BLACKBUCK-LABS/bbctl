@@ -503,6 +503,57 @@ async def run_rca_openai(
         "input": response.usage.prompt_tokens,
         "output": response.usage.completion_tokens,
     }
+
+    # Optional one-shot trace dump (full request + response). Same env var
+    # the agent-mode loop uses, but the one-shot path doesn't iterate, so
+    # the trace is one block. Writes BOTH a "last" copy and a per-build
+    # copy so historical compliance/aws_limit RCAs (which always go
+    # one-shot, never agent-mode) can be inspected after the fact.
+    if _os.environ.get("BBCTL_RCA_DEBUG_TRACE"):
+        try:
+            job_str = str(build_meta.get("job", "unknown_job"))
+            build_str = str(build_meta.get("build", "unknown_build"))
+            safe_job = "".join(c if c.isalnum() or c in "-_." else "_" for c in job_str)
+            try:
+                raw_resp = json.dumps(response.model_dump(), indent=2, default=str)
+            except Exception as _e:
+                raw_resp = f"[model_dump failed: {_e}]"
+            paths = [
+                "/tmp/bbctl-rca-last-trace.txt",
+                f"/tmp/bbctl-rca-trace-{safe_job}-{build_str}.txt",
+            ]
+            blob = (
+                f"=== ONE-SHOT TRACE — job={job_str} build={build_str} "
+                f"service={service} model={rca_model} error_class={error_class} ===\n\n"
+                f"=== INITIAL SYSTEM MESSAGE ===\n{system}\n\n"
+                f"=== INITIAL USER MESSAGE ===\n{user_msg}\n\n"
+                f"--- RESPONSE ---\n"
+                f"prompt_tokens={response.usage.prompt_tokens} "
+                f"completion_tokens={response.usage.completion_tokens}\n"
+                f"finish_reason={response.choices[0].finish_reason}\n"
+                f"content={text}\n"
+                f"--- raw OpenAI response (model_dump, {len(raw_resp)} chars) ---\n"
+                f"{raw_resp}\n"
+            )
+            # Trim per-build history to last 50 files.
+            try:
+                import glob as _glob
+                olds = sorted(_glob.glob("/tmp/bbctl-rca-trace-*.txt"),
+                              key=lambda p: _os.path.getmtime(p))
+                for old in olds[:-50]:
+                    try:
+                        _os.unlink(old)
+                    except OSError:
+                        pass
+            except Exception:
+                pass
+            for p in paths:
+                with open(p, "w") as f:
+                    f.write(blob)
+        except Exception as _e:
+            print(f"[llm] trace dump failed: {_e}",
+                  file=__import__('sys').stderr, flush=True)
+
     return result
 
 

@@ -27,15 +27,51 @@ file content. Fetch what you need.
 1. Read the `log_window`. Identify the failed stage by scanning for
    the last `[Pipeline] { (<name>)` marker before failure.
 
-2. **MANDATORY (every RCA, regardless of class):**
-   - Call `get_jenkins_job_config(job)` → resolves `scriptPath`.
-   - Call `repo_read_file("jenkins_pipeline", <scriptPath>, ...)` with
-     a line range around the failed stage block.
-   - If the stage calls a helper (e.g. `JiraDetails(...)`,
-     `nonwebdeploy(...)`, `canary(...)`), call `repo_find_function` or
-     `repo_read_file` on `vars/<helper>.groovy`.
+2. **MANDATORY (every RCA, regardless of class) — STAGE → HELPER shortcut:**
+
+   This org's pipelines always follow the SAME shape:
+   ```
+   stage('<StageName>') {
+     steps { script { <helperName>(params.SERVICE, ...) } }
+   }
+   ```
+   The helper file is ALWAYS `jenkins_pipeline/vars/<helperName>.groovy`
+   (Jenkins shared-lib convention). The helper name is camelCase of the
+   stage name, e.g.:
+
+   | Stage            | Helper called          | Read this file                              |
+   |------------------|------------------------|---------------------------------------------|
+   | `Jira Details`   | `JiraDetails(...)`     | `jenkins_pipeline/vars/JiraDetails.groovy`  |
+   | `Prod+1`         | `prodPlusOne(...)`     | `jenkins_pipeline/vars/prodPlusOne.groovy`  |
+   | `Deploy Prod+1`  | `deployProdPlusOne(...)` | `jenkins_pipeline/vars/deployProdPlusOne.groovy` |
+   | `Build`          | `buildService(...)`    | `jenkins_pipeline/vars/buildService.groovy` |
+   | `Infra`          | `createGreenInfra(...)` | `jenkins_pipeline/vars/createGreenInfra.groovy` |
+   | `Deploy`         | `nonwebdeploy(...)` or `webdeploy(...)` | `vars/nonwebdeploy.groovy` |
+   | `Rollout`        | `rollout(...)`         | `jenkins_pipeline/vars/rollout.groovy`      |
+   | `Build Frontend` | `buildFrontend(...)`   | `jenkins_pipeline/vars/buildFrontend.groovy` |
+   | `Deploy Frontend`| `deployFrontend(...)`  | `jenkins_pipeline/vars/deployFrontend.groovy` |
+
+   **Drill path:**
+   - Call `get_jenkins_job_config(job)` ONCE → confirm `scriptPath`.
+   - Scan `log_window` for the failed `[Pipeline] { (<StageName>)` marker.
+   - Apply the stage → helper convention above. Go DIRECTLY to
+     `repo_read_file("jenkins_pipeline", "vars/<helper>.groovy", 1, 80)`.
+     Do NOT first read the entrypoint script header (lines 1-50 of
+     create-quick-infra.groovy, main_stagger_prod_plus_one.groovy etc.)
+     — that's noise; the failure is in the helper.
+   - If the helper calls another helper (e.g. `nonwebdeploy` calls
+     `healthy.sh`, `deployProdPlusOne` calls `nonwebdeploy`), drill
+     into the inner one too via another `repo_read_file`.
+
    Final `evidence[]` MUST contain at least one entry whose `source`
-   is `jenkins_pipeline/<file>:<line>`.
+   is `jenkins_pipeline/<file>:<line>` — usually the helper file you
+   drilled into, NOT the entrypoint script.
+
+   **STRICT — do NOT waste tool calls on:**
+   - `repo_read_file(entrypoint.groovy, 1, 50)` — header has no stages.
+   - `repo_search` for `stage('<name>')` when you already have the
+     stage name from log markers + the convention above.
+   - Reading the same helper twice with overlapping line ranges.
 
 3. **Classify and drill down — CALL `read_runbook` EARLY.** Within your
    FIRST 2 iterations, call `read_runbook(<class>)` to get the drill

@@ -335,6 +335,33 @@ TOOLS: list[dict] = [
         },
     },
 
+    # ─── SERVICE LOOKUP (1) ────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "service_lookup",
+            "description": (
+                "Re-read a service's entry in jenkins_pipeline/resources/"
+                "config.json. The boot-pack already includes the lookup "
+                "for the build's primary service, so usually unnecessary. "
+                "Use this only when the log references ANOTHER service "
+                "(upstream dependency, sibling deploy) you need details "
+                "for. Returns a slim dict with aws_account, region, "
+                "rule_arn, target_port, log_path, etc."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {
+                        "type": "string",
+                        "description": "Service name as it appears in config.json keys.",
+                    },
+                },
+                "required": ["service"],
+            },
+        },
+    },
+
     # ─── RUNBOOKS (2) ──────────────────────────────────────────────────
     {
         "type": "function",

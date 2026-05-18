@@ -440,8 +440,15 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         "java_runtime",
     }
 
+    # Phase 3: opt-in to all-classes-agent-mode via env var. When set,
+    # EVERY error_class routes through the agent loop, dropping the
+    # one-shot primer-stuffed path for compliance / aws_limit /
+    # parse_error / unknown / etc. Default = off so production keeps
+    # current behaviour during soak. Flip default after 2-week soak.
+    _force_agent = bool(os.environ.get("BBCTL_RCA_FORCE_AGENT_MODE"))
+
     try:
-        if LLM_PROVIDER == "openai" and error_class in AGENT_CLASSES:
+        if LLM_PROVIDER == "openai" and (_force_agent or error_class in AGENT_CLASSES):
             # Run the agent. It still wants the same pre-computed tool context
             # as a primer so it doesn't burn calls re-fetching cheap things.
             initial_ctx = await build_initial_tool_ctx(

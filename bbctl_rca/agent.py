@@ -17,10 +17,15 @@ from pathlib import Path
 
 from . import mcp_tools
 from . import jenkins as jenkins_api
+from . import agent_dispatch
+from . import tool_schemas
 
 
-MAX_TOOL_CALLS = 6           # iterations; each iter may issue multiple tool calls
-COST_CAP_USD = 0.25
+# Phase 3 caps — see docs/rca/agent_mode_migration_plan.md.
+# LLM decides when to stop. These are runaway/billing safety nets only.
+MAX_TOOL_CALLS = int(os.environ.get("BBCTL_RCA_MAX_TOOL_CALLS", "25"))
+COST_CAP_USD = float(os.environ.get("BBCTL_RCA_COST_CAP_USD", "5.0"))
+WALL_CLOCK_SEC = int(os.environ.get("BBCTL_RCA_WALL_CLOCK_SEC", "180"))
 # Per-tool-result cap. Lower = less context-bloat per iteration. Older
 # results are also elided (see TRIM_HISTORY_AFTER) so this is mainly the
 # CURRENT iteration's read budget.
@@ -136,171 +141,31 @@ def _load_prompt(name: str) -> str:
 # Tool definitions exposed to the LLM (OpenAI function-calling schema)
 # ---------------------------------------------------------------------------
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "repo_read_file",
-            "description": (
-                "Read a slice of a file from one of the local repos "
-                "(`jenkins_pipeline` or `InfraComposer`). Prefer narrow ranges "
-                "(50-150 lines). Line numbers in the output are real file line "
-                "numbers, suitable for evidence citations."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo": {"type": "string", "enum": ["jenkins_pipeline", "InfraComposer"]},
-                    "path": {"type": "string", "description": "Path inside the repo, e.g. 'vars/canary.groovy'"},
-                    "start": {"type": "integer", "description": "1-based start line. 0 = whole file (capped)."},
-                    "end": {"type": "integer", "description": "1-based inclusive end line. 0 = use start + 99."},
-                },
-                "required": ["repo", "path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "repo_search",
-            "description": (
-                "ripgrep across a repo. Use this to locate strings from the "
-                "log inside Groovy/Java/Terraform source. Returns up to 20 "
-                "matching lines with file:line:content."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo": {"type": "string", "enum": ["jenkins_pipeline", "InfraComposer"]},
-                    "query": {"type": "string", "description": "Literal string to search for"},
-                    "max_results": {"type": "integer", "default": 20},
-                },
-                "required": ["repo", "query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "repo_list_dir",
-            "description": (
-                "List immediate children of a directory in a repo. Useful when "
-                "you don't know the exact filename (e.g. exploring `vars/`)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo": {"type": "string", "enum": ["jenkins_pipeline", "InfraComposer"]},
-                    "path": {"type": "string", "default": ""},
-                },
-                "required": ["repo"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "repo_find_function",
-            "description": (
-                "Find where a Groovy / Java / Python function is DEFINED in a "
-                "repo. Returns ripgrep-style hits (file:line) showing the "
-                "definition site so you can then `repo_read_file` it."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo": {"type": "string", "enum": ["jenkins_pipeline", "InfraComposer"]},
-                    "name": {"type": "string"},
-                },
-                "required": ["repo", "name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "repo_recent_commits",
-            "description": (
-                "Show the last N commits in a repo (short SHA, date, author, "
-                "message). Use this when a previously-green pipeline starts "
-                "failing — the cause is often a recent commit."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo": {"type": "string", "enum": ["jenkins_pipeline", "InfraComposer"]},
-                    "n": {"type": "integer", "default": 10},
-                },
-                "required": ["repo"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_jenkins_job_config",
-            "description": (
-                "Fetch the Jenkins job's config.xml and extract SCM repo URL, "
-                "branch, and the pipeline scriptPath. ALWAYS call this first "
-                "so you know which file to read as the entrypoint."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "job": {"type": "string"},
-                },
-                "required": ["job"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "service_lookup",
-            "description": (
-                "Look up the service's slim config from "
-                "`jenkins_pipeline/resources/config.json` (target port, "
-                "log_path, NewRelic name, etc.)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "service": {"type": "string"},
-                },
-                "required": ["service"],
-            },
-        },
-    },
-]
+TOOLS = tool_schemas.TOOLS  # 21 tools — see bbctl_rca/tool_schemas.py
 
 
 # ---------------------------------------------------------------------------
 # Tool dispatch
 # ---------------------------------------------------------------------------
 
+import inspect as _inspect
+
+
 async def _dispatch_tool(name: str, args: dict, ctx: dict) -> str:
     """Invoke the local helper for a tool the LLM asked to call.
 
-    `ctx` carries per-RCA context (Jenkins creds, etc.) so we don't have to
-    plumb them through every tool signature.
+    Resolution order:
+      1. Special cases that need per-RCA `ctx` (Jenkins creds,
+         service-lookup result formatting, etc.).
+      2. Generic agent_dispatch.TOOL_DISPATCH lookup — sync or async
+         callables are both supported; coroutines are awaited.
+
+    Returns a string (JSON-serialised when the tool returns a dict/list).
+    On any exception returns `tool error: <ExceptionType>: <msg>` so the
+    LLM gets a useful failure instead of a 500 crashing the loop.
     """
     try:
-        if name == "repo_read_file":
-            return mcp_tools.repo_read_file(
-                args["repo"], args["path"],
-                args.get("start", 0), args.get("end", 0),
-            )
-        if name == "repo_search":
-            return mcp_tools.repo_search(
-                args["repo"], args["query"], args.get("max_results", 20),
-            )
-        if name == "repo_list_dir":
-            out = mcp_tools.repo_list_dir(args["repo"], args.get("path", ""))
-            return "\n".join(out)
-        if name == "repo_find_function":
-            return mcp_tools.repo_find_function(args["repo"], args["name"])
-        if name == "repo_recent_commits":
-            return mcp_tools.repo_recent_commits(args["repo"], args.get("n", 10))
+        # ── Special cases (need ctx or output massaging) ─────────────
         if name == "get_jenkins_job_config":
             cfg = await jenkins_api.get_job_config(
                 args["job"], ctx["jenkins_url"], ctx["jenkins_auth"],
@@ -311,9 +176,22 @@ async def _dispatch_tool(name: str, args: dict, ctx: dict) -> str:
             return json.dumps(cfg, indent=2)
         if name == "service_lookup":
             return json.dumps(mcp_tools.service_lookup(args["service"]), indent=2)
+
+        # ── Generic dispatch via agent_dispatch.TOOL_DISPATCH ────────
+        fn = agent_dispatch.TOOL_DISPATCH.get(name)
+        if fn is None:
+            return f"unknown tool: {name}"
+        result = fn(**args)
+        if _inspect.iscoroutine(result):
+            result = await result
+        # Serialise structured returns; strings pass through.
+        if isinstance(result, (dict, list)):
+            return json.dumps(result, indent=2, default=str)
+        if result is None:
+            return "null"
+        return str(result)
     except Exception as e:
         return f"tool error: {type(e).__name__}: {e}"
-    return f"unknown tool: {name}"
 
 
 # ---------------------------------------------------------------------------
@@ -483,8 +361,32 @@ async def run_agent(
     # the system prompt warns against).
     tool_call_cache: dict[tuple[str, str], tuple[int, str]] = {}
 
+    # Phase 3: wall-clock cap so Jenkins post-block doesn't hang on a
+    # runaway loop. LLM-driven stopping is the normal path; this is
+    # a last-resort safety net.
+    _loop_start = time.monotonic()
+
     for iteration in range(MAX_TOOL_CALLS + 1):
         cost_so_far = total_in * in_per_tok + total_out * out_per_tok
+        _wall_elapsed = time.monotonic() - _loop_start
+        if _wall_elapsed >= WALL_CLOCK_SEC:
+            _log(f"wall-clock cap hit at {_wall_elapsed:.1f}s — forcing final answer")
+            messages.append({"role": "user", "content": _FORCE_FINAL_PROMPT})
+            _cap_kwargs = {
+                "model": model, "messages": messages,
+                "response_format": {"type": "json_object"}, "temperature": 0.1,
+            }
+            _trace("WALL-CLOCK FORCED FINAL REQUEST",
+                   _fmt_request_payload(messages, _cap_kwargs))
+            response = client.chat.completions.create(**_cap_kwargs)
+            total_in += response.usage.prompt_tokens
+            total_out += response.usage.completion_tokens
+            final_text = response.choices[0].message.content
+            _trace("WALL-CLOCK FORCED FINAL RESPONSE",
+                   f"prompt_tokens={response.usage.prompt_tokens} "
+                   f"completion_tokens={response.usage.completion_tokens}\n"
+                   f"content={(final_text or '')[:1500]}")
+            break
         if cost_so_far >= COST_CAP_USD:
             _log(f"cost cap hit at ${cost_so_far:.4f} — forcing final answer")
             messages.append({

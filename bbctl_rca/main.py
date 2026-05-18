@@ -195,7 +195,7 @@ async def auth_logout(request: Request):
 
 
 @router.get("/v1/dashboard", response_class=HTMLResponse)
-async def rca_dashboard(days: int = 2, user: dict = Depends(oauth.require_auth)):
+async def rca_dashboard(days: int = 7, user: dict = Depends(oauth.require_auth)):
     """Landing page — pipelines (jobs) that had RCAs in the last N days.
 
     Groups audit records by `job`. Per-pipeline card shows count + most
@@ -230,7 +230,7 @@ async def rca_dashboard(days: int = 2, user: dict = Depends(oauth.require_auth))
 
 
 @router.get("/v1/dashboard/{job}", response_class=HTMLResponse)
-async def rca_pipeline_builds(job: str, days: int = 2, user: dict = Depends(oauth.require_auth)):
+async def rca_pipeline_builds(job: str, days: int = 7, user: dict = Depends(oauth.require_auth)):
     """Per-pipeline view — list of failed builds for one job.
 
     Each row links to /v1/report/<request_id> for the full RCA.

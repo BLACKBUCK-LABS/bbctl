@@ -394,9 +394,15 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     error_class = classify(clean_window)
     # Annotate build_meta with the actual last-entered stage from the log so
     # LLM doesn't guess between similarly-named stages (Prod+1 vs Prod, etc.).
+    # Also inject job + build identifiers — Jenkins' /api/json response uses
+    # `id`/`number`/`displayName` rather than literal `job`/`build`, but our
+    # trace-dump code (and any future consumer of build_meta downstream of
+    # the LLM call) needs both to name per-build artifact files.
     detected_stage = extract_failed_stage(raw_log)
+    build_meta = dict(build_meta)
+    build_meta["job"] = job
+    build_meta["build"] = build
     if detected_stage:
-        build_meta = dict(build_meta)
         build_meta["detected_failed_stage"] = detected_stage
     # Also stash raw_log on build_meta for analyzers that need full log
     # (canary stage parser; health_check `healthy.sh` line parser) — both

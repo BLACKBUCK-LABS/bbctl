@@ -24,8 +24,48 @@ file content. Fetch what you need.
 
 ## Method
 
-1. Read the `log_window`. Identify the failed stage by scanning for
-   the last `[Pipeline] { (<name>)` marker before failure.
+1. **Scan the log BACKWARDS from the end** — the real fatal cause is
+   almost always near the bottom of `log_window`, not the top. Walk
+   from the LAST line upward:
+
+   a. Find the LAST line matching `^Error:` / `^ERROR:` /
+      `^FATAL:` / `^Caused by:` — that's the fatal cause line.
+   b. Read the 10-20 lines AROUND it (above + below) for context:
+      stack trace, terraform resource address, AWS API error code,
+      groovy file:line, etc.
+   c. Then scan UPWARDS to find the most recent `[Pipeline] { (<X>)`
+      marker BEFORE that error — that's the failed stage.
+
+   **Why backwards:** Pipelines emit informational chatter from many
+   earlier steps (`Stale state detected — auto-destroying`,
+   `Health Status iteration N`, `Verifying compliance`, etc). Those
+   are stages that ran and finished BEFORE the real failure. The
+   FATAL error is the LAST thing the pipeline printed before exiting.
+
+   **Example (toll-gold build 5177 — gotcha case):**
+   ```
+   ... earlier log ...
+   Stale prodplusone state detected — auto-destroying before re-create
+       ↑ this is info from precheck, NOT the cause
+   ...
+   No changes. No objects need to be destroyed.
+       ↑ tf destroy completed cleanly
+   ...
+   Error: creating ELBv2 Listener Rule: TooManyUniqueTargetGroupsPerLoadBalancer:
+     You have reached the maximum number of unique target groups
+     that you can associate with a load balancer of type 'application': [100]
+       ↑ THIS is the fatal cause — AWS service quota hit
+     status code: 400
+     with module.createProdPlusOneInfra.module.listener_rule.aws_lb_listener_rule.listener_rule
+     on ../../../module/listener_rule_for_prod_plus_one/main.tf line 1
+   Finished: FAILURE
+   ```
+   Correct error_class = `aws_limit`, NOT `terraform`. The terraform
+   module is just the resource that hit the quota; the cause is the
+   AWS ALB-per-LB target-group quota.
+
+   If you skip step 1 and start fetching tool calls based on the FIRST
+   log signals you see, you'll fix the wrong problem.
 
 2. **MANDATORY (every RCA, regardless of class) — STAGE → HELPER shortcut:**
 

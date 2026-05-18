@@ -12,6 +12,25 @@ resource already exists.
 - `Error: Reference to undeclared input variable`
 - Failed stage = "Infra"
 
+## When to RECLASSIFY out of this runbook
+
+Terraform is often just the messenger. The actual cause may be an AWS
+quota / IAM / config issue surfaced THROUGH terraform. Reclassify when:
+
+| If the Error line contains ...                                | error_class    | Use runbook |
+|---------------------------------------------------------------|---------------|-------------|
+| `TooManyUniqueTargetGroupsPerLoadBalancer`                    | aws_limit     | aws_limit.md|
+| `LimitExceeded` / `Service quota exceeded`                    | aws_limit     | aws_limit.md|
+| `VcpuLimitExceeded` / `InstanceLimitExceeded`                 | aws_limit     | aws_limit.md|
+| `AccessDenied` / `UnauthorizedOperation`                      | aws_limit (perms sub-mode) | aws_limit.md |
+| `Stale state detected — auto-destroying` (alone, no Error:)   | NOT a failure — keep scanning down for the real Error: | — |
+
+The "Stale state detected" line is informational chatter emitted by
+`precheck.groovy` — it's a NORMAL recovery step that runs BEFORE the
+actual terraform apply. If the actual apply later succeeds, the stale
+state cleanup is fine. If the apply fails, the Error: line below has
+the real cause; do NOT stop at the stale-state line.
+
 ## Pipeline source to cross-check (MANDATORY)
 - `jenkins_pipeline/vars/createGreenInfra.groovy` (or similar) — the
   helper that runs `terraform plan/apply`

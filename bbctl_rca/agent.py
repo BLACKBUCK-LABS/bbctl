@@ -239,12 +239,26 @@ async def run_agent(
     # ~50% rate). The user message stays short — just kicks off the trace.
     system_full = system + "\n\n" + primer
 
-    messages = [
-        {"role": "system", "content": system_full},
-        {"role": "user", "content": (
+    # User message varies by mode. Option C demands the LLM USE tools (don't
+    # short-circuit from the primer). Legacy mode discouraged re-fetching
+    # because all data was pre-fetched into the primer.
+    if os.environ.get("BBCTL_RCA_FORCE_AGENT_MODE"):
+        _user_kickoff = (
+            "Begin the RCA. The primer above contains ONLY log_window, "
+            "build_meta, and service.lookup. You MUST call tools to fetch "
+            "everything else (pipeline source via repo_read_file, drill plan "
+            "via read_runbook, Jira fields via jira_get_ticket, AWS state via "
+            "aws_describe_*, etc.). Follow the mandatory pipeline cross-check. "
+            "Emit final JSON only after you can name a concrete cause."
+        )
+    else:
+        _user_kickoff = (
             "Begin the trace. Use the primer above. Don't re-fetch what's "
             "already there. Cite repo evidence at IMPLEMENTATION lines."
-        )},
+        )
+    messages = [
+        {"role": "system", "content": system_full},
+        {"role": "user", "content": _user_kickoff},
     ]
 
     # Optional prompt dump for debugging.
@@ -705,12 +719,41 @@ def _build_primer(
 ) -> str:
     """Compose the static primer block that becomes part of the system message.
 
-    Structure (resolved-values up top so the LLM never has to hunt for them):
-      1. Build context (job/build/service/stage)
-      2. RESOLVED VALUES (instance, port, log_path, …) — USE VERBATIM
-      3. Pre-fetched context blocks (service.lookup, source.trace, runbooks…)
-      4. Log window (truncated)
+    Two modes:
+
+    Option C (BBCTL_RCA_FORCE_AGENT_MODE=1) — MINIMAL primer:
+      Only the 3 boot-pack blocks. No pre-fetched jira / github / runbook.
+      LLM MUST use tools to fetch everything else. error_class hint and
+      detected_failed_stage are dropped so the LLM classifies + identifies
+      the failed stage from the log markers itself.
+
+    Legacy mode (default) — full primer with resolved values + pre-fetched
+    blocks. Kept until the Option C path is verified end-to-end and the
+    BBCTL_RCA_FORCE_AGENT_MODE default flips to on.
     """
+    if os.environ.get("BBCTL_RCA_FORCE_AGENT_MODE"):
+        # MINIMAL primer — strict boot-pack only.
+        parts = [
+            "## build_meta",
+            f"- job: {job}",
+            f"- build: {build}",
+            f"- service: {service}",
+            f"- result: {build_meta.get('result', '—')}",
+            f"- url: {build_meta.get('url', '—')}",
+            "",
+            "## service.lookup",
+            "```json",
+            json.dumps(mcp_tools.service_lookup(service), indent=2),
+            "```",
+            "",
+            "## log_window (sanitized)",
+            "```",
+            log_window[:30000],
+            "```",
+        ]
+        return "\n".join(parts)
+
+    # Legacy primer (full pre-fetched context).
     detected = build_meta.get("detected_failed_stage", "—")
     parts = [
         "## Build context",

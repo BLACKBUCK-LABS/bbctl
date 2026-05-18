@@ -6,7 +6,14 @@ across 4 AWS accounts so the LLM's AWS tools can run live infra checks.
 **Host role:** `arn:aws:iam::735317561518:role/bbctl-backend-service`
 (the EC2 instance role bbctl-rca runs as).
 
-**Target accounts:** zinka, bbfinserv, divum, tzf.
+**Account map (locked):**
+
+| Account name | Account ID | Role |
+|---|---|---|
+| zinka     | 735317561518 | host — bbctl-rca runs here. Policies attached directly to `bbctl-backend-service`. |
+| bbfinserv | 075903075452 | target — create `BBCTLRcaReadOnly` role. |
+| divum     | 597070799581 | target — create `BBCTLRcaReadOnly` role. |
+| tzf       | 476114138058 | target — create `BBCTLRcaReadOnly` role. |
 
 Setup is one-time, applied via AWS console (no Terraform).
 
@@ -87,7 +94,7 @@ aws ec2 describe-instances --max-results 5 --region ap-south-1 \
   --query 'Reservations[*].Instances[*].InstanceId' --output table
 
 # B) Cross-account — assume + describe (run for each of 3 target accounts)
-for ACCT in <bbfinserv-id> <divum-id> <tzf-id>; do
+for ACCT in 075903075452 597070799581 476114138058; do  # bbfinserv, divum, tzf
   echo "=== Account $ACCT ==="
   CREDS=$(aws sts assume-role \
     --role-arn "arn:aws:iam::$ACCT:role/BBCTLRcaReadOnly" \

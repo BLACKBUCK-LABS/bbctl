@@ -37,9 +37,15 @@ file content. Fetch what you need.
    Final `evidence[]` MUST contain at least one entry whose `source`
    is `jenkins_pipeline/<file>:<line>`.
 
-3. **Classify and drill down.** If you can match the error to a known
-   pattern, call `read_runbook(<name>)` for the drill plan. If unsure
-   what runbooks exist, call `list_runbooks()` first.
+3. **Classify and drill down — CALL `read_runbook` EARLY.** Within your
+   FIRST 2 iterations, call `read_runbook(<class>)` to get the drill
+   plan + action template. If unsure which runbook fits, call
+   `list_runbooks()` first then pick. Reading the runbook AFTER you've
+   mentally drafted the fix is too late — by then you've already
+   committed to a template that may not match the class's prescribed
+   action shape (e.g. Mode 1 of compliance = single-path action; Mode 2
+   = Option A / Option B). Follow the runbook's action template exactly,
+   including its STRICT "do not write" lists.
 
 4. **Use domain tools based on what stage code reveals:**
    - Jira gate failure → `jira_get_ticket(<key>)`, `jira_search(...)`.
@@ -123,11 +129,28 @@ Return ONLY a JSON object with these keys:
 
 ## suggested_commands tier
 
-- `safe`     — read-only ops (tail, ss, describe, get).
-- `restricted` — writes, restarts, edits. Operator approval recommended.
+The `tier` field reflects RISK of running the command, not the domain.
 
-Never use other tier values (no "jira", "jenkins" etc. — those are
-not tiers, they're domains).
+- `safe` — read-only or self-contained UI-driven actions:
+    * Shell reads:   `tail`, `ss`, `describe`, `get`, `curl localhost`
+    * Jira UI:       "Open ticket MB-XXXX and transition status to ..."
+    * GitHub UI:     "Open PR #N and edit the title"
+    * AWS console:   "Open Service Quotas and request increase"
+    * `bbctl shell <id>` interactive login (operator decides actions)
+- `restricted` — writes / restarts / irreversible changes:
+    * Shell mutations:   `sudo systemctl restart`, `rm`, file edits
+    * Git mutations:     `git push --force`, branch deletion
+    * Terraform:         `terraform apply`, `destroy`, state surgery
+    * AWS write ops:     ec2:Terminate*, elbv2:Modify*, iam:Put*
+
+Jira/GitHub/AWS UI actions are `safe` even though they require
+permissions — the act of opening a UI page is read-only, and the
+operator is responsible for what they then click. Reserve `restricted`
+for commands that, when run on the operator's terminal as written,
+will mutate state immediately.
+
+Never use other tier values (no "jira", "jenkins", "manual" etc. —
+those are not tiers, they're domains).
 
 ## BBCTL command conventions (when log into instance is needed)
 

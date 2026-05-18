@@ -26,12 +26,27 @@ distinct sub-modes exist; pick ONE based on the log + Jira ticket data.
 1. `repo_read_file("jenkins_pipeline", "vars/JiraDetails.groovy", 30, 80)`
 2. `jira_get_ticket(<KEY>)` to confirm current status
 
-**Action:**
+**Action — SINGLE PATH ONLY. DO NOT EMIT Option A / Option B.**
 ```
-Operator: open Jira ticket <KEY> in the Jira UI, transition status to
-'READY FOR RELEASE' (or 'HOT FIX' for hotfix pipelines), then re-run.
+Finding: Jira ticket <KEY> is in status '<current>', but the pipeline
+         requires '<expected>' (typically 'READY FOR RELEASE', or
+         'HOT FIX' for hotfix pipelines).
+Action:  Operator must transition Jira ticket <KEY> to '<expected>' in
+         the Jira UI, then re-run the pipeline.
+Verify:  Re-run; expect 'Jira Details' stage to pass.
 ```
-Single path. No Option B.
+
+**STRICT — what NOT to write for Mode 1:**
+- DO NOT suggest "update the pipeline compliance logic to accept '<current>'
+  as a valid status" as an alternative path. Compliance gates exist for
+  audit/regulatory reasons; the fix is always to fix the Jira state,
+  never to weaken the gate.
+- DO NOT structure the fix as Option A / Option B. The Option-A/B template
+  is only for Mode 2 (commit-mismatch), where operator intent is genuinely
+  ambiguous (signed-off wrong vs commit changed). Status mismatch has no
+  such ambiguity — the ticket needs to move.
+- DO NOT cite "clone detection" as the cause unless the log explicitly
+  shows the "is a clone of" line.
 
 ### Mode 2 — Missing Signed Off Commit ID
 **Log signal:** `Compliance: Jira ticket <KEY> has no Signed Off

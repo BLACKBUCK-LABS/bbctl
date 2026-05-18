@@ -156,3 +156,147 @@ async def fetch_commits_from_log(log_window: str, service: str) -> list[dict]:
         else:
             _log(f"sha={sha[:8]} NOT FOUND in any candidate repo")
     return results
+
+
+# ─── Agent-mode tool functions (Phase 2 additions) ─────────────────────
+
+
+async def find_pr_for_commit(repo: str, sha: str) -> dict | None:
+    """Find the merged PR that contains a commit. Returns the first
+    merged PR (or first listed if none merged), or None.
+
+    Used by the agent tool `github_find_pr_for_commit` — needed for
+    compliance Mode 5 (PR title must contain Jira ticket key).
+    """
+    if not GH_PAT:
+        return None
+    cache_key = {"repo": repo, "sha": sha}
+    cached = cache.get_tool_cache("gh_pr_for_commit", cache_key)
+    if cached is not None:
+        return cached if cached else None
+
+    url = f"https://api.github.com/repos/{GH_ORG}/{repo}/commits/{sha}/pulls"
+    headers = {
+        "Authorization": f"Bearer {GH_PAT}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get(url, headers=headers)
+            if r.status_code == 404:
+                cache.set_tool_cache("gh_pr_for_commit", cache_key, {})
+                return None
+            r.raise_for_status()
+            prs = r.json() or []
+    except Exception:
+        return None
+    chosen = next((p for p in prs if p.get("merged_at")), prs[0] if prs else None)
+    if not chosen:
+        cache.set_tool_cache("gh_pr_for_commit", cache_key, {})
+        return None
+    slim = {
+        "number": chosen.get("number"),
+        "title": chosen.get("title"),
+        "merged_at": chosen.get("merged_at"),
+        "author": (chosen.get("user") or {}).get("login"),
+        "url": chosen.get("html_url"),
+        "state": chosen.get("state"),
+    }
+    cache.set_tool_cache("gh_pr_for_commit", cache_key, slim)
+    return slim
+
+
+async def read_file(repo: str, path: str, ref: str,
+                    start: int = 1, end: int = 100) -> str:
+    """Read a line slice from a GitHub repo at a specific ref via the
+    Contents API. Returns numbered lines string.
+
+    Used for service repos NOT cloned locally (alchemist, demand, etc.).
+    For jenkins_pipeline / InfraComposer use mcp_tools.repo_read_file
+    instead — local + fresher.
+    """
+    import base64
+    if not GH_PAT:
+        return "error: GH_PAT not configured"
+    cache_key = {"repo": repo, "path": path, "ref": ref,
+                 "start": start, "end": end}
+    cached = cache.get_tool_cache("gh_read_file", cache_key)
+    if cached is not None:
+        return cached
+
+    url = f"https://api.github.com/repos/{GH_ORG}/{repo}/contents/{path}"
+    headers = {
+        "Authorization": f"Bearer {GH_PAT}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(url, headers=headers, params={"ref": ref})
+            if r.status_code == 404:
+                return f"error: file {repo}/{path}@{ref} not found"
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        return f"error: {e}"
+
+    if isinstance(data, list):
+        names = ", ".join(item.get("name", "?") for item in data[:20])
+        return f"error: path is a directory. children: {names}"
+    enc = data.get("encoding") or ""
+    if enc != "base64":
+        return f"error: unexpected encoding '{enc}'"
+    try:
+        content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+    except Exception as e:
+        return f"error: base64 decode failed: {e}"
+
+    lines = content.splitlines()
+    s = max(1, int(start)) - 1
+    e = min(len(lines), int(end))
+    sliced = lines[s:e]
+    out = "\n".join(f"{i + s + 1}: {ln}" for i, ln in enumerate(sliced))
+    cache.set_tool_cache("gh_read_file", cache_key, out)
+    return out
+
+
+async def recent_commits(repo: str, branch: str = "main",
+                          n: int = 10) -> list[dict]:
+    """Recent commits on a GitHub repo branch. Returns slim dicts."""
+    if not GH_PAT:
+        return [{"error": "GH_PAT not configured"}]
+    cache_key = {"repo": repo, "branch": branch, "n": n}
+    cached = cache.get_tool_cache("gh_recent_commits", cache_key)
+    if cached is not None:
+        return cached
+
+    url = f"https://api.github.com/repos/{GH_ORG}/{repo}/commits"
+    headers = {
+        "Authorization": f"Bearer {GH_PAT}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    params = {"sha": branch, "per_page": min(int(n), 30)}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get(url, headers=headers, params=params)
+            if r.status_code == 404:
+                return [{"error": f"repo or branch not found: {repo}@{branch}"}]
+            r.raise_for_status()
+            data = r.json() or []
+    except Exception as e:
+        return [{"error": f"gh recent commits failed: {e}"}]
+
+    out = []
+    for c in data[:n]:
+        commit = c.get("commit") or {}
+        author = commit.get("author") or {}
+        out.append({
+            "sha": (c.get("sha") or "")[:12],
+            "author": author.get("name"),
+            "date": author.get("date"),
+            "message": (commit.get("message") or "").splitlines()[0][:200],
+        })
+    cache.set_tool_cache("gh_recent_commits", cache_key, out)
+    return out

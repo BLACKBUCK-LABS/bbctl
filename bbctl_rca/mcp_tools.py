@@ -165,6 +165,70 @@ def docs_get(name: str) -> str:
     return path.read_text()
 
 
+# ─── Runbook tools (Phase 2 — per-class drill plans) ──────────────────
+
+# Runbooks live under DOCS_DIR/runbooks/. Each is a markdown file named
+# after an error class (compliance.md, health_check.md, …). Local-dev
+# fallback in the repo tree so tests can run without /opt/bbctl-rca/.
+RUNBOOKS_DIR = DOCS_DIR / "runbooks"
+RUNBOOKS_DIR_FALLBACK = Path(__file__).resolve().parent.parent / "docops" / "runbooks"
+
+
+def _runbooks_dir() -> Path:
+    if RUNBOOKS_DIR.is_dir():
+        return RUNBOOKS_DIR
+    return RUNBOOKS_DIR_FALLBACK
+
+
+def list_runbooks() -> list[dict]:
+    """List runbook files under DOCS_DIR/runbooks/ with one-line summaries.
+
+    Reads the first non-heading paragraph after "## What this class means"
+    so the LLM can pick which runbook to read_runbook() without loading
+    all of them into context.
+    """
+    d = _runbooks_dir()
+    if not d.is_dir():
+        return [{"error": f"runbooks dir not found at {d}"}]
+    out = []
+    for f in sorted(d.glob("*.md")):
+        try:
+            text = f.read_text(errors="replace")
+        except Exception as e:
+            out.append({"name": f.stem, "summary": f"<read error: {e}>"})
+            continue
+        summary = ""
+        marker = "## What this class means"
+        if marker in text:
+            after = text.split(marker, 1)[1]
+            for line in after.splitlines():
+                ls = line.strip()
+                if ls and not ls.startswith("#"):
+                    summary = ls
+                    break
+        if not summary:
+            for line in text.splitlines():
+                ls = line.strip()
+                if ls and not ls.startswith("#"):
+                    summary = ls
+                    break
+        out.append({"name": f.stem, "summary": summary[:200]})
+    return out
+
+
+def read_runbook(name: str) -> str:
+    """Read one runbook by stem (no .md extension)."""
+    d = _runbooks_dir()
+    p = d / f"{name}.md"
+    if not p.is_file():
+        avail = ", ".join(sorted(f.stem for f in d.glob("*.md")))
+        return f"runbook '{name}' not found. Available: {avail}"
+    try:
+        return p.read_text(errors="replace")
+    except Exception as e:
+        return f"runbook read error: {e}"
+
+
 _SLIM_FIELDS = (
     "name", "service_name", "service_identifier", "env",
     "aws_account", "region", "aws_region",

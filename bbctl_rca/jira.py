@@ -162,3 +162,47 @@ async def fetch_ticket(key: str) -> dict:
 async def fetch_all(keys: list[str]) -> list[dict]:
     """Fetch multiple tickets sequentially (small N, no need for parallel)."""
     return [await fetch_ticket(k) for k in keys]
+
+
+async def search(jql: str, max: int = 10) -> list[dict]:
+    """JQL search. Returns ticket summaries (no full fields — call
+    fetch_ticket per key if you need detail).
+
+    Used by the agent-mode RCA tool `jira_search`. JQL example:
+    'issuekey in (X, Y, Z)' to fetch clone-chain summaries in one call.
+    """
+    if not (JIRA_URL and JIRA_USER and JIRA_TOKEN):
+        return [{"error": "jira creds not configured"}]
+    cache_key = {"jql": jql, "max": max}
+    cached = cache.get_tool_cache("jira_search", cache_key)
+    if cached is not None:
+        return cached
+
+    url = f"{JIRA_URL.rstrip('/')}/rest/api/2/search"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                url,
+                headers=_auth_header(),
+                params={
+                    "jql": jql,
+                    "maxResults": max,
+                    "fields": "summary,status,assignee",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        return [{"error": f"jira search failed: {e}"}]
+
+    out = []
+    for it in data.get("issues", [])[:max]:
+        f = it.get("fields") or {}
+        out.append({
+            "key": it.get("key"),
+            "summary": f.get("summary"),
+            "status": (f.get("status") or {}).get("name"),
+            "assignee": (f.get("assignee") or {}).get("displayName"),
+        })
+    cache.set_tool_cache("jira_search", cache_key, out)
+    return out

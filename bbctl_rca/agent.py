@@ -386,17 +386,38 @@ async def run_agent(
     # Optional full-transcript dump (each iter's request, response, tool
     # calls, tool results) — for manager-grade audit / training data.
     # Enable: BBCTL_RCA_DEBUG_TRACE=1
-    # Reads:  cat /tmp/bbctl-rca-last-trace.txt
+    #
+    # Two files written each RCA:
+    #   * /tmp/bbctl-rca-last-trace.txt           — latest only (convenience)
+    #   * /tmp/bbctl-rca-trace-<job>-<build>.txt  — per-build copy (history)
+    # Reads:  cat /tmp/bbctl-rca-trace-create-quick-infra-devops-test-15.txt
     _trace_enabled = bool(os.environ.get("BBCTL_RCA_DEBUG_TRACE"))
     _trace_path = "/tmp/bbctl-rca-last-trace.txt"
+    _safe_job = "".join(c if c.isalnum() or c in "-_." else "_" for c in str(job))
+    _per_build_path = f"/tmp/bbctl-rca-trace-{_safe_job}-{build}.txt"
+    _trace_paths = [_trace_path, _per_build_path]
+    # Cap per-build history at 50 files; delete oldest beyond cap.
     if _trace_enabled:
         try:
-            with open(_trace_path, "w") as _f:
-                _f.write(f"=== AGENT TRACE — job={job} build={build} service={service} model={model} ===\n\n")
-                _f.write("=== INITIAL SYSTEM MESSAGE (truncated; full in /tmp/bbctl-rca-last-prompt.txt) ===\n")
-                _f.write(system_full[:4000] + ("\n…[truncated]\n" if len(system_full) > 4000 else "\n"))
-                _f.write("\n=== INITIAL USER MESSAGE ===\n")
-                _f.write(messages[1]["content"] + "\n\n")
+            import glob as _glob
+            _olds = sorted(_glob.glob("/tmp/bbctl-rca-trace-*.txt"),
+                           key=lambda p: os.path.getmtime(p))
+            for _old in _olds[:-50]:
+                try:
+                    os.unlink(_old)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+    if _trace_enabled:
+        try:
+            for _p in _trace_paths:
+                with open(_p, "w") as _f:
+                    _f.write(f"=== AGENT TRACE — job={job} build={build} service={service} model={model} ===\n\n")
+                    _f.write("=== INITIAL SYSTEM MESSAGE (truncated; full in /tmp/bbctl-rca-last-prompt.txt) ===\n")
+                    _f.write(system_full[:4000] + ("\n…[truncated]\n" if len(system_full) > 4000 else "\n"))
+                    _f.write("\n=== INITIAL USER MESSAGE ===\n")
+                    _f.write(messages[1]["content"] + "\n\n")
         except Exception as _e:
             _log(f"trace init failed: {_e}")
             _trace_enabled = False
@@ -404,11 +425,12 @@ async def run_agent(
     def _trace(label: str, body: str) -> None:
         if not _trace_enabled:
             return
-        try:
-            with open(_trace_path, "a") as _f:
-                _f.write(f"\n--- {label} ---\n{body}\n")
-        except Exception:
-            pass
+        for _p in _trace_paths:
+            try:
+                with open(_p, "a") as _f:
+                    _f.write(f"\n--- {label} ---\n{body}\n")
+            except Exception:
+                pass
 
     def _fmt_request_payload(msgs: list, kwargs: dict) -> str:
         """Render the exact OpenAI request payload for trace logs.

@@ -2,22 +2,23 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "RunShellViaSSM",
+      "Sid": "SendCommandRunShellOnly",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ssm:*::document/AWS-RunShellScript",
+        "arn:aws:ec2:*:*:instance/*"
+      ]
+    },
+    {
+      "Sid": "ReadCommandInvocations",
       "Effect": "Allow",
       "Action": [
-        "ssm:SendCommand",
         "ssm:GetCommandInvocation",
-        "ssm:DescribeInstanceInformation",
-        "ssm:ListCommandInvocations"
+        "ssm:ListCommandInvocations",
+        "ssm:DescribeInstanceInformation"
       ],
-      "Resource": "*",
-      "Condition": {
-        "StringEqualsIfExists": {
-          "ssm:DocumentName": [
-            "AWS-RunShellScript"
-          ]
-        }
-      }
+      "Resource": "*"
     }
   ]
 }

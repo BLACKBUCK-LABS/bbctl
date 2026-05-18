@@ -18,10 +18,48 @@ SSM SendCommand or any other instance-shell path.
 - `Iteration <N> of <M>: still draining` repeated
 - Failed stage = "Deploy" or "Deploy Prod+1"
 
-## Pipeline source to cross-check (MANDATORY)
-- `jenkins_pipeline/vars/deployProdPlusOne.groovy` (or `nonwebdeploy.groovy`
-  for plain Deploy stage)
-- `jenkins_pipeline/scripts/non_web_healthy.sh` (the poll loop)
+## Pipeline source to cross-check (MANDATORY) — CHAIN-WALK
+
+Follow the chain from log → main pipeline → outer helper → inner helper
+→ resource script. Each file tells you where to look next; don't guess.
+
+Concrete chain for a Prod+1 failure:
+
+```
+console log says: stage 'Prod+1' status=FAILED
+                  Health Status failed to move to healthy ...
+       ↓
+get_jenkins_job_config(job) returns scriptPath, e.g.
+  main_stagger_prod_plus_one.groovy
+       ↓
+repo_read_file(jenkins_pipeline, main_stagger_prod_plus_one.groovy)
+  shows:
+    stage('Prod+1') { steps { script {
+      prodPlusOne(params.SERVICE)       ← outer helper
+    }}}
+       ↓
+repo_read_file(jenkins_pipeline, vars/prodPlusOne.groovy)
+  shows:
+    deployProdPlusOne(service, env)     ← inner helper
+       ↓
+repo_read_file(jenkins_pipeline, vars/deployProdPlusOne.groovy)
+  shows:
+    def healthyScript = libraryResource 'scripts/healthy.sh'
+                                         ↑ Jenkins shared-lib path
+       ↓
+repo_read_file(jenkins_pipeline, resources/scripts/healthy.sh)
+  shows the actual poll loop that printed "Health Status failed..."
+```
+
+**Known correct paths (Jenkins shared-lib convention):**
+- `vars/<helper>.groovy` — pipeline step implementation
+- `libraryResource 'X'` → on disk = `resources/X`
+- `resources/scripts/healthy.sh` — web service health poll
+- `resources/scripts/non_web_healthy.sh` — non-web health poll
+- `resources/canary.py` — canary measurement
+
+DO NOT try `vars/healthy.sh` or `resources/healthy.sh` — those don't
+exist. The script lives under `resources/scripts/`.
 
 ## Drill plan — execute ALL in parallel in iter 0
 
@@ -29,11 +67,14 @@ In a single LLM iteration, emit these tool calls in parallel:
 
 1. `get_jenkins_job_config(job)` → confirm scriptPath
 2. `repo_read_file("jenkins_pipeline", "vars/deployProdPlusOne.groovy", 1, 80)`
-   (or `nonwebdeploy.groovy` for plain Deploy stage)
-3. `read_runbook("health_check")` (this file)
-4. `aws_describe_target_health(<tg_arn from service.lookup.rule_arn or log>)`
-5. `aws_describe_target_group(<tg_arn>)` — get expected port + health_check_path
-6. `aws_describe_instance(<instance_id from log>, <aws_account>, <aws_region>)`
+   (or `vars/nonwebdeploy.groovy` for plain Deploy stage)
+3. `repo_read_file("jenkins_pipeline", "resources/scripts/non_web_healthy.sh", 1, 80)`
+   (or `resources/scripts/healthy.sh` if service_type is web — distinguish
+   via service.lookup.service_type)
+4. `read_runbook("health_check")` (this file)
+5. `aws_describe_target_health(<tg_arn from service.lookup.rule_arn or log>)`
+6. `aws_describe_target_group(<tg_arn>)` — get expected port + health_check_path
+7. `aws_describe_instance(<instance_id from log>, <aws_account>, <aws_region>)`
    — confirm instance state, security groups, tags
 
 If iter 0 results show drill-deeper need (e.g. canary TG had different

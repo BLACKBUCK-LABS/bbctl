@@ -67,11 +67,49 @@ file content. Fetch what you need.
    is `jenkins_pipeline/<file>:<line>` — usually the helper file you
    drilled into, NOT the entrypoint script.
 
+   **CHAIN-WALK, don't path-guess.** The right way to discover inner
+   helper paths is to READ the outer helper's body. Example chain for
+   a Prod+1 failure:
+
+   ```
+   1. Main pipeline (scriptPath from get_jenkins_job_config):
+        stage('Prod+1') { steps { script {
+          prodPlusOne(params.SERVICE)          ← outer helper call
+        }}}
+
+   2. vars/prodPlusOne.groovy body shows:
+        deployProdPlusOne(service, env)        ← inner helper call
+
+   3. vars/deployProdPlusOne.groovy body shows:
+        def healthyScript = libraryResource 'scripts/healthy.sh'
+                                              ↑ Jenkins shared-lib path
+
+   4. libraryResource 'scripts/healthy.sh' resolves on disk to
+        jenkins_pipeline/resources/scripts/healthy.sh
+        (Jenkins shared-lib rule: libraryResource '<X>' → resources/<X>)
+   ```
+
+   So the drill path is: read outer helper → see what it calls → read
+   that next file → repeat until you reach the line that emits the
+   error string from the log. Don't guess the inner-file path — it's
+   written verbatim in the outer file you just read.
+
+   **Jenkins shared-lib path resolution (locked):**
+   - `vars/<X>.groovy` is the implementation of step `X()`
+   - `libraryResource 'path/to/file'` on disk = `resources/path/to/file`
+   - `src/com/blackbuck/utils/<Class>.groovy` = Groovy utility class
+
    **STRICT — do NOT waste tool calls on:**
    - `repo_read_file(entrypoint.groovy, 1, 50)` — header has no stages.
    - `repo_search` for `stage('<name>')` when you already have the
      stage name from log markers + the convention above.
    - Reading the same helper twice with overlapping line ranges.
+   - **Guessing paths**. If a tool result says "file not found" or
+     returns < 100 chars, the LAST file you read should already tell
+     you where to look — re-read it, find the `libraryResource '...'`
+     or `<helperName>()` call, derive the real path from the rules
+     above. As a last resort, call `repo_list_dir(jenkins_pipeline,
+     "resources/scripts")` once to discover the layout.
 
 3. **Classify and drill down — CALL `read_runbook` EARLY.** Within your
    FIRST 2 iterations, call `read_runbook(<class>)` to get the drill

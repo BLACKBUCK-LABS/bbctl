@@ -103,7 +103,14 @@ file content. Fetch what you need.
    - `repo_read_file(entrypoint.groovy, 1, 50)` — header has no stages.
    - `repo_search` for `stage('<name>')` when you already have the
      stage name from log markers + the convention above.
-   - Reading the same helper twice with overlapping line ranges.
+   - Reading the same helper twice with overlapping line ranges. The
+     server's dedup cache will return a `DUP_CALL` warning on the 2nd
+     identical call, and an outright ERROR with no data on the 3rd+.
+     If you see `DUP_CALL` in a tool result, STOP — that means you
+     already have the data; reuse it from the prior iter's output
+     in the message history. If you see `ERROR: repeated tool call
+     rejected`, the cache stopped serving you data; emit final JSON
+     with what you have or call a genuinely different tool/path.
    - **Guessing paths**. If a tool result says "file not found" or
      returns < 100 chars, the LAST file you read should already tell
      you where to look — re-read it, find the `libraryResource '...'`

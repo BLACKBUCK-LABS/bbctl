@@ -368,12 +368,14 @@ async def run_agent(
     # final evidence array against it (post-parse hallucination guard).
     # Key: "<repo>/<path>" — line range is ignored, any read counts.
     read_files: set[str] = set()
-    # Dedup map: (tool_name, sorted_args_json) -> (iter, cached_result).
-    # If the LLM repeats an identical call, return the cached result with
-    # a hint to try a different approach. Saves disk I/O AND signals to
-    # the LLM that it's wandering (which the wandering-avoidance rule in
-    # the system prompt warns against).
-    tool_call_cache: dict[tuple[str, str], tuple[int, str]] = {}
+    # Dedup map: (tool_name, sorted_args_json) -> (iter, cached_result, hit_count).
+    # 1st repeat → return cached + soft warning.
+    # 2nd+ repeat → return ERROR ONLY, no data, so the LLM is forced to
+    # change strategy. gpt-4.1 has been observed ignoring the soft warning
+    # and re-issuing the same call 3-4 times (build 5177: precheck.groovy
+    # called 4× same args), each time burning ~10K input tokens on the
+    # full conversation re-send.
+    tool_call_cache: dict[tuple[str, str], tuple[int, str, int]] = {}
 
     # Phase 3: wall-clock cap so Jenkins post-block doesn't hang on a
     # runaway loop. LLM-driven stopping is the normal path; this is
@@ -575,26 +577,46 @@ async def run_agent(
                 args = {}
             _log(f"iter {iteration} tool#{tool_call_count}: {tc.function.name}({list(args)})")
 
-            # Tool-call dedup: same (name, args) within this RCA → serve
-            # cached result + hint to LLM to try a different approach.
-            # Saves I/O and breaks the "repeat the same search 3 times"
-            # wandering pattern.
+            # Tool-call dedup with escalating strictness:
+            #   1st repeat → return cached + soft warning (current behaviour)
+            #   2nd+ repeat → return ERROR ONLY, no data
+            # The escalation forces the LLM to change strategy. gpt-4.1
+            # has been observed ignoring soft warnings and re-issuing the
+            # same call 3-4 times in a row, each iter burning ~10K input
+            # tokens on the full conversation resend.
             fingerprint = (tc.function.name, json.dumps(args, sort_keys=True))
             if fingerprint in tool_call_cache:
-                prev_iter, prev_result = tool_call_cache[fingerprint]
-                _log(f"  → DUP: same call ran in iter {prev_iter}; serving cached result")
-                result = (
-                    f"[DUP_CALL: this exact call was already executed in iter "
-                    f"{prev_iter}. Result was:]\n{prev_result}\n"
-                    f"[end of cached result — try a DIFFERENT query or read a "
-                    f"DIFFERENT file; repeating the same call wastes the budget.]"
-                )
+                prev_iter, prev_result, hit_count = tool_call_cache[fingerprint]
+                hit_count += 1
+                tool_call_cache[fingerprint] = (prev_iter, prev_result, hit_count)
+                _log(f"  → DUP #{hit_count}: same call ran in iter {prev_iter}")
+                if hit_count == 1:
+                    result = (
+                        f"[DUP_CALL #1: this exact call was already executed "
+                        f"in iter {prev_iter}. Result was:]\n{prev_result}\n"
+                        f"[end of cached result — try a DIFFERENT query or read "
+                        f"a DIFFERENT file; repeating the same call wastes "
+                        f"the budget.]"
+                    )
+                else:
+                    result = (
+                        f"ERROR: repeated tool call rejected. You have called "
+                        f"{tc.function.name}({json.dumps(args)}) {hit_count + 1} "
+                        f"times. No new data will be returned. CHANGE STRATEGY:\n"
+                        f"  - Call a DIFFERENT path / arg combination, OR\n"
+                        f"  - Use DIFFERENT line range (start/end != "
+                        f"{args.get('start', '?')}, {args.get('end', '?')}), OR\n"
+                        f"  - Move on to emit final JSON with the data you "
+                        f"already have. The cached result from iter "
+                        f"{prev_iter} is still in the message history above; "
+                        f"re-read it instead of re-fetching."
+                    )
             else:
                 result = await _dispatch_tool(tc.function.name, args, ctx)
                 # Cap each tool result so a runaway grep doesn't blow the window
                 if len(result) > PER_TOOL_RESULT_CAP:
                     result = result[:PER_TOOL_RESULT_CAP] + "\n…[truncated]"
-                tool_call_cache[fingerprint] = (iteration, result)
+                tool_call_cache[fingerprint] = (iteration, result, 0)
 
             # Track repo_read_file paths so the final evidence array can
             # be validated against actual reads. Only track on a successful

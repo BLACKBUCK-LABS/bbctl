@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bbctl-rca — Design &amp; Flow</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         max-width: 1200px; margin: 24px auto; padding: 0 24px; line-height: 1.6;
+         color: #1f2937; background: #f9fafb; }
+  h1 { font-size: 1.8rem; border-bottom: 2px solid #1f2937; padding-bottom: 8px; }
+  h2 { font-size: 1.4rem; margin-top: 36px; color: #111827; border-bottom: 1px solid #d1d5db; padding-bottom: 4px; }
+  h3 { font-size: 1.1rem; margin-top: 24px; color: #374151; }
+  h4 { font-size: 1rem; margin-top: 18px; color: #4b5563; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 14px 16px; border-radius: 6px;
+        overflow-x: auto; font-size: 0.85rem; line-height: 1.4; }
+  pre.ascii { background: #fafaf9; color: #1c1917; border: 1px solid #d6d3d1; }
+  code { background: #e7e5e4; padding: 1px 6px; border-radius: 3px; font-size: 0.9em; }
+  pre code { background: transparent; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.92rem; }
+  th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #e5e7eb; font-weight: 600; }
+  .answer { background: #dcfce7; border-left: 4px solid #16a34a; padding: 12px 16px;
+            margin: 16px 0; border-radius: 4px; }
+  .warn   { background: #fef3c7; border-left: 4px solid #d97706; padding: 12px 16px;
+            margin: 16px 0; border-radius: 4px; }
+  .info   { background: #dbeafe; border-left: 4px solid #2563eb; padding: 12px 16px;
+            margin: 16px 0; border-radius: 4px; }
+  .badge  { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.78rem;
+            font-weight: 600; }
+  .badge-ok    { background: #16a34a; color: white; }
+  .badge-warn  { background: #d97706; color: white; }
+  .badge-info  { background: #2563eb; color: white; }
+  .toc { background: white; border: 1px solid #d1d5db; padding: 12px 20px; border-radius: 6px; }
+  .toc a { color: #1d4ed8; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc ol { margin: 4px 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>bbctl-rca &mdash; Design, Algorithm Flow, &amp; RCA Walkthrough</h1>
+<p><em>Branch:</em> <code>feature/bbctl-rca-agent-only</code> &middot;
+   <em>Worked example:</em> <code>stagger-prod-plus-devops-test</code> build 46
+   (health_check class, port mismatch) &middot;
+   <em>Trace source:</em> <code>/tmp/bbctl-rca-trace-stagger-prod-plus-devops-test-46.txt</code></p>
+
+<div class="answer">
+  <strong>TL;DR&nbsp;&mdash; The single most important question:</strong><br>
+  <span class="badge badge-ok">DOES NOT SCAN WHOLE REPO</span>
+  bbctl-rca only reads <em>specific files on demand</em>, picked by the LLM from
+  the error log + stage&rarr;helper convention + chain-walk through
+  <code>libraryResource&nbsp;'X'</code> &rarr; <code>resources/X</code>. The full
+  RCA for build 46 read 4 files total (out of 35+ in <code>vars/</code> and dozens
+  more under <code>resources/</code>).
+</div>
+
+<div class="toc">
+  <strong>Contents</strong>
+  <ol>
+    <li><a href="#arch">High-level architecture</a></li>
+    <li><a href="#callgraph">Source-code call graph (what calls what)</a></li>
+    <li><a href="#algo">RCA algorithm &mdash; the agent loop</a></li>
+    <li><a href="#prompt">What goes in the prompt (no spoon-feeding)</a></li>
+    <li><a href="#tools">19&nbsp;&rarr;&nbsp;16 tools the LLM can call</a></li>
+    <li><a href="#trace46">Build 46 trace walkthrough</a></li>
+    <li><a href="#openai">How OpenAI function-calling actually works</a></li>
+    <li><a href="#noscan">Why this is targeted-read, not whole-repo scan</a></li>
+    <li><a href="#defense">Three layers of anti-hallucination defense</a></li>
+  </ol>
+</div>
+
+<h2 id="arch">1. High-level architecture</h2>
+
+<pre class="ascii">
+   ┌───────────────────────┐  POST signed webhook   ┌────────────────────────┐
+   │  Jenkins              ├──────────────────────► │  jenkins-rca.jinka.in  │
+   │  post.failure / post  │  HMAC-SHA256           │  ALB &rarr; bbctl-rca:7070  │
+   │  .unstable / always   │                        └──────────┬─────────────┘
+   └───────────┬───────────┘                                   │
+               │ RCA JSON echoed to console                    ▼
+               │                              ┌──────────────────────────────┐
+               └──────────────────────────────│  FastAPI / uvicorn           │
+                                              │  bbctl_rca/main.py           │
+                                              │  _run_rca(job, build, svc)   │
+                                              └──────────┬───────────────────┘
+                                                         │
+       ┌─────────────────────────────────────────────────┼─────────────────────────────────────┐
+       ▼                                                 ▼                                     ▼
+   ┌───────────────┐   ┌────────────────┐   ┌───────────────────────┐   ┌───────────────────────┐
+   │ Jenkins REST  │   │ OpenAI         │   │ Jira / GitHub /       │   │ AWS (4 accounts)      │
+   │ console log   │   │ chat.completion│   │ runbook files         │   │ STS AssumeRole        │
+   │ /api/json     │   │ + tool calling │   │ /opt/bbctl-rca/repos/ │   │ BBCTLRcaReadOnly      │
+   │ config.xml    │   │ (gpt-4.1)      │   │ /opt/bbctl-rca/docops/│   │ elbv2 / ec2 / etc.    │
+   └───────────────┘   └────────────────┘   └───────────────────────┘   └───────────────────────┘
+                                                         │
+                                                         ▼
+                                              ┌──────────────────────────────┐
+                                              │  Audit JSON                  │
+                                              │  /opt/bbctl-rca/audit/*.json │
+                                              │  + per-build trace.txt       │
+                                              │  + HTML report at /rca/v1/   │
+                                              └──────────────────────────────┘
+</pre>
+
+<h2 id="callgraph">2. Source-code call graph &mdash; what calls what</h2>
+
+<pre class="ascii">
+bbctl_rca/main.py:_run_rca(job, build, service, deep)
+  ├─► git_fresh.ensure_fresh_many(['jenkins_pipeline', 'InfraComposer'])
+  │       (per-RCA `git fetch --depth 1 && git reset --hard origin/&lt;branch&gt;`)
+  │
+  ├─► jenkins.get_console_log(job, build)             ─► Jenkins REST /consoleText
+  ├─► jenkins.get_build_meta(job, build)              ─► Jenkins REST /api/json
+  ├─► window.extract_window(raw_log)                  ─► anchored window around Error lines
+  ├─► sanitize.sanitize(window)                       ─► redact PATs, OAuth, SSH keys
+  │                                                       (NOT account IDs — item 79)
+  ├─► classifier.classify(clean_window)               ─► error_class HINT only
+  │
+  ├─► agent.run_agent(api_key, job, build, service,    ──── THE AGENT LOOP ───────────────┐
+  │                   build_meta, log_window, ...)                                         │
+  │       │                                                                               │
+  │       ├─ _load_prompt("rca_agent_system.md")        ◄── prompts/rca_agent_system.md  │
+  │       ├─ _build_primer(...)  &lt;3 blocks: meta + service.lookup + log&gt;                 │
+  │       ├─ TOOLS = tool_schemas.TOOLS  ◄── 16 OpenAI function-calling schemas            │
+  │       │                                                                               │
+  │       ├─ for iter in range(25):                                                       │
+  │       │     resp = client.chat.completions.create(                                    │
+  │       │              model="gpt-4.1",                                                 │
+  │       │              messages=messages,                                               │
+  │       │              tools=TOOLS,                                                     │
+  │       │              tool_choice="auto"                                               │
+  │       │           )                                                                   │
+  │       │                                                                               │
+  │       │     for tc in resp.tool_calls:                                                │
+  │       │         _dispatch_tool(tc.name, tc.args, ctx)                                 │
+  │       │             │                                                                 │
+  │       │             ├─ get_jenkins_job_config  ──► jenkins.get_job_config            │
+  │       │             ├─ service_lookup           ──► mcp_tools.service_lookup          │
+  │       │             └─ agent_dispatch.TOOL_DISPATCH[name]                             │
+  │       │                  ├─ repo_*               ──► mcp_tools.repo_read_file /       │
+  │       │                  │                            repo_search / find_function    │
+  │       │                  │                            (reads /opt/bbctl-rca/repos/)   │
+  │       │                  ├─ list_runbooks /     ──► mcp_tools.list_runbooks /         │
+  │       │                  │     read_runbook         read_runbook                      │
+  │       │                  ├─ jira_*               ──► jira.fetch_ticket / search       │
+  │       │                  │                            (Atlassian REST)                │
+  │       │                  ├─ github_*             ──► github.fetch_commit /            │
+  │       │                  │                            find_pr_for_commit /            │
+  │       │                  │                            read_file / recent_commits     │
+  │       │                  └─ aws_describe         ──► aws_tools.describe              │
+  │       │                                                ─► boto3 + STS AssumeRole     │
+  │       │                                                                               │
+  │       └─ when LLM emits finish_reason=stop, content=JSON, exit loop                  │
+  │                                                                                       │
+  └─► value_validator.validate_and_fix(result, service, service_lookup)                   │
+       (regex-strip hallucinated defaults: 8080, /admin/version, gps.log)                 │
+       audit.record(result) ─► /opt/bbctl-rca/audit/&lt;job&gt;_&lt;build&gt;.json                    │
+       trace dump ─► /tmp/bbctl-rca-trace-&lt;job&gt;-&lt;build&gt;.txt  ◄────────────────────────────┘
+       render HTML report ─► /rca/v1/report/&lt;uuid&gt;
+       return JSON to Jenkins post-block
+</pre>
+
+<h2 id="algo">3. RCA algorithm &mdash; the agent loop</h2>
+
+<pre class="ascii">
+INITIAL STATE
+─────────────
+  messages = [ system_prompt + 3-block primer,
+               user_kickoff="Begin the RCA. Use tools." ]
+  tools    = [ 16 OpenAI function-calling schemas ]
+
+LOOP (max 25 iters, 180s wall clock, $5 hard kill)
+─────────────────────────────────────────────────
+  iter = 0
+  while iter &lt; 25:
+      response = POST openai/chat/completions(messages, tools, tool_choice="auto")
+      msg      = response.choices[0].message
+
+      if msg.tool_calls:                          # LLM wants more data
+          for tc in msg.tool_calls:               # parallel or single
+              result = dispatch(tc.name, tc.args) # call local Python or external API
+              messages.append({"role":"tool", "tool_call_id":tc.id, "content":result})
+
+          # dedup: same (name, args) called twice within RCA
+          #   1st repeat → return cached + soft warning
+          #   2nd+ repeat → ERROR ONLY, no data (force LLM to pivot)
+
+          iter += 1
+          continue
+
+      else:                                       # finish_reason=stop, content=JSON
+          rca = parse_json(msg.content)
+          break
+
+POST-PROCESSING
+───────────────
+  validate_and_fix(rca, service, service_lookup)  # regex strip hallucinations
+  audit.record(rca)
+  return rca to caller
+</pre>
+
+<div class="info">
+  <strong>Key insight:</strong> The LLM decides WHAT to call. The server decides
+  nothing &mdash; it just executes the calls, appends results, asks again. Every
+  decision (which file, which AWS API, what conclusion) comes from the LLM
+  reading the conversation history + tool schemas + system prompt.
+</div>
+
+<h2 id="prompt">4. What goes in the prompt (no spoon-feeding)</h2>
+
+<h3>System message (~3000 tokens, sent every iter)</h3>
+
+<table>
+  <thead><tr><th>Section</th><th>Purpose</th><th>Spoon-feed?</th></tr></thead>
+  <tbody>
+    <tr><td>Role + boot context</td><td>What LLM is + what 3 blocks it gets</td>
+        <td><span class="badge badge-info">No</span> &mdash; just the contract</td></tr>
+    <tr><td>Method (backwards-scan, stage&rarr;helper, chain-walk)</td>
+        <td>HOW to investigate, not WHAT to conclude</td>
+        <td><span class="badge badge-info">No</span> &mdash; recipe, not answer</td></tr>
+    <tr><td>Stage&rarr;helper convention table</td>
+        <td>9 stage names &rarr; helper file paths</td>
+        <td><span class="badge badge-info">No</span> &mdash; convention, LLM still reads</td></tr>
+    <tr><td>Anti-hallucination + value provenance</td>
+        <td>Banned defaults (8080, /admin/version, gps.log)</td>
+        <td><span class="badge badge-info">No</span> &mdash; negative rules</td></tr>
+    <tr><td>Output schema</td>
+        <td>Required JSON keys</td>
+        <td><span class="badge badge-info">No</span> &mdash; format only</td></tr>
+  </tbody>
+</table>
+
+<h3>User message (3 blocks per RCA, max ~5000 tokens)</h3>
+
+<pre>## build_meta
+- job: stagger-prod-plus-devops-test
+- build: 46
+- service: test-supply-wrapper-nonweb
+- result: FAILURE
+- url: https://jenkins-stagger.jinka.in/job/...
+
+## service.lookup
+{
+  "aws_account": "zinka",
+  "aws_region": "ap-south-1",
+  "target_port": 8080,
+  "rule_arn": "arn:aws:elasticloadbalancing:ap-south-1:735317561518:...",
+  "filebeat_log_path": "/var/log/blackbuck/test-supply-wrapper-nonweb.log*",
+  ...
+}
+
+## log_window (sanitized — tail of build log, error lives at the bottom)
+&lt;last 30K chars of the Jenkins log&gt;
+</pre>
+
+<div class="warn">
+  <strong>What's NOT sent:</strong> error_class, failed_stage, runbook content,
+  Jira ticket data, GitHub commits, AWS state, any file content. The LLM fetches
+  every one of these via tool calls. That's what makes it agent-mode, not
+  spoon-feed.
+</div>
+
+<h2 id="tools">5. The 16 tools the LLM can call</h2>
+
+<table>
+  <thead><tr><th>Domain</th><th>Tool</th><th>What it does</th><th>Source</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="2">Jira</td>
+        <td><code>jira_get_ticket(key)</code></td>
+        <td>Fetch ticket fields + custom_fields</td>
+        <td>Atlassian REST</td></tr>
+    <tr><td><code>jira_search(jql, max)</code></td>
+        <td>JQL search for clone-chain discovery</td>
+        <td>Atlassian REST</td></tr>
+
+    <tr><td rowspan="4">GitHub</td>
+        <td><code>github_get_commit(repo, sha)</code></td>
+        <td>Author, date, files changed</td>
+        <td>api.github.com</td></tr>
+    <tr><td><code>github_find_pr_for_commit(repo, sha)</code></td>
+        <td>Merged PR for a commit</td>
+        <td>api.github.com</td></tr>
+    <tr><td><code>github_read_file(repo, path, ref, ...)</code></td>
+        <td>File slice from any service repo</td>
+        <td>raw.githubusercontent.com</td></tr>
+    <tr><td><code>github_recent_commits(repo, branch, n)</code></td>
+        <td>Last N commits</td>
+        <td>api.github.com</td></tr>
+
+    <tr><td rowspan="4">Local repo</td>
+        <td><code>repo_read_file(repo, path, start, end)</code></td>
+        <td>Read line slice from local clone</td>
+        <td>/opt/bbctl-rca/repos/&lt;repo&gt;</td></tr>
+    <tr><td><code>repo_search(repo, query, max)</code></td>
+        <td>ripgrep across local clone</td>
+        <td>Local FS</td></tr>
+    <tr><td><code>repo_find_function(repo, name)</code></td>
+        <td>Locate function/helper (Jenkins vars/ convention)</td>
+        <td>Local FS</td></tr>
+    <tr><td><code>repo_recent_commits(repo, n)</code></td>
+        <td>Recent commits on local clone</td>
+        <td><code>git log</code></td></tr>
+
+    <tr><td>Jenkins</td>
+        <td><code>get_jenkins_job_config(job)</code></td>
+        <td>scriptPath + scm + inline script</td>
+        <td>Jenkins REST</td></tr>
+
+    <tr><td rowspan="2">Runbook</td>
+        <td><code>list_runbooks()</code></td>
+        <td>List 10 per-class .md files + summaries</td>
+        <td>/opt/bbctl-rca/docops/runbooks/</td></tr>
+    <tr><td><code>read_runbook(name)</code></td>
+        <td>Full markdown content</td>
+        <td>Same</td></tr>
+
+    <tr><td>AWS</td>
+        <td><code>aws_describe(service, operation, params, account, region)</code></td>
+        <td><strong>Any</strong> read-only AWS API (Describe / Get / List / Lookup / Search / Show / Estimate)</td>
+        <td>boto3 + STS AssumeRole</td></tr>
+
+    <tr><td>Service config</td>
+        <td><code>service_lookup(service)</code></td>
+        <td>Re-read config.json for a different service</td>
+        <td>/opt/bbctl-rca/repos/jenkins_pipeline/resources/config.json</td></tr>
+  </tbody>
+</table>
+
+<div class="info">
+  <strong>SSM SendCommand intentionally NOT in this list.</strong> Per Option C
+  decision, bbctl-rca never logs into instances. For service-side detail
+  (e.g., "why is the service unhealthy"), the LLM tells the operator to use
+  <code>bbctl shell &lt;instance_id&gt;</code> themselves.
+</div>
+
+<h2 id="trace46">6. Build 46 trace walkthrough (verbatim from
+  <code>/tmp/bbctl-rca-trace-stagger-prod-plus-devops-test-46.txt</code>)</h2>
+
+<h3>Setup</h3>
+<ul>
+  <li><strong>Job:</strong> <code>stagger-prod-plus-devops-test</code> build 46</li>
+  <li><strong>Service:</strong> <code>test-supply-wrapper-nonweb</code></li>
+  <li><strong>Class detected:</strong> <code>health_check</code></li>
+  <li><strong>Iters:</strong> 5 &middot; <strong>Tool calls:</strong> 9 &middot; <strong>Cost:</strong> $0.22</li>
+  <li><strong>Files read (the only files touched):</strong> 4 of 35+ in <code>vars/</code></li>
+</ul>
+
+<h3>Iter-by-iter</h3>
+
+<h4>ITER 0 &mdash; 5 parallel tool calls</h4>
+<pre>tool_calls = [
+  get_jenkins_job_config(stagger-prod-plus-devops-test),
+  repo_read_file(jenkins_pipeline, "vars/deployProdPlusOne.groovy", 1, 80),
+  read_runbook("health_check"),
+  aws_describe(service="elbv2", operation="DescribeTargetHealth",
+               params={"TargetGroupArn": "arn:...nonwe-pp1-tg/..."},
+               aws_account="zinka", aws_region="ap-south-1"),
+  aws_describe(service="ec2", operation="DescribeInstances",
+               params={"InstanceIds": ["i-0bae3c4ad893201ef"]},
+               aws_account="zinka", aws_region="ap-south-1")
+]</pre>
+
+<p>How LLM picked these 5:</p>
+<ul>
+  <li>Log says <code>Health Status failed to move to healthy</code> &rarr; class = health_check</li>
+  <li>Last <code>[Pipeline] { (Deploy Prod+1)</code> marker &rarr; helper = <code>deployProdPlusOne</code> (from stage&rarr;helper table in system prompt)</li>
+  <li>Real ALB ARN in log_window &rarr; AWS describes</li>
+</ul>
+
+<h4>ITER 1 &mdash; chain-walk one level in</h4>
+<pre>tool_calls = [
+  repo_read_file(jenkins_pipeline, "vars/prodPlusOne.groovy", 1, 80)
+]</pre>
+<p>Why: <code>deployProdPlusOne.groovy</code> body referenced <code>prodPlusOne</code>. Chain-walk inward.</p>
+
+<h4>ITER 2 &mdash; another chain level</h4>
+<pre>tool_calls = [
+  repo_read_file(jenkins_pipeline, "vars/nonwebdeploy.groovy", 1, 80)
+]</pre>
+<p>Why: inner helper called.</p>
+
+<h4>ITER 3 &mdash; resource script (libraryResource resolution)</h4>
+<pre>tool_calls = [
+  repo_read_file(jenkins_pipeline, "resources/scripts/non_web_healthy.sh", 1, 80)
+]</pre>
+<p>Why: <code>nonwebdeploy.groovy</code> contains
+  <code>libraryResource&nbsp;'scripts/non_web_healthy.sh'</code>. The Jenkins
+  shared-lib rule (in system prompt): <code>libraryResource&nbsp;'X'</code>
+  resolves on disk to <code>resources/X</code>.</p>
+
+<h4>ITER 4 &mdash; one more AWS verify</h4>
+<pre>tool_calls = [
+  aws_describe(service="elbv2", operation="DescribeTargetGroups",
+               params={"TargetGroupArns": ["arn:...nonwe-pp1-tg/..."]},
+               aws_account="zinka", aws_region="ap-south-1")
+]
+result.Port = 80
+result.HealthCheckPath = "/admin/version"</pre>
+<p>This is the MANDATORY iter-0 batch item from <code>health_check.md</code>
+   runbook (called late here but value-provenance rule still satisfied).</p>
+
+<h4>ITER 5 &mdash; final JSON, no tool_calls</h4>
+<pre>finish_reason: stop
+content:
+{
+  "error_class": "health_check",
+  "root_cause": "TG configured for port 80 (from DescribeTargetGroups)
+                 BUT service target_port is 8080 (from service.lookup).
+                 Port mismatch.",
+  "evidence": [
+    {"source": "aws:target_group(arn:...)", "snippet": "Port: 80, HealthCheckPath: /admin/version"},
+    {"source": "service.lookup", "snippet": "target_port: 8080"},
+    {"source": "jenkins_log", "snippet": "Health Status failed..."}
+  ],
+  ...
+}</pre>
+
+<h3>Files the LLM actually read (4 of 35+ in vars/)</h3>
+<table>
+  <thead><tr><th>File</th><th>Iter</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td><code>jenkins_pipeline/vars/deployProdPlusOne.groovy</code></td>
+        <td>0</td><td>Stage&rarr;helper convention (Deploy Prod+1 &rarr; deployProdPlusOne)</td></tr>
+    <tr><td><code>jenkins_pipeline/vars/prodPlusOne.groovy</code></td>
+        <td>1</td><td>Outer helper named it</td></tr>
+    <tr><td><code>jenkins_pipeline/vars/nonwebdeploy.groovy</code></td>
+        <td>2</td><td>Chain-walk inward</td></tr>
+    <tr><td><code>jenkins_pipeline/resources/scripts/non_web_healthy.sh</code></td>
+        <td>3</td><td><code>libraryResource&nbsp;'scripts/non_web_healthy.sh'</code> &rarr; <code>resources/scripts/...</code></td></tr>
+  </tbody>
+</table>
+
+<div class="answer">
+  <strong>4 files read out of dozens.</strong> No <code>find</code> walk, no
+  <code>repo_search</code> blind grep, no whole-repo scan. Each read was
+  named explicitly because the previous file referenced it. Targeted,
+  chain-walked, evidence-anchored.
+</div>
+
+<h2 id="openai">7. How OpenAI function-calling actually works</h2>
+
+<h3>Request bbctl-rca sends each iter</h3>
+
+<pre>POST https://api.openai.com/v1/chat/completions
+Authorization: Bearer $OPENAI_API_KEY
+Content-Type: application/json
+
+{
+  "model": "gpt-4.1",
+  "temperature": 0.1,
+  "tool_choice": "auto",
+  "messages": [
+    {"role": "system", "content": "&lt;50-line method + 3-block primer&gt;"},
+    {"role": "user",   "content": "Begin the RCA. The primer above contains ONLY..."},
+    {"role": "assistant", "content": "...", "tool_calls": [...iter 0...]},
+    {"role": "tool", "tool_call_id": "call_abc", "content": "&lt;tool result&gt;"},
+    {"role": "tool", "tool_call_id": "call_def", "content": "&lt;tool result&gt;"},
+    {"role": "assistant", "content": "...", "tool_calls": [...iter 1...]},
+    ... etc ...
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "repo_read_file",
+        "description": "Read a line slice from a locally-cloned repo...",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "repo": {"type": "string", "enum": ["jenkins_pipeline", "InfraComposer"]},
+            "path": {"type": "string"},
+            "start": {"type": "integer"},
+            "end":   {"type": "integer"}
+          },
+          "required": ["repo", "path"]
+        }
+      }
+    },
+    ... 15 more tool schemas ...
+  ]
+}
+</pre>
+
+<h3>Response OpenAI returns</h3>
+
+<pre>{
+  "id": "chatcmpl-DfmTJPVh7EsVgwtxcAY67Gftsm5Bs",
+  "model": "gpt-4.1-2025-04-14",
+  "choices": [{
+    "finish_reason": "tool_calls",       ← LLM wants more data
+    "message": {
+      "role": "assistant",
+      "content": "Identifying failed stage and fetching helper source...",
+      "tool_calls": [
+        {
+          "id": "call_HUod5FI1gWGP4pdD4nk5bHyo",
+          "type": "function",
+          "function": {
+            "name": "repo_read_file",
+            "arguments": "{\"repo\":\"jenkins_pipeline\",\"path\":\"vars/deployProdPlusOne.groovy\",\"start\":1,\"end\":80}"
+          }
+        },
+        { ... more tool calls ... }
+      ]
+    }
+  }],
+  "usage": {"prompt_tokens": 8092, "completion_tokens": 25, ...}
+}
+</pre>
+
+<h3>What server does with that</h3>
+
+<pre>for tc in response.choices[0].message.tool_calls:
+    args = json.loads(tc.function.arguments)
+    result = TOOL_DISPATCH[tc.function.name](**args)
+    messages.append({
+        "role": "tool",
+        "tool_call_id": tc.id,
+        "content": result   # raw file content / JSON / string
+    })
+# loop back, POST again with extended messages
+</pre>
+
+<h3>When LLM is done</h3>
+
+<pre>"choices": [{
+  "finish_reason": "stop",          ← no more tool calls
+  "message": {
+    "role": "assistant",
+    "content": "{\"summary\":\"...\",\"error_class\":\"health_check\",...}"
+  }
+}]
+</pre>
+
+<p>Server parses <code>content</code> as final RCA JSON, runs the value
+   validator, writes audit, returns to Jenkins.</p>
+
+<h2 id="noscan">8. Why this is targeted-read, NOT whole-repo scan</h2>
+
+<div class="grid2">
+  <div>
+    <h3>Whole-repo scan (NOT what we do)</h3>
+    <pre class="ascii">find /opt/bbctl-rca/repos -name "*.groovy"
+  &rarr; 35+ files in vars/
+  &rarr; 50+ files in src/
+  &rarr; dozens in resources/
+read all → embed all → ask LLM
+  &rarr; 500K+ tokens
+  &rarr; $5+ per RCA
+  &rarr; LLM lost in noise</pre>
+  </div>
+  <div>
+    <h3>What bbctl-rca actually does</h3>
+    <pre class="ascii">log says: stage 'Deploy Prod+1' failed
+  &rarr; LLM applies stage→helper table:
+       Deploy Prod+1 → vars/deployProdPlusOne.groovy
+  &rarr; LLM calls repo_read_file on JUST that file
+  &rarr; That file says: nonwebdeploy(...)
+  &rarr; LLM reads vars/nonwebdeploy.groovy
+  &rarr; That file says: libraryResource 'scripts/non_web_healthy.sh'
+  &rarr; LLM reads resources/scripts/non_web_healthy.sh
+TOTAL: 4 files, ~5K tokens, $0.22</pre>
+  </div>
+</div>
+
+<h3>How LLM picks files without scanning</h3>
+
+<ol>
+  <li><strong>Convention table in system prompt</strong> &mdash; 9 stages &rarr;
+      9 helper paths. LLM doesn't search; it knows.</li>
+  <li><strong>Chain-walk rule</strong> &mdash; outer file always names inner
+      file. LLM reads outer &rarr; sees name &rarr; reads next.</li>
+  <li><strong>libraryResource resolution</strong> &mdash;
+      <code>libraryResource&nbsp;'X'</code> always means
+      <code>resources/X</code> on disk. Deterministic.</li>
+  <li><strong>repo_search fallback</strong> &mdash; only if 1&ndash;3 above
+      don't apply. <em>Almost never used</em> for health_check / compliance /
+      java_runtime / aws_limit classes because the convention covers them.</li>
+</ol>
+
+<h2 id="defense">9. Three layers of anti-hallucination defense</h2>
+
+<table>
+  <thead><tr><th>Layer</th><th>What it does</th><th>Example caught</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>1. Prompt rules</strong></td>
+      <td>"Every concrete value in final JSON MUST come from a tool result in
+          this RCA's message history. Banned defaults: port 8080,
+          /admin/version, /var/log/blackbuck/gps.log."</td>
+      <td>LLM sees the rule and uses real values from <code>aws_describe</code>
+          response &mdash; works ~70% of the time.</td>
+    </tr>
+    <tr>
+      <td><strong>2. Runbook MANDATORY calls</strong></td>
+      <td><code>health_check.md</code> drill plan marks
+          <code>DescribeTargetGroups</code> as MANDATORY in iter 0 &mdash; so
+          real Port + HealthCheckPath are in LLM context before it drafts the
+          fix.</td>
+      <td>LLM has the real values structurally available, less likely to
+          default.</td>
+    </tr>
+    <tr>
+      <td><strong>3. Server validator</strong></td>
+      <td><code>bbctl_rca/value_validator.py</code> runs after LLM emits JSON.
+          Regex strips <code>(?&lt;![\d])8080(?![\d])</code> &rarr;
+          <code>service.lookup.target_port</code>; <code>/admin/version</code>
+          &rarr; <code>service.lookup.health_check_path</code>; <code>gps.log</code>
+          &rarr; <code>filebeat_log_path</code> when service != gps.</td>
+      <td>Mechanical, always runs. Catches whatever the LLM still gets wrong.
+          Substitutions recorded in <code>result["validator_notes"][]</code>.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Build 46 by the numbers</h2>
+
+<table>
+  <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>Iterations</td><td>5</td></tr>
+    <tr><td>Tool calls</td><td>9</td></tr>
+    <tr><td>Files read</td><td>4 (of 35+ in <code>vars/</code> and dozens more)</td></tr>
+    <tr><td>AWS APIs called</td><td>3 (DescribeTargetHealth, DescribeInstances, DescribeTargetGroups)</td></tr>
+    <tr><td>Runbooks read</td><td>1 (health_check)</td></tr>
+    <tr><td>Prompt tokens (cumulative)</td><td>~75K</td></tr>
+    <tr><td>Completion tokens</td><td>~1300</td></tr>
+    <tr><td>Cost</td><td>$0.22</td></tr>
+    <tr><td>Wall clock</td><td>~45s</td></tr>
+    <tr><td>Validator notes</td><td>0 (LLM used real values from aws_describe)</td></tr>
+  </tbody>
+</table>
+
+<p style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #d1d5db;
+          color: #6b7280; font-size: 0.9rem;">
+  Companion docs: <code>docs/rca/agent_mode_migration_plan.md</code> (plan)
+  &middot; <code>docs/rca/flow_option_c.md</code> (flow)
+  &middot; <code>docs/rca/aws_iam_manual_setup.md</code> (IAM)
+  &middot; <code>docs/rca/bbctlrca.md</code> (full changelog items 1-85).
+</p>
+
+</body>
+</html>

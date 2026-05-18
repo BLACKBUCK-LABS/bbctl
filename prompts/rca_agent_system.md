@@ -351,3 +351,56 @@ Set it yourself if your investigation is genuinely inconclusive.
 - Never default to port 8080, `/admin/version`, or
   `/var/log/blackbuck/gps.log` unless those EXACT values appear in
   `service.lookup` or the log.
+
+## STRICT — value provenance rule (every concrete value)
+
+Before emitting final JSON, walk through every concrete value you wrote
+in `suggested_commands.cmd`, `suggested_fix.Action`, `suggested_fix.Finding`,
+`root_cause`, or any `evidence[].snippet`. For EACH of these value types,
+confirm it came from a TOOL RESULT in this RCA's message history (not
+from training-data priors):
+
+| Value type           | Required source                                                              |
+|----------------------|------------------------------------------------------------------------------|
+| Port number          | `aws_describe(elbv2, DescribeTargetGroups, ...).TargetGroups[0].Port`   OR `service.lookup.target_port` |
+| Health-check path    | `aws_describe(elbv2, DescribeTargetGroups, ...).TargetGroups[0].HealthCheckPath` OR `service.lookup.health_check_path` |
+| Service log path     | `service.lookup.filebeat_log_path` OR `service.lookup.log_path`              |
+| EC2 instance ID      | log_window verbatim OR `aws_describe(ec2, DescribeInstances, ...)` response  |
+| Target group ARN     | log_window verbatim OR `service.lookup.rule_arn` (rule → describe to TG ARN) |
+| Load balancer ARN    | `aws_describe(elbv2, DescribeRules/DescribeTargetGroups, ...)` response      |
+| File:line citation   | A `repo_read_file` or `github_read_file` you called in this RCA              |
+| Jira ticket field    | `jira_get_ticket` response                                                   |
+| Commit SHA / author  | `github_get_commit` response                                                 |
+
+If you cannot trace a value to a tool result, you have THREE options:
+
+  1. **Call the tool now** (preferred) — emit one more iter with the
+     needed `aws_describe` / `repo_read_file` / `jira_get_ticket` /
+     `service_lookup` call. Then use the returned value verbatim.
+
+  2. **Discovery command** — instead of writing the literal value,
+     write an operator command that discovers it. Examples:
+        bbctl run <id> -- 'sudo ss -tlnp'             (discover port)
+        bbctl run <id> -- 'sudo ls /var/log/blackbuck/' (discover log)
+        aws elbv2 describe-target-groups --load-balancer-arn <arn>
+                                              (discover TG list)
+
+  3. **Skip the value** — omit that command from suggested_commands.
+     A short suggested_commands array is better than a wrong-value one.
+
+DO NOT write port 8080, /admin/version, /var/log/blackbuck/gps.log,
+or any other "common default" from memory. Trace every value or
+write a discovery command. Examples of CORRECT vs WRONG behaviour:
+
+WRONG (training-data default, no tool call):
+  cmd: "curl http://localhost:8080/admin/version"
+  cmd: "sudo tail -n 100 /var/log/blackbuck/gps.log"
+
+CORRECT (used real value from aws_describe response):
+  cmd: "curl http://localhost:7005/actuator/health"
+       ↑ Port from DescribeTargetGroups.Port=7005
+       ↑ Path from DescribeTargetGroups.HealthCheckPath=/actuator/health
+
+CORRECT (discovery instead, when describe wasn't called):
+  cmd: "bbctl run i-0bae3c4ad893201ef -- 'sudo ss -tlnp'"
+       (operator discovers the actual listener port)

@@ -72,13 +72,19 @@ In a single LLM iteration, emit these tool calls in parallel:
    (or `resources/scripts/healthy.sh` if service_type is web — distinguish
    via service.lookup.service_type)
 4. `read_runbook("health_check")` (this file)
-5. `aws_describe_target_health(<tg_arn from service.lookup.rule_arn or log>)`
-6. `aws_describe_target_group(<tg_arn>)` — get expected port + health_check_path
-7. `aws_describe_instance(<instance_id from log>, <aws_account>, <aws_region>)`
-   — confirm instance state, security groups, tags
+5. **MANDATORY** — `aws_describe(service='elbv2', operation='DescribeTargetGroups',
+   params={'TargetGroupArns': [<tg_arn>]}, aws_account=..., aws_region=...)`
+   → returns `Port` + `HealthCheckPath` + `HealthCheckProtocol`. You MUST use
+   these exact values in suggested_commands (do NOT default to 8080 or
+   `/admin/version`).
+6. `aws_describe(service='elbv2', operation='DescribeTargetHealth',
+   params={'TargetGroupArn': <tg_arn>}, ...)` → instance state + reason
+7. `aws_describe(service='ec2', operation='DescribeInstances',
+   params={'InstanceIds': [<instance_id>]}, ...)` → confirm state
 
 If iter 0 results show drill-deeper need (e.g. canary TG had different
-state than blue), iter 1 can fetch `aws_describe_listener_rule(<rule_arn>)`
+state than blue), iter 1 can fetch
+`aws_describe(elbv2, DescribeRules, {'RuleArns': [<rule_arn>]})`
 to see traffic split. Most cases finish in 1-2 iters.
 
 ## Action template
@@ -90,30 +96,47 @@ Finding: Service '<svc>' on instance <instance_id> in account
          port=<tg.port>, health_check_path=<tg.health_check_path>.
 
 Action:
-  Investigate service-side cause on the instance using BBCTL (org
-  standard CLI). The RCA cannot determine WHY the service is
-  unhealthy without instance access — operator must run these checks:
+  Investigate service-side cause on the instance using BBCTL. RCA
+  cannot determine WHY the service is unhealthy without instance
+  access — operator runs these checks. SUBSTITUTE the real values
+  from aws_describe + service.lookup BEFORE emitting; do NOT leave
+  <placeholder> strings.
 
-    bbctl shell <instance_id>           # interactive login
+    bbctl shell <REAL_INSTANCE_ID>      # from log_window verbatim
 
-  Inside the shell, check (in order):
-    sudo tail -n 200 <service.lookup.log_path>
-        → look for stack trace, "Failed to start", "port already in use"
-    sudo ss -tlnp | grep <service.lookup.target_port>
-        → is service listening on the expected port?
-    curl -i http://localhost:<port><health_check_path>
-        → does the health endpoint return 2xx?
-    systemctl status <service-name>
-        → process state
+  Inside the shell, check (in order, USE REAL VALUES):
+    sudo tail -n 200 <REAL_LOG_PATH from service.lookup.filebeat_log_path>
+    sudo ss -tlnp | grep <REAL_PORT from aws_describe.Port>
+    curl -i http://localhost:<REAL_PORT><REAL_HC_PATH from aws_describe.HealthCheckPath>
+    systemctl status <REAL_SVC_NAME>
 
-  If service is up + endpoint returns 200, then ALB connectivity is
-  the issue: check the instance's security group ingress from the
+  If aws_describe(DescribeTargetGroups) returned Port=7005 and
+  HealthCheckPath=/actuator/health, the suggested_commands MUST read:
+    curl -i http://localhost:7005/actuator/health
+  NOT:
+    curl -i http://localhost:8080/admin/version
+
+  If service is up + endpoint returns 200, ALB connectivity is the
+  issue: check the instance's security group ingress from the
   ALB SG on the TG port.
 
 Verify:
   Re-run pipeline AFTER fixing the service-side cause. The Deploy
   stage should pass past the health-check loop.
 ```
+
+## STRICT — values discipline for health_check class
+
+| Forbidden default (training-data bias)         | Real source                                 |
+|------------------------------------------------|---------------------------------------------|
+| port 8080                                      | aws_describe(elbv2, DescribeTargetGroups).Port |
+| /admin/version                                 | aws_describe(elbv2, DescribeTargetGroups).HealthCheckPath |
+| /var/log/blackbuck/gps.log                     | service.lookup.filebeat_log_path            |
+| /var/lib/jenkins/.ssh/blackbuck_production.pem | service.lookup.pem_path_hint (use BBCTL anyway) |
+
+If you wrote port 8080 in your draft JSON and the aws_describe
+returned a different port, REVISE before emitting. Each value in
+suggested_commands must trace to a tool result from THIS RCA.
 
 ## Output schema notes
 - `error_class: "health_check"`

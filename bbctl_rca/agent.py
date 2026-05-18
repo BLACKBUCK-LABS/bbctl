@@ -829,9 +829,9 @@ def _build_primer(
             json.dumps(mcp_tools.service_lookup(service), indent=2),
             "```",
             "",
-            "## log_window (sanitized)",
+            "## log_window (sanitized — tail of build log, error lives at the bottom)",
             "```",
-            log_window[:30000],
+            log_window[-30000:],  # keep END (where Error: line lives), not start
             "```",
         ]
         return "\n".join(parts)
@@ -855,7 +855,7 @@ def _build_primer(
         "",
         "## Log window (sanitized)",
         "```",
-        log_window[:30000],  # primer cap; full log otherwise re-replays heavy
+        log_window[-30000:],  # primer cap — keep END (where Error: line lives)
         "```",
     ]
     return "\n".join(parts)

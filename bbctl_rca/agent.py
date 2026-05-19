@@ -18,6 +18,7 @@ from pathlib import Path
 from . import mcp_tools
 from . import jenkins as jenkins_api
 from . import agent_dispatch
+from . import outcome_log
 from . import tool_schemas
 
 
@@ -372,6 +373,9 @@ async def run_agent(
     # Per-iter accounting for the SUMMARY block prepended at end of trace.
     # Each entry: dict(iter, in, out, finish, reasoning, tools_chosen[]).
     _iter_log: list[dict] = []
+    # Deterministic failure-signal tally fed to outcome_log at end of run.
+    # See outcome_log.py header for the canonical signal vocabulary.
+    _failure_signals: list[str] = []
     # Opt-in raw OpenAI response dump. Structured (content + tool_calls) is
     # already shown — the raw model_dump JSON is duplicate noise unless you
     # are debugging openai-client behavior. Set BBCTL_RCA_RAW_DUMP=1 to keep.
@@ -419,6 +423,7 @@ async def run_agent(
                    f"prompt_tokens={response.usage.prompt_tokens} "
                    f"completion_tokens={response.usage.completion_tokens}\n"
                    f"content={(final_text or '')[:1500]}")
+            _failure_signals.append("force_final_wall_clock")
             break
         if cost_so_far >= COST_CAP_USD:
             _log(f"cost cap hit at ${cost_so_far:.4f} — forcing final answer")
@@ -440,6 +445,7 @@ async def run_agent(
                    f"prompt_tokens={response.usage.prompt_tokens} "
                    f"completion_tokens={response.usage.completion_tokens}\n"
                    f"content={(final_text or '')[:1500]}")
+            _failure_signals.append("force_final_cost_cap")
             break
 
         # On the final iteration, force JSON-only output (no more tools)
@@ -455,6 +461,7 @@ async def run_agent(
                 "role": "user",
                 "content": _FORCE_FINAL_PROMPT,
             })
+            _failure_signals.append("force_final_iter_cap")
         else:
             kwargs["tools"] = TOOLS
             kwargs["tool_choice"] = "auto"
@@ -516,6 +523,7 @@ async def run_agent(
                 and not _parse_final_json(final_text)
             )
             if not force_final and _looks_like_text_tool_calls:
+                _failure_signals.append("text_tool_calls_rescue")
                 _log("LLM wrote tool_calls as text in content; re-prompting "
                      "to use the function-calling API")
                 messages.append({
@@ -571,6 +579,7 @@ async def run_agent(
                 # force-final prompt. Adds ~$0.05 in worst case but
                 # rescues the otherwise-wasted 6 tool calls.
                 if not force_final and _parse_final_json(final_text) is None:
+                    _failure_signals.append("voluntary_bail_rescue")
                     _log("LLM bailed early with non-JSON content; "
                          "re-prompting with response_format=json_object")
                     messages.append({"role": "user", "content": _FORCE_FINAL_PROMPT})
@@ -623,6 +632,7 @@ async def run_agent(
                 tool_call_cache[fingerprint] = (prev_iter, prev_result, hit_count)
                 _log(f"  → DUP #{hit_count}: same call ran in iter {prev_iter}")
                 if hit_count == 1:
+                    _failure_signals.append("dup_call_warning")
                     result = (
                         f"[DUP_CALL #1: this exact call was already executed "
                         f"in iter {prev_iter}. Result was:]\n{prev_result}\n"
@@ -631,6 +641,7 @@ async def run_agent(
                         f"the budget.]"
                     )
                 else:
+                    _failure_signals.append("dup_call_rejected")
                     result = (
                         f"ERROR: repeated tool call rejected. You have called "
                         f"{tc.function.name}({json.dumps(args)}) {hit_count + 1} "
@@ -672,6 +683,11 @@ async def run_agent(
                 path = args.get("path")
                 if repo and path and not result.startswith(("error:", "[error", "ERROR:")):
                     read_files.add(f"{repo}/{path}")
+                else:
+                    _failure_signals.append("file_not_found_in_chain")
+            elif tc.function.name == "github_read_file":
+                if result.startswith(("error:", "[error", "ERROR:")):
+                    _failure_signals.append("file_not_found_in_chain")
 
             _result_str = result if isinstance(result, str) else str(result)
             _DUMP_CAP = 8000
@@ -701,6 +717,7 @@ async def run_agent(
     # the actual model output is visible in journalctl for debugging.
     rca = _parse_final_json(final_text)
     if rca is None:
+        _failure_signals.append("final_json_parse_failed")
         _log("agent did not emit valid JSON; falling back to error stub")
         _log(f"raw final_text (first 800 chars): {(final_text or '')[:800]!r}")
         rca = {
@@ -720,7 +737,12 @@ async def run_agent(
     # repo_read_file ever opened that file, the LLM hallucinated the cite.
     # Drop those entries so the operator doesn't follow them. Keep the
     # non-repo sources (jenkins_log, jira.tickets, build_meta) untouched.
+    _evidence_before = len(rca.get("evidence", []) or [])
     rca["evidence"] = _filter_fake_repo_evidence(rca.get("evidence", []), read_files)
+    if len(rca["evidence"]) < _evidence_before:
+        _failure_signals.append("evidence_validator_dropped")
+    if len(rca.get("evidence", []) or []) < 3:
+        _failure_signals.append("low_evidence_count")
 
     rca["tokens_used"] = {"input": total_in, "output": total_out}
     rca["agent_tool_calls"] = tool_call_count
@@ -741,6 +763,36 @@ async def run_agent(
             _trace_paths, _iter_log, sorted(read_files), tool_call_count,
             total_in, total_out, _final_cost, rca,
         )
+
+    # Per-RCA outcome row for measurement-before-ship analysis. Derive
+    # aws_apis / runbooks from the iter log (already structured). Failure
+    # signals are deterministic events appended at occurrence — see the
+    # vocabulary in outcome_log.py header. value_validator_substituted is
+    # NOT yet recorded here: that validator runs in main.py AFTER
+    # run_agent returns, so it appends its own signal via the rca dict.
+    _aws_apis: list[str] = []
+    _runbooks: list[str] = []
+    for _entry in _iter_log:
+        for _name, _args_json in _entry["tools_chosen"]:
+            try:
+                _args = json.loads(_args_json) if isinstance(_args_json, str) else _args_json
+            except Exception:
+                _args = {}
+            if _name == "aws_describe":
+                _aws_apis.append(f"{_args.get('service','?')}.{_args.get('operation','?')}")
+            elif _name == "read_runbook":
+                _runbooks.append(_args.get("name", "?"))
+    # Surface signals on the rca dict so main.py can append validator
+    # signals + re-log if it wants. Idempotent if main.py re-runs log.
+    rca["failure_signals"] = list(dict.fromkeys(_failure_signals))
+    outcome_log.log(
+        job=job, build=int(build), service=service, model=model, rca=rca,
+        iters=len(_iter_log), tool_calls=tool_call_count,
+        tokens_in=total_in, tokens_out=total_out, cost_usd=_final_cost,
+        files_read=sorted(read_files), aws_apis=_aws_apis, runbooks=_runbooks,
+        failure_signals=rca["failure_signals"],
+        trace_path=(_per_build_path if _trace_enabled else None),
+    )
 
     return rca
 

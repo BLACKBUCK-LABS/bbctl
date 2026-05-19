@@ -41,7 +41,7 @@ TOOLS: list[dict] = [
                 "properties": {
                     "key": {
                         "type": "string",
-                        "description": "Jira ticket key, e.g. 'MB-7545' or 'FMSCAT-5887'.",
+                        "description": "Jira ticket key as it appears in the log or commit message.",
                     },
                 },
                 "required": ["key"],
@@ -54,16 +54,15 @@ TOOLS: list[dict] = [
             "name": "jira_search",
             "description": (
                 "Run a JQL search and return matching ticket summaries. Use "
-                "for clone-chain discovery (e.g. 'issuekey in (X, Y, Z)') or "
-                "to find related tickets by component/status. Returns up to "
-                "`max` results."
+                "for clone-chain discovery or to find related tickets by "
+                "component/status. Returns up to `max` results."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "jql": {
                         "type": "string",
-                        "description": "JQL query string, e.g. 'project = FMSCAT AND status = \"In Progress\"'.",
+                        "description": "JQL query string. Pass a complete JQL expression.",
                     },
                     "max": {
                         "type": "integer",
@@ -91,7 +90,7 @@ TOOLS: list[dict] = [
                 "properties": {
                     "repo": {
                         "type": "string",
-                        "description": "Repo name within BLACKBUCK-LABS org, e.g. 'alchemist'.",
+                        "description": "Repo name within BLACKBUCK-LABS org. Derive from service.lookup.git_repo or service.lookup.repo, or from the log line referencing the failing file.",
                     },
                     "sha": {
                         "type": "string",
@@ -134,10 +133,10 @@ TOOLS: list[dict] = [
             "name": "github_read_file",
             "description": (
                 "Read a slice of a file from a GitHub repo at a specific "
-                "ref (branch / tag / SHA). Use for service-repo files that "
-                "are NOT cloned locally (alchemist, demand, fms-*, etc.). "
-                "For jenkins_pipeline / InfraComposer use repo_read_file "
-                "instead (local + fresher)."
+                "ref (branch / tag / SHA). Use for service-repo files "
+                "that are NOT cloned locally. For jenkins_pipeline / "
+                "InfraComposer use repo_read_file instead (local + "
+                "fresher)."
             ),
             "parameters": {
                 "type": "object",
@@ -220,7 +219,7 @@ TOOLS: list[dict] = [
                     },
                     "path": {
                         "type": "string",
-                        "description": "Path inside the repo, e.g. 'vars/JiraDetails.groovy'.",
+                        "description": "Path inside the repo. Derive from a job_flow doc, a runbook, a log line, or a prior repo_read_file result that named this file. Do NOT guess a path that has not been mentioned in your inputs.",
                     },
                     "start": {"type": "integer", "default": 1},
                     "end": {"type": "integer", "default": 100},
@@ -280,7 +279,7 @@ TOOLS: list[dict] = [
                     },
                     "name": {
                         "type": "string",
-                        "description": "Function or pipeline-step name, e.g. 'JiraDetails', 'nonwebdeploy'.",
+                        "description": "Function or pipeline-step name as it appears in the calling code or in a job_flow doc you read.",
                     },
                 },
                 "required": ["repo", "name"],
@@ -327,7 +326,7 @@ TOOLS: list[dict] = [
                 "properties": {
                     "job": {
                         "type": "string",
-                        "description": "Jenkins job name, e.g. 'create-quick-infra-devops-test'.",
+                        "description": "Jenkins job name as it appears in build_meta.job.",
                     },
                 },
                 "required": ["job"],
@@ -384,9 +383,11 @@ TOOLS: list[dict] = [
         "function": {
             "name": "read_runbook",
             "description": (
-                "Read a runbook's full markdown content. Use after you've "
-                "picked the matching error class to get its drill plan, "
-                "common failure modes, and fix templates."
+                "Read a runbook's full markdown content. Use after picking "
+                "the matching error class to get its drill plan, common "
+                "failure modes, and fix templates. Runbooks are indexed "
+                "by error class — call list_runbooks() first if unsure "
+                "which name to pass."
             ),
             "parameters": {
                 "type": "object",
@@ -394,10 +395,56 @@ TOOLS: list[dict] = [
                     "name": {
                         "type": "string",
                         "description": (
-                            "Runbook name without extension, e.g. 'compliance', "
-                            "'health_check', 'java_runtime', 'canary_fail', "
-                            "'canary_script_error', 'terraform', 'scm', "
-                            "'aws_limit', 'parse_error', 'unknown'."
+                            "Runbook stem name without .md extension. Use "
+                            "list_runbooks() to see available names."
+                        ),
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+
+    # ─── JOB FLOWS (orient on pipeline shape per job family) ───────────
+    {
+        "type": "function",
+        "function": {
+            "name": "list_job_flows",
+            "description": (
+                "List available job-flow documentation files. Each entry "
+                "is one Jenkins pipeline family describing its main "
+                "pipeline file, top-level stages, which helper each "
+                "stage delegates to, and where chains nest. Match the "
+                "Jenkins job name (and inline_script signature when "
+                "available) to the right flow, then read_job_flow() it "
+                "before drilling into individual .groovy files. Job "
+                "flows are factual descriptions — they do NOT contain "
+                "fix templates (use runbooks for that)."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_job_flow",
+            "description": (
+                "Read a job-flow doc to learn the pipeline shape for a "
+                "Jenkins job family. Tells you which main pipeline file "
+                "to read, which top-level stages exist, and which helper "
+                "file each stage calls. Use this BEFORE repo_read_file "
+                "on a helper — the doc tells you which helper is real "
+                "for THIS job (helper names that look similar between "
+                "jobs are not interchangeable)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Job-flow stem name without .md extension. "
+                            "Use list_job_flows() to see available names."
                         ),
                     },
                 },
@@ -419,69 +466,38 @@ TOOLS: list[dict] = [
         "function": {
             "name": "aws_describe",
             "description": (
-                "Call any AWS read-only API (Describe*/Get*/List*/Lookup*"
-                "/Search*/Show*/Estimate*). Server rejects write actions. "
-                "Use this for: target health, target groups, instances, "
-                "listener rules, security groups, CloudWatch logs, RDS, "
-                "Lambda, Auto Scaling, IAM gets, etc. Cross-account STS "
-                "AssumeRole into BBCTLRcaReadOnly is handled by the "
-                "server when aws_account != host. Examples:\n"
-                "  aws_describe(service='elbv2', "
-                "operation='DescribeTargetHealth', "
-                "params={'TargetGroupArn': 'arn:...'}, "
-                "aws_account='zinka', aws_region='ap-south-1')\n"
-                "  aws_describe(service='ec2', "
-                "operation='DescribeInstances', "
-                "params={'InstanceIds': ['i-0e8411d8d8817fe32']}, "
-                "aws_account='zinka', aws_region='ap-south-1')\n"
-                "  aws_describe(service='elbv2', "
-                "operation='DescribeTargetGroups', "
-                "params={'LoadBalancerArn': 'arn:...'}, ...)  "
-                "← good for counting TGs on an ALB"
+                "Call any AWS read-only API. The server validates that "
+                "the operation name starts with one of Describe / Get / "
+                "List / Lookup / Search / Show / Estimate. Write actions "
+                "are rejected. Cross-account STS AssumeRole into "
+                "BBCTLRcaReadOnly is handled by the server when "
+                "aws_account is not the host account. Pass values you "
+                "have seen in the log, in service.lookup, or in a "
+                "prior tool result — do not invent ARNs, instance IDs, "
+                "or rule IDs."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "service": {
                         "type": "string",
-                        "description": (
-                            "boto3 service code, e.g. 'elbv2', 'ec2', "
-                            "'rds', 'lambda', 'logs', 'cloudwatch', "
-                            "'autoscaling', 'iam', 'sts', 'route53', "
-                            "'s3', 'elasticloadbalancing'."
-                        ),
+                        "description": "boto3 service code (lowercase).",
                     },
                     "operation": {
                         "type": "string",
-                        "description": (
-                            "PascalCase boto3 operation name, MUST start "
-                            "with Describe / Get / List / Lookup / Search "
-                            "/ Show / Estimate. Examples: "
-                            "'DescribeTargetHealth', 'DescribeInstances', "
-                            "'DescribeDBInstances', 'ListFunctions', "
-                            "'GetMetricStatistics'."
-                        ),
+                        "description": "PascalCase boto3 operation name. MUST start with Describe / Get / List / Lookup / Search / Show / Estimate.",
                     },
                     "params": {
                         "type": "object",
-                        "description": (
-                            "Operation parameters as a JSON object, e.g. "
-                            "{'TargetGroupArn': 'arn:...'} or "
-                            "{'InstanceIds': ['i-...']} or {} when no "
-                            "params are required."
-                        ),
+                        "description": "Operation parameters as a JSON object. Pass {} when the operation requires none.",
                     },
                     "aws_account": {
                         "type": "string",
-                        "description": (
-                            "Account name from service.lookup "
-                            "(zinka|bbfinserv|divum|tzf) or the 12-digit "
-                            "account ID. Determines STS AssumeRole target."
-                        ),
+                        "description": "Account name from service.lookup.aws_account or its 12-digit account ID. Determines STS AssumeRole target.",
                     },
                     "aws_region": {
                         "type": "string",
-                        "description": "AWS region, e.g. 'ap-south-1'.",
+                        "description": "AWS region code from service.lookup.aws_region or from the log.",
                     },
                 },
                 "required": ["service", "operation", "params",
@@ -520,11 +536,7 @@ TOOLS: list[dict] = [
                     },
                     "prompt": {
                         "type": "string",
-                        "description": (
-                            "What to check, e.g. 'does this snippet at "
-                            "vars/JiraDetails.groovy:9 actually require 3 "
-                            "args as I claim?'"
-                        ),
+                        "description": "The specific verification question for the reviewer.",
                     },
                 },
                 "required": ["diff_or_path", "prompt"],

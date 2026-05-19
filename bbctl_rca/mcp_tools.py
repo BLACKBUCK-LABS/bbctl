@@ -229,6 +229,76 @@ def read_runbook(name: str) -> str:
         return f"runbook read error: {e}"
 
 
+# ─── Job-flow tools (per-pipeline-family orientation docs) ────────────
+#
+# Job flows live under DOCS_DIR/job_flows/. Each is a markdown file
+# describing the SHAPE of one Jenkins pipeline family — its main
+# pipeline file path, top-level stages, which helper file each stage
+# delegates to, and where the chain nests (e.g. a stage that wraps
+# another helper which has its own sub-stages). LLM reads the matching
+# job_flow EARLY so it knows the structure before reading individual
+# .groovy files. No example values — only verified facts derived from
+# reading the actual pipeline source.
+JOB_FLOWS_DIR = DOCS_DIR / "job_flows"
+JOB_FLOWS_DIR_FALLBACK = Path(__file__).resolve().parent.parent / "docops" / "job_flows"
+
+
+def _job_flows_dir() -> Path:
+    if JOB_FLOWS_DIR.is_dir():
+        return JOB_FLOWS_DIR
+    return JOB_FLOWS_DIR_FALLBACK
+
+
+def list_job_flows() -> list[dict]:
+    """List job-flow files with one-line match patterns.
+
+    Reads the first non-heading line after "## Match" so the LLM can
+    pick which flow doc to read_job_flow() without loading all of them.
+    """
+    d = _job_flows_dir()
+    if not d.is_dir():
+        return [{"error": f"job_flows dir not found at {d}"}]
+    out = []
+    for f in sorted(d.glob("*.md")):
+        if f.stem == "index":
+            continue
+        try:
+            text = f.read_text(errors="replace")
+        except Exception as e:
+            out.append({"name": f.stem, "match": f"<read error: {e}>"})
+            continue
+        match = ""
+        marker = "## Match"
+        if marker in text:
+            after = text.split(marker, 1)[1]
+            for line in after.splitlines():
+                ls = line.strip()
+                if ls and not ls.startswith("#"):
+                    match = ls
+                    break
+        if not match:
+            for line in text.splitlines():
+                ls = line.strip()
+                if ls and not ls.startswith("#"):
+                    match = ls
+                    break
+        out.append({"name": f.stem, "match": match[:200]})
+    return out
+
+
+def read_job_flow(name: str) -> str:
+    """Read one job-flow doc by stem (no .md extension)."""
+    d = _job_flows_dir()
+    p = d / f"{name}.md"
+    if not p.is_file():
+        avail = ", ".join(sorted(f.stem for f in d.glob("*.md") if f.stem != "index"))
+        return f"job_flow '{name}' not found. Available: {avail}"
+    try:
+        return p.read_text(errors="replace")
+    except Exception as e:
+        return f"job_flow read error: {e}"
+
+
 _SLIM_FIELDS = (
     "name", "service_name", "service_identifier", "env",
     "aws_account", "region", "aws_region",

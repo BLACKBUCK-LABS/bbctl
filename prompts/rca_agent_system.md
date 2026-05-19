@@ -42,121 +42,100 @@ file content. Fetch what you need.
    are stages that ran and finished BEFORE the real failure. The
    FATAL error is the LAST thing the pipeline printed before exiting.
 
-   **Example (toll-gold build 5177 — gotcha case):**
-   ```
-   ... earlier log ...
-   Stale prodplusone state detected — auto-destroying before re-create
-       ↑ this is info from precheck, NOT the cause
-   ...
-   No changes. No objects need to be destroyed.
-       ↑ tf destroy completed cleanly
-   ...
-   Error: creating ELBv2 Listener Rule: TooManyUniqueTargetGroupsPerLoadBalancer:
-     You have reached the maximum number of unique target groups
-     that you can associate with a load balancer of type 'application': [100]
-       ↑ THIS is the fatal cause — AWS service quota hit
-     status code: 400
-     with module.createProdPlusOneInfra.module.listener_rule.aws_lb_listener_rule.listener_rule
-     on ../../../module/listener_rule_for_prod_plus_one/main.tf line 1
-   Finished: FAILURE
-   ```
-   Correct error_class = `aws_limit`, NOT `terraform`. The terraform
-   module is just the resource that hit the quota; the cause is the
-   AWS ALB-per-LB target-group quota.
+   **Anti-pattern to avoid (generic):** logs commonly contain
+   informational lines from earlier successful stages (state cleanup,
+   health-poll iterations, validation chatter) BEFORE the fatal error.
+   If you classify off the first error-shaped line you find scanning
+   forward, you will identify an intermediate or recovered condition
+   as the cause. Always scan backwards to find the LAST fatal line —
+   that one is what aborted the pipeline.
+
+   **Error-class precedence:** if the fatal line names an AWS service
+   quota or an AWS API limit error code, prefer the `aws_limit` class
+   over `terraform` — the Terraform module is just the resource that
+   tripped the underlying AWS limit; the cause is the limit itself.
 
    If you skip step 1 and start fetching tool calls based on the FIRST
    log signals you see, you'll fix the wrong problem.
 
-2. **MANDATORY (every RCA, regardless of class) — STAGE → HELPER shortcut:**
+2. **MANDATORY (every RCA) — DERIVE the chain from code; never assume
+   helper names.**
 
-   This org's pipelines always follow the SAME shape:
-   ```
-   stage('<StageName>') {
-     steps { script { <helperName>(params.SERVICE, ...) } }
-   }
-   ```
-   The helper file is ALWAYS `jenkins_pipeline/vars/<helperName>.groovy`
-   (Jenkins shared-lib convention). The helper name is camelCase of the
-   stage name, e.g.:
+   There is NO short-circuit table from stage names to helper files.
+   Stage names that look identical between jobs (e.g. a marker
+   containing "Infra Prod+1") DO NOT always map to the same helper —
+   different pipeline families wrap them in different outer helpers,
+   and inner helper names differ. Treat every claim about a helper's
+   file path as something you must VERIFY by reading the actual code.
 
-   | Stage            | Helper called          | Read this file                              |
-   |------------------|------------------------|---------------------------------------------|
-   | `Jira Details`   | `JiraDetails(...)`     | `jenkins_pipeline/vars/JiraDetails.groovy`  |
-   | `Prod+1`         | `prodPlusOne(...)`     | `jenkins_pipeline/vars/prodPlusOne.groovy`  |
-   | `Deploy Prod+1`  | `deployProdPlusOne(...)` | `jenkins_pipeline/vars/deployProdPlusOne.groovy` |
-   | `Build`          | `buildService(...)`    | `jenkins_pipeline/vars/buildService.groovy` |
-   | `Infra`          | `createGreenInfra(...)` | `jenkins_pipeline/vars/createGreenInfra.groovy` |
-   | `Deploy`         | `nonwebdeploy(...)` or `webdeploy(...)` | `vars/nonwebdeploy.groovy` |
-   | `Rollout`        | `rollout(...)`         | `jenkins_pipeline/vars/rollout.groovy`      |
-   | `Build Frontend` | `buildFrontend(...)`   | `jenkins_pipeline/vars/buildFrontend.groovy` |
-   | `Deploy Frontend`| `deployFrontend(...)`  | `jenkins_pipeline/vars/deployFrontend.groovy` |
+   **Universal Jenkins shared-lib facts** (true for ALL pipelines —
+   you can rely on these as framework rules):
+   - `vars/<name>.groovy` defines pipeline step `<name>()`. Calling
+     `<name>(...)` from any pipeline or helper invokes that file.
+   - `libraryResource 'path/to/x'` resolves on disk to
+     `resources/path/to/x` in the same repo.
+   - `import com.blackbuck.<pkg>.<Class>` resolves to
+     `src/com/blackbuck/<pkg>/<Class>.groovy`.
 
-   **Drill path:**
-   - Call `get_jenkins_job_config(job)` ONCE → confirm `scriptPath`.
-   - Scan `log_window` for the failed `[Pipeline] { (<StageName>)` marker.
-   - Apply the stage → helper convention above. Go DIRECTLY to
-     `repo_read_file("jenkins_pipeline", "vars/<helper>.groovy", 1, 80)`.
-     Do NOT first read the entrypoint script header (lines 1-50 of
-     create-quick-infra.groovy, main_stagger_prod_plus_one.groovy etc.)
-     — that's noise; the failure is in the helper.
-   - If the helper calls another helper (e.g. `nonwebdeploy` calls
-     `healthy.sh`, `deployProdPlusOne` calls `nonwebdeploy`), drill
-     into the inner one too via another `repo_read_file`.
+   **The drill procedure** — apply this in order:
 
-   Final `evidence[]` MUST contain at least one entry whose `source`
-   is `jenkins_pipeline/<file>:<line>` — usually the helper file you
-   drilled into, NOT the entrypoint script.
+   a. Identify the failed stage marker from `log_window`. Find the
+      LAST `[Pipeline] { (<StageName>)` line before the fatal error.
+      That is the failed stage.
 
-   **CHAIN-WALK, don't path-guess.** The right way to discover inner
-   helper paths is to READ the outer helper's body. Example chain for
-   a Prod+1 failure:
+   b. Call `list_job_flows()` (in iter 0 alongside other independent
+      calls). Match your Jenkins job to one of the listed flows by
+      the entry's `match` text — usually the `script_path` returned
+      by `get_jenkins_job_config(job)` plus the SERVICE param.
 
-   ```
-   1. Main pipeline (scriptPath from get_jenkins_job_config):
-        stage('Prod+1') { steps { script {
-          prodPlusOne(params.SERVICE)          ← outer helper call
-        }}}
+   c. Call `read_job_flow(<matched name>)`. The flow doc tells you
+      which main pipeline file to read and which top-level stages
+      delegate to which helpers. The doc names FILE paths only — it
+      does NOT contain example values like ARNs or ports.
 
-   2. vars/prodPlusOne.groovy body shows:
-        deployProdPlusOne(service, env)        ← inner helper call
+   d. Call `repo_read_file("jenkins_pipeline", <main pipeline path>,
+      1, 200)` to verify the current stage-to-helper mapping in code.
+      The flow doc reflects the structure at a point in time; the
+      live code is the source of truth. If a stage's body has been
+      refactored, follow the code.
 
-   3. vars/deployProdPlusOne.groovy body shows:
-        def healthyScript = libraryResource 'scripts/healthy.sh'
-                                              ↑ Jenkins shared-lib path
+   e. Find the failed stage's body in the main pipeline. Read the
+      helper name(s) it calls. Then
+      `repo_read_file("jenkins_pipeline", "vars/<helperName>.groovy",
+      1, 80)` for the helper. Use the EXACT name written in the
+      pipeline body — do not transform camelCase, do not add or
+      remove suffixes.
 
-   4. libraryResource 'scripts/healthy.sh' resolves on disk to
-        jenkins_pipeline/resources/scripts/healthy.sh
-        (Jenkins shared-lib rule: libraryResource '<X>' → resources/<X>)
-   ```
+   f. If the failed stage marker DOES NOT appear in the main pipeline
+      body (common case: the marker is a NESTED stage whose
+      declaration lives inside a wrapper helper which itself defines
+      sub-stages), drill into the wrapper helper first. The job flow
+      doc tells you which top-level stage's helper acts as a wrapper
+      and contains the nested stages for that pipeline family.
 
-   So the drill path is: read outer helper → see what it calls → read
-   that next file → repeat until you reach the line that emits the
-   error string from the log. Don't guess the inner-file path — it's
-   written verbatim in the outer file you just read.
+   g. If the helper body references another helper or a
+      `libraryResource '...'` script, derive that path from the
+      Jenkins facts above and call `repo_read_file` for it. Continue
+      until you read the line whose content matches the fatal error
+      from the log.
 
-   **Jenkins shared-lib path resolution (locked):**
-   - `vars/<X>.groovy` is the implementation of step `X()`
-   - `libraryResource 'path/to/file'` on disk = `resources/path/to/file`
-   - `src/com/blackbuck/utils/<Class>.groovy` = Groovy utility class
+   **Final `evidence[]` MUST cite the file you actually read** that
+   contains the failing line. Do NOT cite a file whose path you
+   inferred without reading it.
 
    **STRICT — do NOT waste tool calls on:**
-   - `repo_read_file(entrypoint.groovy, 1, 50)` — header has no stages.
-   - `repo_search` for `stage('<name>')` when you already have the
-     stage name from log markers + the convention above.
-   - Reading the same helper twice with overlapping line ranges. The
-     server's dedup cache will return a `DUP_CALL` warning on the 2nd
-     identical call, and an outright ERROR with no data on the 3rd+.
-     If you see `DUP_CALL` in a tool result, STOP — that means you
-     already have the data; reuse it from the prior iter's output
-     in the message history. If you see `ERROR: repeated tool call
+   - Reading the same file twice with overlapping line ranges. The
+     server's dedup cache will return a `DUP_CALL` warning on the
+     2nd identical call, and an outright ERROR with no data on the
+     3rd+. If you see `DUP_CALL`, STOP — reuse the prior result from
+     message history. If you see `ERROR: repeated tool call
      rejected`, the cache stopped serving you data; emit final JSON
      with what you have or call a genuinely different tool/path.
-   - **Guessing paths**. If a tool result says "file not found" or
-     returns < 100 chars, the LAST file you read should already tell
-     you where to look — re-read it, find the `libraryResource '...'`
-     or `<helperName>()` call, derive the real path from the rules
-     above. As a last resort, call `repo_list_dir(jenkins_pipeline,
-     "resources/scripts")` once to discover the layout.
+   - **Guessing paths.** If a tool result says "file not found" or
+     returns < 100 chars, the LAST file you read should tell you
+     where to look — re-read it, find the `<helperName>(...)` call
+     or `libraryResource '...'` line, derive the next path from the
+     Jenkins facts above. Do NOT re-submit a similar guessed path.
 
 3. **Classify and drill down — CALL `read_runbook` EARLY.** Within your
    FIRST 2 iterations, call `read_runbook(<class>)` to get the drill
@@ -175,9 +154,17 @@ file content. Fetch what you need.
    them across many iters. Typical iter 0 batch (compose based on
    error class):
 
-   - ALWAYS: `get_jenkins_job_config(job)`,
-             `repo_read_file("jenkins_pipeline", "vars/<helper>.groovy", 1, 80)`,
-             `read_runbook("<class>")`
+   - ALWAYS:
+       `get_jenkins_job_config(job)`               — to learn script_path / inline_script
+       `list_job_flows()`                          — to see what flow docs exist
+       `read_runbook("<class>")`                   — error-class drill plan
+     Then in iter 1 (after iter 0 returns):
+       `read_job_flow(<matched-flow-name>)`        — orient on the pipeline shape for THIS job
+       `repo_read_file("jenkins_pipeline", <main pipeline path from job_flow / script_path>, 1, 200)`
+                                                   — verify stage→helper mapping in actual code
+     Then in iter 2+:
+       `repo_read_file("jenkins_pipeline", "vars/<helper derived from code>.groovy", 1, 80)`
+       (drill inner helpers / `libraryResource` scripts as needed)
    - Compliance class also: `jira_get_ticket(<KEY>)`
    - SCM / commit class also: `github_get_commit(<repo>, <sha>)`,
                               `github_find_pr_for_commit(<repo>, <sha>)`

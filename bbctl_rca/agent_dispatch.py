@@ -18,9 +18,13 @@ from . import aws_tools, github, jira, mcp_tools
 
 
 TOOL_DISPATCH: dict[str, callable] = {
-    # ── runbook (local file read) ──
+    # ── runbook (error-class drill plans) ──
     "list_runbooks":               mcp_tools.list_runbooks,
     "read_runbook":                mcp_tools.read_runbook,
+
+    # ── job_flow (per-pipeline-family orientation docs) ──
+    "list_job_flows":              mcp_tools.list_job_flows,
+    "read_job_flow":               mcp_tools.read_job_flow,
 
     # ── local repos (jenkins_pipeline / InfraComposer) ──
     "repo_read_file":              mcp_tools.repo_read_file,

@@ -133,6 +133,15 @@ file content. Fetch what you need.
       pipeline body — do not transform camelCase, do not add or
       remove suffixes.
 
+      **CRITICAL — derive filename from the FUNCTION CALL, not the stage name.**
+      When you read a file and see `foo(...)`, the implementation is
+      `vars/foo.groovy` — the token before `(`, verbatim, nothing else.
+      Do NOT append stage name words to the function name.
+      Example: `createRuleForProdPlusOne(service, 150)` at line 13 of
+      prodPlusOne.groovy → file is `vars/createRuleForProdPlusOne.groovy`.
+      NOT `vars/createRuleForProdPlusOneInfra.groovy` (stage "Infra Prod+1"
+      is the stage name, not part of the function name).
+
    e2. **NESTED STAGE RULE — DETERMINISTIC.**
        Inspect the failed stage marker from log. Apply this test:
          - Is the marker text LITERALLY identical to a `stage('X')`

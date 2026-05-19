@@ -175,7 +175,9 @@ RUNBOOKS_DIR_FALLBACK = Path(__file__).resolve().parent.parent / "docops" / "run
 
 
 def _runbooks_dir() -> Path:
-    if RUNBOOKS_DIR.is_dir():
+    # Use primary only if it exists AND has .md files.
+    # An empty primary dir must not shadow the git-tracked fallback.
+    if RUNBOOKS_DIR.is_dir() and any(RUNBOOKS_DIR.glob("*.md")):
         return RUNBOOKS_DIR
     return RUNBOOKS_DIR_FALLBACK
 

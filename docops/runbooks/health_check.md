@@ -47,10 +47,14 @@ repo_read_file(jenkins_pipeline, vars/prodPlusOne.groovy)
        ↓
 repo_read_file(jenkins_pipeline, vars/deployProdPlusOne.groovy)
   shows:
-    def healthyScript = libraryResource 'scripts/non_web_healthy.sh'
+    def healthyScript = libraryResource 'scripts/healthy.sh'
                                          ↑ Jenkins shared-lib path
+                                           (may be healthy.sh OR
+                                            non_web_healthy.sh — read
+                                            deployProdPlusOne.groovy
+                                            to find the actual reference)
        ↓
-repo_read_file(jenkins_pipeline, resources/scripts/non_web_healthy.sh)
+repo_read_file(jenkins_pipeline, resources/scripts/healthy.sh)
   shows the actual poll loop that printed "Health Status failed..."
   ← THIS is the implementation line to cite in evidence
 ```
@@ -58,9 +62,12 @@ repo_read_file(jenkins_pipeline, resources/scripts/non_web_healthy.sh)
 **Known correct paths (Jenkins shared-lib convention):**
 - `vars/<helper>.groovy` — pipeline step implementation (dispatch target)
 - `libraryResource 'X'` → on disk = `resources/X`
-- `resources/scripts/healthy.sh` — web service health poll
-- `resources/scripts/non_web_healthy.sh` — non-web health poll
+- `resources/scripts/healthy.sh` — health poll script (used by `deployProdPlusOne.groovy`)
+- `resources/scripts/non_web_healthy.sh` — alternate poll script (used by some other helpers)
 - `resources/canary.py` — canary measurement
+
+**Do NOT assume which health script is used.** Read `vars/deployProdPlusOne.groovy`
+first — the `libraryResource 'scripts/X'` line tells you the actual script name.
 
 DO NOT try `vars/healthy.sh` or `resources/healthy.sh` — those don't
 exist. The script lives under `resources/scripts/`.
@@ -77,9 +84,10 @@ After reading this runbook, emit ALL of the following in a single iteration:
 2. **MANDATORY** — `repo_read_file("jenkins_pipeline", "vars/deployProdPlusOne.groovy", 1, 80)`
    (or `vars/nonwebdeploy.groovy` for plain Deploy stage). This is the
    implementation helper — you MUST read it to cite in evidence.
-3. **MANDATORY** — `repo_read_file("jenkins_pipeline", "resources/scripts/non_web_healthy.sh", 1, 80)`
-   (or `resources/scripts/healthy.sh` if service_type is web). This is the
-   poll loop that printed the timeout — you MUST read it to cite in evidence.
+3. **MANDATORY** — read the health-check script referenced in `deployProdPlusOne.groovy`.
+   Look for `libraryResource 'scripts/X'` in that file — X is either `healthy.sh`
+   or `non_web_healthy.sh` depending on the helper. Read `resources/scripts/X`.
+   This poll loop printed the timeout — you MUST read it to cite in evidence.
 4. `list_runbooks()` if unsure of class; you are already reading this
 5. **MANDATORY** — `aws_describe(service='elbv2', operation='DescribeTargetGroups',
    params={'TargetGroupArns': [<tg_arn>]}, aws_account=..., aws_region=...)`
@@ -168,8 +176,9 @@ REVISE before emitting. Each value in suggested_commands must trace to a tool re
     `nonwebdeploy.groovy`) — the vars/ helper that orchestrated deploy.
     **NOT** `main_stagger_prod_plus_one.groovy` — main pipeline only dispatches;
     implementation is in the vars/ file.
-  - `jenkins_pipeline/resources/scripts/non_web_healthy.sh:<line>` — poll loop
-    script (the line that printed the timeout message)
+  - `jenkins_pipeline/resources/scripts/<X>:<line>` — the health poll script
+    referenced by `libraryResource` in `deployProdPlusOne.groovy` (either
+    `healthy.sh` or `non_web_healthy.sh` — follow the code, do not assume)
   - `aws:target_health(<tg_arn>)` — state + reason from DescribeTargetHealth
   - `aws:target_group(<tg_arn>)` — HealthCheckPath + HealthCheckProtocol
   - `aws:instance(<instance_id>)` — running state + tags
@@ -204,8 +213,10 @@ Examples:
   `evidence[]`. AWS state alone is insufficient — the vars/ helper file
   confirms WHICH deploy path ran. Having AWS data does NOT exempt you
   from reading the implementation file.
-- **DO NOT FINALIZE** if `resources/scripts/non_web_healthy.sh` (or
-  `resources/scripts/healthy.sh`) is absent from `evidence[]`. This
-  file contains the poll loop that emitted the timeout message — it
-  must be cited at the specific line. Read it even if the root cause
-  is already confirmed by AWS state.
+- **DO NOT FINALIZE** if the health-check shell script is absent from
+  `evidence[]`. Read `vars/deployProdPlusOne.groovy` to find the
+  `libraryResource 'scripts/X'` reference, then read
+  `resources/scripts/X` (either `healthy.sh` or `non_web_healthy.sh`
+  — the code tells you which). This script contains the poll loop that
+  emitted the timeout message. Read it even if AWS state already
+  confirms the class.

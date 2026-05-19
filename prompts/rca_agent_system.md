@@ -125,6 +125,36 @@ file content. Fetch what you need.
       pipeline body — do not transform camelCase, do not add or
       remove suffixes.
 
+   e2. **NESTED STAGE RULE — DETERMINISTIC.**
+       Inspect the failed stage marker from log. Apply this test:
+         - Is the marker text LITERALLY identical to a `stage('X')`
+           declaration in the main pipeline body you just read?
+       If YES → step e applies normally (read that stage's helper).
+       If NO  → the marker is a NESTED stage inside a WRAPPER helper.
+                You MUST read the wrapper FIRST.
+       Examples of NESTED markers that the main pipeline body will
+       NOT declare:
+         - `(Infra Prod+1)`, `(Deploy Prod+1)`, `(Automation)`,
+           `(Destroy Prod+1)` for the prod+1 flow — these are
+           declared inside the helper that the main pipeline's
+           `stage('Prod+1')` calls (i.e. `vars/prodPlusOne.groovy`
+           for the backend variant, `vars/prodPlusOneFrontend.groovy`
+           for the frontend variant).
+       Concrete procedure:
+         1. Identify the WRAPPER stage in main pipeline whose name is
+            the PREFIX of the failed marker (e.g. `stage('Prod+1')`
+            for marker `(Infra Prod+1)`).
+         2. Read the WRAPPER helper file (the one called inside that
+            stage's body). DO NOT read any leaf-stage helper from
+            main pipeline first — that is a different code path.
+         3. Inside the wrapper helper, find the matching
+            `stage('<failed marker text>')` block.
+         4. Read the helper named in THAT block's body.
+       Anti-pattern (do NOT do this): "the marker says Infra so I'll
+       read `vars/createGreenInfra.groovy`". That helper handles the
+       main pipeline's `stage('Infra')` — a DIFFERENT code path than
+       the wrapped `(Infra Prod+1)` sub-stage.
+
    f. If the failed stage marker DOES NOT appear in the main pipeline
       body (common case: the marker is a NESTED stage whose
       declaration lives inside a wrapper helper which itself defines

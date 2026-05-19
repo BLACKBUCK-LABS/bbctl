@@ -25,16 +25,26 @@ wrapper helpers internally.
 
 Helper file for each: `jenkins_pipeline/vars/<helperName>.groovy`.
 
-## CRITICAL — Prod+1 is a wrapper
+## CRITICAL — Prod+1 is a WRAPPER. Apply this rule BEFORE reading any helper.
 
-`stage('Prod+1')` only calls `prodPlusOneFrontend(...)`. That helper
-declares its OWN inner stages (e.g. `Infra Prod+1`, `Deploy Prod+1`).
-Console markers nested under Prod+1 originate inside
-`vars/prodPlusOneFrontend.groovy`, not in the main pipeline.
+**Rule (deterministic):**
+- If the failed stage marker is `(Prod+1)` exactly → leaf stage; read
+  the helper `stage('Prod+1')` calls (`prodPlusOneFrontend`).
+- If the marker is `(Infra Prod+1)`, `(Deploy Prod+1)`, or any other
+  marker containing `Prod+1` but not literally equal to `(Prod+1)` →
+  NESTED stage inside the FRONTEND wrapper. You MUST read
+  `vars/prodPlusOneFrontend.groovy` FIRST.
 
-This is the FRONTEND wrapper. Do NOT read `vars/prodPlusOne.groovy` for
-this flow — that file belongs to the non-frontend (`main_stagger_prod_plus_one`)
-flow and has different helper names inside.
+**Do NOT use `vars/prodPlusOne.groovy` for this flow.** That file
+belongs to the non-frontend flow (`main_stagger_prod_plus_one`) and
+declares different inner stages / helper names. Wrong file → wrong
+evidence.
+
+**Chain for any `*Prod+1*` marker (except literal `(Prod+1)`):**
+1. `repo_read_file("jenkins_pipeline", "vars/prodPlusOneFrontend.groovy", 1, 80)`
+2. Find the `stage("<marker>")` block inside its body.
+3. Read the helper name invoked on the next line.
+4. Drill until you reach the line matching the fatal error.
 
 ## Drill procedure
 1. Read main pipeline body.

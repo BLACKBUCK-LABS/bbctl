@@ -18,6 +18,7 @@ Failure-signal events that agent.py appends as they happen:
   force_final_wall_clock      — wall-clock cap fired forced-final
   force_final_iter_cap        — MAX_TOOL_CALLS cap fired forced-final
   evidence_validator_dropped  — _filter_fake_repo_evidence dropped >= 1 entry
+  evidence_snippet_hallucinated — _filter_hallucinated_snippets dropped >= 1 entry
   value_validator_substituted — value_validator.py made >= 1 substitution
   file_not_found_in_chain     — repo_read_file/github_read_file returned error
   final_json_parse_failed     — final_text could not be parsed

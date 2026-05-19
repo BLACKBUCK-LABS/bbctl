@@ -32,22 +32,33 @@ The helper file for each row is `jenkins_pipeline/vars/<helperName>.groovy`
 by the universal Jenkins shared-lib convention. VERIFY by reading the
 main pipeline body — do not trust this row alone.
 
-## CRITICAL — Prod+1 is a wrapper, NOT a leaf stage
+## CRITICAL — Prod+1 is a WRAPPER. Apply this rule BEFORE reading any helper.
 
-`stage('Prod+1')` in the main pipeline only calls `prodPlusOne(...)`.
-The `prodPlusOne` helper file ITSELF declares its OWN inner stages
-(`Infra Prod+1`, `Deploy Prod+1`, `Automation`, `Destroy Prod+1`).
-Therefore every console log marker like `(Infra Prod+1)` or
-`(Deploy Prod+1)` originates INSIDE `vars/prodPlusOne.groovy`, not in
-the main pipeline.
+**Rule (deterministic):**
+- If the failed stage marker from log is `(Prod+1)` exactly → it is a
+  LEAF stage in the main pipeline; read the helper that
+  `stage('Prod+1')` calls.
+- If the marker is `(Infra Prod+1)`, `(Deploy Prod+1)`,
+  `(Automation)`, or `(Destroy Prod+1)` → these are NOT declared in
+  the main pipeline. They are NESTED stages inside
+  `vars/prodPlusOne.groovy`. You MUST read `vars/prodPlusOne.groovy`
+  FIRST — do not read `vars/createGreenInfra.groovy` or
+  `vars/deploy.groovy` first.
 
-If the failed stage marker contains the substring `Prod+1` BUT is not
-literally `(Prod+1)` itself:
-- Do NOT look in the main pipeline body for that stage.
-- READ `jenkins_pipeline/vars/prodPlusOne.groovy` first.
-- Find the matching `stage("<marker>")` block inside that helper.
-- Read the helper it calls (e.g. by reading the call expression on the
-  next line).
+**Why this matters:** the main pipeline ALSO has separate `stage('Infra')`
+and `stage('Deploy')` that delegate to leaf helpers (`createGreenInfra`,
+`deploy`). Those handle the GREEN-INFRA + main DEPLOY flow, NOT the
+Prod+1 sub-stages. Reading the wrong file leads to wrong evidence.
+
+**Chain for any `*Prod+1*` marker (except literal `(Prod+1)`):**
+1. `repo_read_file("jenkins_pipeline", "vars/prodPlusOne.groovy", 1, 80)`
+2. Find the `stage("<marker>")` block inside its body.
+3. Read the helper name the next line invokes
+   (e.g. for `stage("Infra Prod+1")` the next line is the inner
+   helper call; that is the file you drill into next, not the file
+   for `stage('Infra')` in the main pipeline).
+4. Continue drilling that helper until you reach the line whose
+   content matches the fatal error from the log.
 
 ## Drill procedure (every failed RCA for this flow)
 

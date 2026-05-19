@@ -11,6 +11,7 @@ file+line that caused the error or hits the budget.
 """
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -741,6 +742,14 @@ async def run_agent(
     rca["evidence"] = _filter_fake_repo_evidence(rca.get("evidence", []), read_files)
     if len(rca["evidence"]) < _evidence_before:
         _failure_signals.append("evidence_validator_dropped")
+    # Snippet-content validator — drops entries whose snippet text is
+    # not actually present in the cited file (file path is real, but
+    # the LLM fabricated the snippet body). See _filter_hallucinated_snippets.
+    rca["evidence"], _snippet_drops = _filter_hallucinated_snippets(
+        rca["evidence"], read_files
+    )
+    if _snippet_drops > 0:
+        _failure_signals.append("evidence_snippet_hallucinated")
     if len(rca.get("evidence", []) or []) < 3:
         _failure_signals.append("low_evidence_count")
 
@@ -925,6 +934,119 @@ def _filter_fake_repo_evidence(evidence: list, read_files: set[str]) -> list:
             _log(f"  evidence validator: dropped fake cite source={src!r} "
                  f"(not in read_files)")
     return kept
+
+
+_QUOTED_STRING_RE = re.compile(
+    r"(?<!\\)(?:'([^'\n]{3,80})'|\"([^\"\n]{3,80})\")"
+)
+
+
+def _filter_hallucinated_snippets(evidence: list, read_files: set[str]) -> tuple[list, int]:
+    """Drop evidence whose snippet text isn't actually in the cited file.
+
+    LLM sometimes invents snippets that look like real Groovy/Java
+    code (matching the file's TOPIC) but the literal characters do
+    not appear in the file. The file-path check in
+    _filter_fake_repo_evidence misses this because the file path is
+    real — only the snippet content is fabricated.
+
+    Validation strategy — quoted string literals as the anchor:
+      For each evidence entry whose source is `<repo>/<path>[:line]`:
+        1. Extract single-quoted and double-quoted string literals
+           (3-80 chars) from the snippet.
+        2. For each quoted literal, check whether the LITERAL
+           characters (with quotes) appear in the file content.
+        3. If ANY quoted literal in the snippet is NOT present in
+           the file → snippet is hallucinated. Drop the entry.
+        4. If the snippet has no quoted literals (rare for code),
+           fall back to a 30-char window match: at least one 30-char
+           run from the snippet (whitespace-normalised) must appear
+           in the file content.
+      Non-repo sources (jenkins_log, aws:..., etc.) pass through.
+
+    Returns (filtered_evidence, dropped_count).
+    """
+    if not isinstance(evidence, list):
+        return evidence, 0
+
+    # Cache file contents we read so multiple evidence entries for the
+    # same file only hit disk once.
+    file_cache: dict[str, str] = {}
+    repos_dir = Path(os.environ.get("BBCTL_REPOS_DIR", "/opt/bbctl-rca/repos"))
+
+    def _load_file(repo_path: str) -> str | None:
+        if repo_path in file_cache:
+            return file_cache[repo_path]
+        try:
+            parts = repo_path.split("/", 1)
+            if len(parts) != 2:
+                return None
+            repo, sub = parts
+            p = repos_dir / repo / sub
+            content = p.read_text(errors="replace")
+            file_cache[repo_path] = content
+            return content
+        except Exception:
+            return None
+
+    def _snippet_matches_file(snippet: str, content: str) -> bool:
+        if not snippet or not content:
+            return True   # cannot verify — allow
+        # 1. Quoted string literal check (strict).
+        quoted_pairs = _QUOTED_STRING_RE.findall(snippet)
+        quoted_literals = []
+        for s_match, d_match in quoted_pairs:
+            literal = s_match or d_match
+            if not literal:
+                continue
+            # Skip pure placeholder tokens
+            if literal.strip() in {"...", "…", ""}:
+                continue
+            quoted_literals.append(literal)
+        if quoted_literals:
+            # All non-placeholder literals must appear in file content.
+            for lit in quoted_literals:
+                if lit not in content:
+                    return False
+            return True
+        # 2. No quoted literals — fall back to 30-char window match.
+        s = re.sub(r"\s+", " ", snippet).strip()
+        c_norm = re.sub(r"\s+", " ", content)
+        if len(s) <= 30:
+            return s in c_norm
+        for i in range(0, len(s) - 30 + 1, 5):
+            if s[i:i + 30] in c_norm:
+                return True
+        return False
+
+    kept = []
+    dropped = 0
+    for item in evidence:
+        if not isinstance(item, dict):
+            kept.append(item)
+            continue
+        src = (item.get("source") or "").strip()
+        snippet = (item.get("snippet") or "").strip()
+        if not any(src.startswith(p) for p in _REPO_PREFIXES):
+            kept.append(item)
+            continue
+        path_part = src.rsplit(":", 1)[0] if ":" in src else src
+        if path_part not in read_files:
+            # Already would-be-dropped by _filter_fake_repo_evidence.
+            kept.append(item)
+            continue
+        content = _load_file(path_part)
+        if content is None:
+            # Can't verify — keep, don't penalise on infra issues.
+            kept.append(item)
+            continue
+        if _snippet_matches_file(snippet, content):
+            kept.append(item)
+        else:
+            dropped += 1
+            _log(f"  snippet validator: dropped fabricated cite "
+                 f"source={src!r} snippet={snippet[:120]!r}")
+    return kept, dropped
 
 
 def _parse_final_json(text: str | None) -> dict | None:

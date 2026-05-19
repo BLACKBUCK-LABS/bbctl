@@ -483,7 +483,10 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         # the rest of the post block (input prompt, rollback).
         err_class = e.__class__.__name__
         err_msg = str(e)
-        rca_model = os.environ.get("BBCTL_RCA_MODEL", "gpt-4.1")
+        # Single source of truth lives in bbctl_rca.agent._DEFAULT_MODEL.
+        # Import here rather than at module top to avoid circular load.
+        from .agent import _DEFAULT_MODEL as _AGENT_DEFAULT_MODEL
+        rca_model = os.environ.get("BBCTL_RCA_MODEL", _AGENT_DEFAULT_MODEL)
         print(f"[main] LLM call failed: {err_class}: {err_msg}",
               file=__import__('sys').stderr, flush=True)
         # Build a stub result that still goes through the normal audit /
@@ -533,8 +536,8 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     tokens_in = result["tokens_used"].get("input", 0)
     tokens_out = result["tokens_used"].get("output", 0)
     if LLM_PROVIDER == "openai":
-        from .agent import _pricing_for
-        rca_model = os.environ.get("BBCTL_RCA_MODEL", "gpt-4.1")
+        from .agent import _pricing_for, _DEFAULT_MODEL as _AGENT_DEFAULT_MODEL
+        rca_model = os.environ.get("BBCTL_RCA_MODEL", _AGENT_DEFAULT_MODEL)
         in_per_tok, out_per_tok = _pricing_for(rca_model)
         cost = tokens_in * in_per_tok + tokens_out * out_per_tok
         result["model_used"] = rca_model

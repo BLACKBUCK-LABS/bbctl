@@ -360,9 +360,12 @@ Return ONLY a JSON object with these keys:
   integers pointing at the SPECIFIC LINES relevant to the failure
   (typically 1-5 lines) — NOT the full window you read.
   Read wide to understand context; cite narrow in evidence.
-  Example: you read deployProdPlusOne.groovy lines 1-80, but the
-  relevant line is 21 (the `libraryResource 'scripts/healthy.sh'`
-  call) — set line_start=21, line_end=21.
+  **WRONG:** `line_start=1, line_end=80` — that's your read window, not evidence.
+  **CORRECT examples:**
+  - You read deployProdPlusOne.groovy 1-80, relevant line is 21 (`libraryResource 'scripts/healthy.sh'`) → `line_start=21, line_end=21`
+  - You read createRuleForProdPlusOne.groovy 1-80, relevant line is 19 (`createInfra(data, SERVICE,...)`) → `line_start=19, line_end=19`
+  - You read InfraComposer/config/svc/prodplusone/main.tf 1-80, relevant block is lines 23-43 (module declaration) → `line_start=23, line_end=43`
+  If your line_start=1 and line_end matches your read window exactly, you are WRONG — narrow it.
 - `main_*.groovy` (the dispatch pipeline file) MUST NOT appear in
   `evidence[]`. Main pipeline is dispatch-only stub — it names helpers
   but contains no implementation logic. Evidence cites `vars/` and

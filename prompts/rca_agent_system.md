@@ -290,10 +290,19 @@ Return ONLY a JSON object with these keys:
                   | aws_limit | network | timeout | dependency | unknown",
   "root_cause": "decision-grade prose. Cite concrete values + file:line.",
   "evidence": [
+    // For REPO-FILE evidence — emit ONLY coordinates. Do NOT write a
+    // snippet field. The server reads the file from disk and fills
+    // the snippet text in for you. This guarantees the snippet is
+    // verbatim from the file you cited.
+    {"source": "jenkins_pipeline/<file> | InfraComposer/<file>",
+     "line_start": <int>,
+     "line_end":   <int>},
+    // For NON-repo evidence (logs, tickets, AWS state, build meta,
+    // runbooks) — emit snippet verbatim copied from the tool result
+    // you saw. No paraphrasing, no summary.
     {"source": "jenkins_log | build_meta | jira:<KEY> | github:<repo>@<sha>
-                | aws:<resource> | jenkins_pipeline/<file>:<line>
-                | InfraComposer/<file>:<line> | docs/runbooks/<name>.md",
-     "snippet": "the actual line / value cited"}
+                | aws:<resource> | docs/runbooks/<name>.md",
+     "snippet": "verbatim text from the tool result"}
   ],
   "suggested_fix": {
     "Finding": "one sentence stating what is wrong with concrete values",
@@ -315,12 +324,22 @@ Return ONLY a JSON object with these keys:
 - `evidence[].source` must be one of the prefixes listed above.
 - Never invent a file path. If you didn't open the file via a tool,
   do not cite it.
-- `evidence[]` MUST contain at least one entry with source
-  `jenkins_pipeline/<file>:<line>` (mandatory pipeline cross-check).
+- For REPO-FILE evidence emit `{source, line_start, line_end}` ONLY.
+  Do NOT add a `snippet` field — the server fills it in verbatim
+  from disk. This eliminates a class of hallucination: you cannot
+  invent code you are not writing. line_start and line_end MUST be
+  integers within the line range you actually read via repo_read_file
+  (or a tighter sub-range pointing at the line of interest).
+- For NON-repo evidence (jenkins_log, build_meta, jira, github, aws,
+  runbooks): emit `{source, snippet}` where snippet is COPIED
+  VERBATIM from the tool result text you received in this run.
+  Do not paraphrase. Do not summarise. Do not invent.
+- `evidence[]` MUST contain at least one entry whose source is a
+  `jenkins_pipeline/<file>` reference (mandatory pipeline cross-check).
 - For Jira citations: prefer `jira:<KEY>` over generic `jenkins_log`
   if the ticket fields are relevant.
 - For AWS citations: format as `aws:target_health(<tg_arn>)`,
-  `aws:instance(<id>)`, `aws:ssm(<id>, '<cmd>')` etc.
+  `aws:instance(<id>)`, `aws:rules(<rule_arn>)`, etc.
 
 ## suggested_commands tier
 

@@ -62,12 +62,13 @@ def _pricing_for(model: str) -> tuple[float, float]:
 
 
 # Default agent model. Override per-RCA via BBCTL_RCA_MODEL env var to
-# A/B test different models without code change. e.g.:
-#   sudo systemctl set-environment BBCTL_RCA_MODEL=gpt-5
-#   sudo systemctl restart bbctl-rca
-# Default = gpt-4.1: better reasoning + 1M context vs gpt-4o, similar
-# price ($2/$8 vs $2.50/$10 per 1M tokens).
-_DEFAULT_MODEL = os.environ.get("BBCTL_RCA_MODEL", "gpt-4.1")
+# A/B test different models without code change.
+# Default = gpt-5: strongest reasoning + verbatim recall on the OpenAI
+# fleet, fewer snippet hallucinations than gpt-4.1. Costs ~$3/$15 per
+# 1M tokens (vs $2/$8 for gpt-4.1) — the extra ~50% cost buys the
+# defense-in-depth previously implemented via response post-processing
+# (which is now removed per the phase-10 design).
+_DEFAULT_MODEL = os.environ.get("BBCTL_RCA_MODEL", "gpt-5")
 
 # Back-compat: keep the old module-level constants pointing at the
 # default-model pricing so any external import doesn't break. Active
@@ -93,7 +94,12 @@ _FORCE_FINAL_PROMPT = (
     '  "failed_stage": "string",\n'
     '  "error_class": "compliance|canary_fail|canary_script_error|health_check|aws_limit|parse_error|java_runtime|scm|network|dependency|ssm|timeout|unknown",\n'
     '  "root_cause": "string with citations from files you read",\n'
-    '  "evidence": [{"source": "jenkins_log|jira.tickets|<repo>/<file>:<line>", "snippet": "string", "verified": true}],\n'
+    '  "evidence": [\n'
+    '    /* REPO-FILE evidence: emit coordinates ONLY; server fills snippet from disk. */\n'
+    '    {"source": "jenkins_pipeline/<file>|InfraComposer/<file>", "line_start": 1, "line_end": 1},\n'
+    '    /* NON-repo evidence: snippet must be verbatim from a tool result you saw. */\n'
+    '    {"source": "jenkins_log|build_meta|jira:<KEY>|aws:<resource>|docs/runbooks/<name>.md", "snippet": "verbatim string"}\n'
+    '  ],\n'
     '  "suggested_fix": "string OR {Finding,Action,Verify}",\n'
     '  "suggested_commands": [{"cmd": "string", "tier": "safe|restricted", "rationale": "string"}],\n'
     '  "confidence": 0.0,\n'
@@ -733,23 +739,14 @@ async def run_agent(
             "needs_deeper": True,
         }
 
-    # Evidence validator: drop fabricated repo-path citations.
-    # If evidence[i].source looks like `<repo>/<path>:<line>` but no
-    # repo_read_file ever opened that file, the LLM hallucinated the cite.
-    # Drop those entries so the operator doesn't follow them. Keep the
-    # non-repo sources (jenkins_log, jira.tickets, build_meta) untouched.
-    _evidence_before = len(rca.get("evidence", []) or [])
-    rca["evidence"] = _filter_fake_repo_evidence(rca.get("evidence", []), read_files)
-    if len(rca["evidence"]) < _evidence_before:
-        _failure_signals.append("evidence_validator_dropped")
-    # Snippet-content validator — drops entries whose snippet text is
-    # not actually present in the cited file (file path is real, but
-    # the LLM fabricated the snippet body). See _filter_hallucinated_snippets.
-    rca["evidence"], _snippet_drops = _filter_hallucinated_snippets(
-        rca["evidence"], read_files
-    )
-    if _snippet_drops > 0:
-        _failure_signals.append("evidence_snippet_hallucinated")
+    # Phase-10: NO post-processing of LLM output. We do NOT drop fake
+    # entries, do NOT substitute hallucinated values, do NOT rewrite
+    # snippets. The only server-side transformation on evidence is the
+    # SNIPPET-FILL step below, which is a SCHEMA contract — when LLM
+    # emits {source: '<repo>/<file>', line_start, line_end} we read
+    # the file from disk and inject the verbatim text as `snippet`.
+    # LLM cannot lie about content it never wrote.
+    rca["evidence"] = _fill_repo_snippets(rca.get("evidence", []))
     if len(rca.get("evidence", []) or []) < 3:
         _failure_signals.append("low_evidence_count")
 
@@ -905,6 +902,97 @@ def _prepend_summary_header(trace_paths: list[str], iter_log: list[dict],
 
 
 _REPO_PREFIXES = ("jenkins_pipeline/", "InfraComposer/")
+
+
+def _fill_repo_snippets(evidence: list) -> list:
+    """Server-side snippet filler — the schema contract for repo-file
+    evidence is {source: '<repo>/<file>', line_start, line_end}. LLM
+    emits coordinates only; this function reads the file from disk
+    and injects the verbatim text as `snippet`.
+
+    Why it exists:
+      The LLM cannot hallucinate code it does not write. By forcing
+      the LLM to emit ONLY coordinates and letting the server pull
+      the bytes, snippet text is guaranteed to be a literal slice of
+      the cited file at the cited line range.
+
+    Rules:
+      - Operates on evidence items whose `source` starts with
+        'jenkins_pipeline/' or 'InfraComposer/'. Non-repo evidence
+        is passed through unchanged (LLM still emits `snippet`
+        verbatim for those, per the system-prompt schema).
+      - Reads the file from the local clone under
+        $BBCTL_REPOS_DIR (defaults to /opt/bbctl-rca/repos).
+      - Strips the optional `:<line>` suffix from `source` if the
+        LLM left one — we treat it as legacy and replace with the
+        line range fields below.
+      - If `line_start` / `line_end` are missing or invalid, leaves
+        the item unchanged so the operator can see the malformed
+        emission. We do NOT silently swallow LLM mistakes; signal
+        them in the response.
+      - If the file cannot be read, leaves the item unchanged and
+        records an `_error` field in the entry.
+    """
+    if not isinstance(evidence, list):
+        return evidence
+    repos_dir = Path(os.environ.get("BBCTL_REPOS_DIR", "/opt/bbctl-rca/repos"))
+    out = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            out.append(item)
+            continue
+        src = (item.get("source") or "").strip()
+        if not any(src.startswith(p) for p in _REPO_PREFIXES):
+            out.append(item)
+            continue
+        # Strip legacy :<line> suffix; line range comes from explicit fields.
+        path_part = src.rsplit(":", 1)[0] if ":" in src else src
+        try:
+            repo, sub = path_part.split("/", 1)
+        except ValueError:
+            out.append(item)
+            continue
+        line_start = item.get("line_start")
+        line_end = item.get("line_end")
+        # Normalise integer-shaped strings if the LLM stringified them.
+        try:
+            line_start = int(line_start) if line_start is not None else None
+            line_end = int(line_end) if line_end is not None else None
+        except (TypeError, ValueError):
+            line_start = line_end = None
+        if line_start is None or line_end is None or line_start < 1 or line_end < line_start:
+            item = dict(item)
+            item.setdefault("_error", "missing or invalid line_start/line_end")
+            out.append(item)
+            continue
+        try:
+            file_path = repos_dir / repo / sub
+            lines = file_path.read_text(errors="replace").splitlines()
+        except Exception as e:
+            item = dict(item)
+            item["_error"] = f"file read failed: {e}"
+            out.append(item)
+            continue
+        # Clamp to file bounds; snippet is the joined slice with line numbers
+        # prefixed (matches the format repo_read_file uses, so the LLM and
+        # operator see the same rendering).
+        a = max(1, line_start)
+        b = min(len(lines), line_end)
+        if b < a:
+            item = dict(item)
+            item["_error"] = "line range out of file bounds"
+            out.append(item)
+            continue
+        snippet = "\n".join(f"{i}: {lines[i - 1]}" for i in range(a, b + 1))
+        new = dict(item)
+        # Normalise: keep source as bare repo/file (no :<line>), expose
+        # both the requested range AND the actual filled snippet.
+        new["source"] = path_part
+        new["line_start"] = a
+        new["line_end"] = b
+        new["snippet"] = snippet
+        out.append(new)
+    return out
 
 
 def _filter_fake_repo_evidence(evidence: list, read_files: set[str]) -> list:

@@ -17,9 +17,9 @@ Failure-signal events that agent.py appends as they happen:
   force_final_cost_cap        — cost cap fired forced-final
   force_final_wall_clock      — wall-clock cap fired forced-final
   force_final_iter_cap        — MAX_TOOL_CALLS cap fired forced-final
-  evidence_validator_dropped  — _filter_fake_repo_evidence dropped >= 1 entry
-  evidence_snippet_hallucinated — _filter_hallucinated_snippets dropped >= 1 entry
-  value_validator_substituted — value_validator.py made >= 1 substitution
+  evidence_validator_dropped  — DEPRECATED (phase 10 removed validator)
+  evidence_snippet_hallucinated — DEPRECATED (phase 10 removed validator)
+  value_validator_substituted — DEPRECATED (phase 10 removed validator)
   file_not_found_in_chain     — repo_read_file/github_read_file returned error
   final_json_parse_failed     — final_text could not be parsed
   low_evidence_count          — final RCA had < 3 evidence items

@@ -511,17 +511,14 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
             "_llm_error_class": err_class,
         }
 
-    # Post-RCA value validator. Strips hallucinated training-data defaults
-    # (port 8080, /admin/version, /var/log/blackbuck/gps.log when service
-    # isn't gps) and substitutes real values from service.lookup. Records
-    # every correction in result["validator_notes"][]. Mechanical Python,
-    # no LLM cost. See bbctl_rca/value_validator.py.
-    try:
-        from .value_validator import validate_and_fix
-        validate_and_fix(result, service, mcp_tools.service_lookup(service))
-    except Exception as _ve:
-        print(f"[main] value validator failed: {_ve}",
-              file=__import__('sys').stderr, flush=True)
+    # Post-RCA response post-processing has been REMOVED per the
+    # phase-10 design decision: do not modify LLM output by code. If
+    # the LLM emits a hallucinated value, the fix belongs upstream
+    # (better schema, better prompt, better model) — not in a band-aid
+    # substitution after the fact. The previous value_validator that
+    # rewrote port 8080 / /admin/version / gps.log defaults is gone.
+    # Old code path lives at bbctl_rca/value_validator.py but is no
+    # longer wired into the request handler.
 
     # Stash freshness info on the result so it surfaces in the audit/report
     result["repos_freshness"] = freshness

@@ -401,6 +401,9 @@ async def run_agent(
     # final evidence array against it (post-parse hallucination guard).
     # Key: "<repo>/<path>" — line range is ignored, any read counts.
     read_files: set[str] = set()
+    # Track runbook names that were actually fetched and returned content
+    # (non-"not found"). Used to drop evidence citing unfetched runbooks.
+    read_runbooks: set[str] = set()
     # Dedup map: (tool_name, sorted_args_json) -> (iter, cached_result, hit_count).
     # 1st repeat → return cached + soft warning.
     # 2nd+ repeat → return ERROR ONLY, no data, so the LLM is forced to
@@ -708,6 +711,10 @@ async def run_agent(
             elif tc.function.name == "github_read_file":
                 if result.startswith(("error:", "[error", "ERROR:")):
                     _failure_signals.append("file_not_found_in_chain")
+            elif tc.function.name == "read_runbook":
+                rb_name = args.get("name")
+                if rb_name and "not found" not in result:
+                    read_runbooks.add(rb_name)
 
             _result_str = result if isinstance(result, str) else str(result)
             _DUMP_CAP = 8000
@@ -760,6 +767,11 @@ async def run_agent(
     # the file from disk and inject the verbatim text as `snippet`.
     # LLM cannot lie about content it never wrote.
     rca["evidence"] = _fill_repo_snippets(rca.get("evidence", []))
+    rca["evidence"], _rb_drops = _drop_unfetched_runbook_evidence(
+        rca["evidence"], read_runbooks
+    )
+    if _rb_drops:
+        _failure_signals.append("runbook_evidence_dropped")
     if len(rca.get("evidence", []) or []) < 3:
         _failure_signals.append("low_evidence_count")
 
@@ -1006,6 +1018,36 @@ def _fill_repo_snippets(evidence: list) -> list:
         new["snippet"] = snippet
         out.append(new)
     return out
+
+
+def _drop_unfetched_runbook_evidence(evidence: list, read_runbooks: set[str]) -> tuple[list, int]:
+    """Drop evidence entries citing docs/runbooks/<name>.md that were never fetched.
+
+    If read_runbook(name) returned "not found", the LLM has no tool-result
+    to quote from — any snippet in those entries is fabricated. Drop them.
+    Non-runbook sources pass through unchanged.
+    """
+    if not isinstance(evidence, list):
+        return evidence, 0
+    kept = []
+    dropped = 0
+    for item in evidence:
+        if not isinstance(item, dict):
+            kept.append(item)
+            continue
+        src = (item.get("source") or "").strip()
+        if not src.startswith("docs/runbooks/"):
+            kept.append(item)
+            continue
+        name = src[len("docs/runbooks/"):]
+        if name.endswith(".md"):
+            name = name[:-3]
+        if name in read_runbooks:
+            kept.append(item)
+        else:
+            dropped += 1
+            _log(f"  evidence: dropped unfetched runbook cite source={src!r} (runbook was not found)")
+    return kept, dropped
 
 
 def _filter_fake_repo_evidence(evidence: list, read_files: set[str]) -> list:

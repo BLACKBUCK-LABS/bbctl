@@ -141,19 +141,31 @@ file content. Fetch what you need.
            for the backend variant, `vars/prodPlusOneFrontend.groovy`
            for the frontend variant).
        Concrete procedure:
-         1. Identify the WRAPPER stage in main pipeline whose name is
-            the PREFIX of the failed marker (e.g. `stage('Prod+1')`
-            for marker `(Infra Prod+1)`).
+         1. Identify the WRAPPER stage in main pipeline. The wrapper is the
+            top-level stage whose name appears as a SUFFIX WORD GROUP in the
+            failed marker — NOT the leading word(s). Examples:
+              marker `(Infra Prod+1)` → suffix group "Prod+1" → wrapper is `stage('Prod+1')`
+              marker `(Deploy Prod+1)` → suffix group "Prod+1" → wrapper is `stage('Prod+1')`
+            The leading word ("Infra", "Deploy") names the sub-stage INSIDE
+            the wrapper — it does NOT refer to the top-level `stage('Infra')`
+            or `stage('Deploy')` in main pipeline. Never look in `deploy.groovy`
+            for marker `(Deploy Prod+1)` — that file handles the completely
+            separate top-level `stage('Deploy')` (production deploy, runs AFTER
+            the entire Prod+1 cycle).
          2. Read the WRAPPER helper file (the one called inside that
             stage's body). DO NOT read any leaf-stage helper from
             main pipeline first — that is a different code path.
          3. Inside the wrapper helper, find the matching
             `stage('<failed marker text>')` block.
          4. Read the helper named in THAT block's body.
-       Anti-pattern (do NOT do this): "the marker says Infra so I'll
-       read `vars/createGreenInfra.groovy`". That helper handles the
-       main pipeline's `stage('Infra')` — a DIFFERENT code path than
-       the wrapped `(Infra Prod+1)` sub-stage.
+       Anti-patterns (do NOT do these):
+         - "the marker says Infra so I'll read `vars/createGreenInfra.groovy`".
+           That helper handles the main pipeline's `stage('Infra')` — a DIFFERENT
+           code path than the wrapped `(Infra Prod+1)` sub-stage.
+         - "the marker says 'Deploy Prod+1' so I'll read `vars/deploy.groovy`".
+           `deploy.groovy` handles the main pipeline's `stage('Deploy')` (production
+           deploy). The `(Deploy Prod+1)` sub-stage lives inside `vars/prodPlusOne.groovy`
+           and calls `deployProdPlusOne()`, not `deploy()`.
 
    f. If the failed stage marker DOES NOT appear in the main pipeline
       body (common case: the marker is a NESTED stage whose

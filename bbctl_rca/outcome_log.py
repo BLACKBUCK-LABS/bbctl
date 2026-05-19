@@ -24,6 +24,9 @@ Failure-signal events that agent.py appends as they happen:
   file_not_found_in_chain     — repo_read_file/github_read_file returned error
   final_json_parse_failed     — final_text could not be parsed
   low_evidence_count          — final RCA had < 3 evidence items
+  runbook_evidence_dropped    — ≥1 evidence entry cited docs/runbooks/<X>.md but
+                                read_runbook(X) was never fetched (returned not-found);
+                                fabricated runbook snippet dropped server-side
 
 Queryable via bbctl_rca/cli_outcomes.py.
 

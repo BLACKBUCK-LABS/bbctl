@@ -591,22 +591,30 @@ async def run_agent(
                 # force-final prompt. Adds ~$0.05 in worst case but
                 # rescues the otherwise-wasted 6 tool calls.
                 if not force_final and _parse_final_json(final_text) is None:
-                    _failure_signals.append("voluntary_bail_rescue")
-                    _log("LLM bailed early with non-JSON content; "
-                         "re-prompting with response_format=json_object")
+                    # JSON FINALIZE STEP — normal flow, not a failure.
+                    # When LLM stops calling tools (signals "I am done")
+                    # it sometimes emits the answer as markdown headings
+                    # because response_format=json_object was not on the
+                    # tool-iter call (it would prevent tool calls). We
+                    # re-issue with json_object enforced so the FINAL
+                    # answer is guaranteed to be parseable JSON.
+                    # No failure_signal — this is part of the contract,
+                    # not an emergency rescue.
+                    _log("LLM finalising — re-prompting with "
+                         "response_format=json_object to enforce JSON output")
                     messages.append({"role": "user", "content": _FORCE_FINAL_PROMPT})
                     _retry_kwargs = {
                         "model": model, "messages": messages,
                         "response_format": {"type": "json_object"},
                         "temperature": 0.1,
                     }
-                    _trace("VOLUNTARY-BAIL RESCUE REQUEST",
+                    _trace("JSON FINALIZE REQUEST",
                            _fmt_request_payload(messages, _retry_kwargs))
                     retry = client.chat.completions.create(**_retry_kwargs)
                     total_in += retry.usage.prompt_tokens
                     total_out += retry.usage.completion_tokens
                     final_text = retry.choices[0].message.content
-                    _trace("VOLUNTARY-BAIL RESCUE RESPONSE",
+                    _trace("JSON FINALIZE RESPONSE",
                            f"prompt_tokens={retry.usage.prompt_tokens} "
                            f"completion_tokens={retry.usage.completion_tokens}\n"
                            f"content={(final_text or '')[:1500]}")

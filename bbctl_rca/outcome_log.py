@@ -13,7 +13,8 @@ Failure-signal events that agent.py appends as they happen:
   dup_call_warning            — tool-call cache returned 1st-repeat soft warning
   dup_call_rejected           — tool-call cache returned 2nd+ repeat ERROR
   text_tool_calls_rescue      — LLM wrote tool_calls as TEXT, rescue triggered
-  voluntary_bail_rescue       — LLM bailed without JSON; bail rescue triggered
+  voluntary_bail_rescue       — DEPRECATED (phase 10 reclassified as normal
+                                JSON FINALIZE step, no longer emitted)
   force_final_cost_cap        — cost cap fired forced-final
   force_final_wall_clock      — wall-clock cap fired forced-final
   force_final_iter_cap        — MAX_TOOL_CALLS cap fired forced-final

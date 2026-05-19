@@ -61,14 +61,19 @@ def _pricing_for(model: str) -> tuple[float, float]:
     return p["in"] / 1_000_000, p["out"] / 1_000_000
 
 
-# Default agent model. Override per-RCA via BBCTL_RCA_MODEL env var to
-# A/B test different models without code change.
-# Default = gpt-5: strongest reasoning + verbatim recall on the OpenAI
-# fleet, fewer snippet hallucinations than gpt-4.1. Costs ~$3/$15 per
-# 1M tokens (vs $2/$8 for gpt-4.1) — the extra ~50% cost buys the
-# defense-in-depth previously implemented via response post-processing
-# (which is now removed per the phase-10 design).
-_DEFAULT_MODEL = os.environ.get("BBCTL_RCA_MODEL", "gpt-5")
+# Default agent model. Override per-RCA via BBCTL_RCA_MODEL env var.
+#
+# gpt-5 is preferred for its verbatim recall + reasoning, BUT requires
+# project-level access on the OpenAI dashboard. If you see a 403
+# PermissionDeniedError mentioning "does not have access to model
+# `gpt-5`", enable it under your OpenAI project → Limits → Models.
+#
+# Until access is granted, default to gpt-4o which most projects have
+# by default and which still gives better verbatim recall than gpt-4.1.
+# Fallback chain (manual): gpt-5 → gpt-4o → gpt-4.1 → gpt-4o-mini.
+#   sudo systemctl set-environment BBCTL_RCA_MODEL=gpt-5
+#   sudo systemctl restart bbctl-rca
+_DEFAULT_MODEL = os.environ.get("BBCTL_RCA_MODEL", "gpt-4o")
 
 # Back-compat: keep the old module-level constants pointing at the
 # default-model pricing so any external import doesn't break. Active

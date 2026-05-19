@@ -199,3 +199,13 @@ Examples:
   `aws_describe_target_group` (e.g. `/actuator/health`).
 - DO NOT fabricate "instance state: unhealthy" if `aws_describe_*`
   returned an error or empty. Set `needs_deeper: true` instead.
+- **DO NOT FINALIZE** if `vars/deployProdPlusOne.groovy` (or
+  `vars/nonwebdeploy.groovy` for plain Deploy stage) is absent from
+  `evidence[]`. AWS state alone is insufficient — the vars/ helper file
+  confirms WHICH deploy path ran. Having AWS data does NOT exempt you
+  from reading the implementation file.
+- **DO NOT FINALIZE** if `resources/scripts/non_web_healthy.sh` (or
+  `resources/scripts/healthy.sh`) is absent from `evidence[]`. This
+  file contains the poll loop that emitted the timeout message — it
+  must be cited at the specific line. Read it even if the root cause
+  is already confirmed by AWS state.

@@ -51,6 +51,7 @@ and `stage('Deploy')` that delegate to leaf helpers (`createGreenInfra`,
 Prod+1 sub-stages. Reading the wrong file leads to wrong evidence.
 
 **Chain for any `*Prod+1*` marker (except literal `(Prod+1)`):**
+**Skip reading `main_stagger_prod_plus_one.groovy` — it just calls `prodPlusOne(...)`, which you already know. Go directly to step 1.**
 1. `repo_read_file("jenkins_pipeline", "vars/prodPlusOne.groovy", 1, 80)`
 2. Find the `stage("<marker>")` block inside its body.
 3. Read the helper name the next line invokes

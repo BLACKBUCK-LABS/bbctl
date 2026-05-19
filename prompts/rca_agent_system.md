@@ -118,6 +118,14 @@ file content. Fetch what you need.
       live code is the source of truth. If a stage's body has been
       refactored, follow the code.
 
+      **Exception — skip main pipeline read for `*Prod+1*` markers:**
+      If the failed stage marker contains "Prod+1" (e.g. `Infra Prod+1`,
+      `Deploy Prod+1`), skip step d entirely — go directly to
+      `repo_read_file("jenkins_pipeline", "vars/prodPlusOne.groovy", 1, 80)`.
+      The main pipeline just calls `prodPlusOne(...)`, which you already
+      know from the job_flow doc; reading 200 lines of dispatch code adds
+      nothing and wastes one full iteration.
+
    e. Find the failed stage's body in the main pipeline. Read the
       helper name(s) it calls. Then
       `repo_read_file("jenkins_pipeline", "vars/<helperName>.groovy",
@@ -340,14 +348,24 @@ Return ONLY a JSON object with these keys:
   Do NOT add a `snippet` field — the server fills it in verbatim
   from disk. This eliminates a class of hallucination: you cannot
   invent code you are not writing. line_start and line_end MUST be
-  integers within the line range you actually read via repo_read_file
-  (or a tighter sub-range pointing at the line of interest).
+  integers pointing at the SPECIFIC LINES relevant to the failure
+  (typically 1-5 lines) — NOT the full window you read.
+  Read wide to understand context; cite narrow in evidence.
+  Example: you read deployProdPlusOne.groovy lines 1-80, but the
+  relevant line is 21 (the `libraryResource 'scripts/healthy.sh'`
+  call) — set line_start=21, line_end=21.
+- `main_*.groovy` (the dispatch pipeline file) MUST NOT appear in
+  `evidence[]`. Main pipeline is dispatch-only stub — it names helpers
+  but contains no implementation logic. Evidence cites `vars/` and
+  `resources/` files only.
 - For NON-repo evidence (jenkins_log, build_meta, jira, github, aws,
   runbooks): emit `{source, snippet}` where snippet is COPIED
   VERBATIM from the tool result text you received in this run.
   Do not paraphrase. Do not summarise. Do not invent.
 - `evidence[]` MUST contain at least one entry whose source is a
   `jenkins_pipeline/<file>` reference (mandatory pipeline cross-check).
+- `evidence[]` MUST ALWAYS include a `jenkins_log` source with the
+  exact fatal error line from the log (verbatim, not paraphrased).
 - For Jira citations: prefer `jira:<KEY>` over generic `jenkins_log`
   if the ticket fields are relevant.
 - For AWS citations: format as `aws:target_health(<tg_arn>)`,
@@ -413,11 +431,12 @@ NOT stop calling tools until BOTH of the following files have been read
 via `repo_read_file` and appear in `evidence[]`:
 
 1. `jenkins_pipeline/vars/deployProdPlusOne.groovy`
-   — or `vars/nonwebdeploy.groovy` for a plain `Deploy` stage failure.
-   Confirm which by reading `vars/prodPlusOne.groovy` first if needed.
-2. `jenkins_pipeline/resources/scripts/non_web_healthy.sh`
-   — or `resources/scripts/healthy.sh` if `service.lookup.service_type`
-   is `web`.
+   — or the deploy helper for the actual failed stage (read
+   `vars/prodPlusOne.groovy` first to find which helper it calls).
+2. The health script named in the `libraryResource 'scripts/...'` line
+   of the deploy helper above — e.g. `resources/scripts/healthy.sh` or
+   `resources/scripts/non_web_healthy.sh`. Do NOT assume the script
+   name; read the deploy helper code to find the actual reference.
 
 Having AWS state (`DescribeTargetHealth`, `DescribeTargetGroups`) does
 NOT satisfy this requirement. Those confirm WHAT is unhealthy; the vars/
@@ -486,7 +505,7 @@ WRONG (training-data default, no tool call):
 
 CORRECT (used real value from aws_describe response):
   cmd: "curl http://localhost:7005/actuator/health"
-       ↑ Port from DescribeTargetGroups.Port=7005
+       ↑ Port from DescribeTargetHealth.TargetHealthDescriptions[0].Target.Port=7005
        ↑ Path from DescribeTargetGroups.HealthCheckPath=/actuator/health
 
 CORRECT (discovery instead, when describe wasn't called):

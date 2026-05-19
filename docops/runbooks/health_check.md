@@ -20,39 +20,43 @@ SSM SendCommand or any other instance-shell path.
 
 ## Pipeline source to cross-check (MANDATORY) — CHAIN-WALK
 
+**Architecture rule:** The main pipeline file (e.g. `main_stagger_prod_plus_one.groovy`)
+is ONLY an entry point — it dispatches to helper functions defined in `vars/`.
+`vars/<helper>.groovy` contains the actual implementation. Evidence must cite
+`vars/` implementation files, NOT just the main pipeline's stage block.
+
 Follow the chain from log → main pipeline → outer helper → inner helper
 → resource script. Each file tells you where to look next; don't guess.
 
 Concrete chain for a Prod+1 failure:
 
 ```
-console log says: stage 'Prod+1' status=FAILED
+console log says: stage 'Deploy Prod+1' status=FAILED
                   Health Status failed to move to healthy ...
        ↓
 get_jenkins_job_config(job) returns scriptPath, e.g.
   main_stagger_prod_plus_one.groovy
        ↓
 repo_read_file(jenkins_pipeline, main_stagger_prod_plus_one.groovy)
-  shows:
-    stage('Prod+1') { steps { script {
-      prodPlusOne(params.SERVICE)       ← outer helper
-    }}}
+  shows stage('Prod+1') calls: prodPlusOne(params.SERVICE)
+  ← this is NOT the implementation; it's a dispatch to vars/prodPlusOne.groovy
        ↓
 repo_read_file(jenkins_pipeline, vars/prodPlusOne.groovy)
-  shows:
-    deployProdPlusOne(service, env)     ← inner helper
+  shows stage('Deploy Prod+1') calls: deployProdPlusOne(service, env)
+  ← inner helper; follow to its vars/ file
        ↓
 repo_read_file(jenkins_pipeline, vars/deployProdPlusOne.groovy)
   shows:
-    def healthyScript = libraryResource 'scripts/healthy.sh'
+    def healthyScript = libraryResource 'scripts/non_web_healthy.sh'
                                          ↑ Jenkins shared-lib path
        ↓
-repo_read_file(jenkins_pipeline, resources/scripts/healthy.sh)
+repo_read_file(jenkins_pipeline, resources/scripts/non_web_healthy.sh)
   shows the actual poll loop that printed "Health Status failed..."
+  ← THIS is the implementation line to cite in evidence
 ```
 
 **Known correct paths (Jenkins shared-lib convention):**
-- `vars/<helper>.groovy` — pipeline step implementation
+- `vars/<helper>.groovy` — pipeline step implementation (dispatch target)
 - `libraryResource 'X'` → on disk = `resources/X`
 - `resources/scripts/healthy.sh` — web service health poll
 - `resources/scripts/non_web_healthy.sh` — non-web health poll
@@ -61,29 +65,41 @@ repo_read_file(jenkins_pipeline, resources/scripts/healthy.sh)
 DO NOT try `vars/healthy.sh` or `resources/healthy.sh` — those don't
 exist. The script lives under `resources/scripts/`.
 
-## Drill plan — execute ALL in parallel in iter 0
+DO NOT stop chain-walk at the main pipeline file. `main_*.groovy:91-97`
+citing `stage('Deploy') { deploy(...) }` is NOT acceptable evidence —
+that's a one-line dispatch, not implementation.
 
-In a single LLM iteration, emit these tool calls in parallel:
+## Drill plan — execute ALL in parallel once runbook is loaded
 
-1. `get_jenkins_job_config(job)` → confirm scriptPath
-2. `repo_read_file("jenkins_pipeline", "vars/deployProdPlusOne.groovy", 1, 80)`
-   (or `vars/nonwebdeploy.groovy` for plain Deploy stage)
-3. `repo_read_file("jenkins_pipeline", "resources/scripts/non_web_healthy.sh", 1, 80)`
-   (or `resources/scripts/healthy.sh` if service_type is web — distinguish
-   via service.lookup.service_type)
+After reading this runbook, emit ALL of the following in a single iteration:
+
+1. `get_jenkins_job_config(job)` → confirm scriptPath (may already be done)
+2. **MANDATORY** — `repo_read_file("jenkins_pipeline", "vars/deployProdPlusOne.groovy", 1, 80)`
+   (or `vars/nonwebdeploy.groovy` for plain Deploy stage). This is the
+   implementation helper — you MUST read it to cite in evidence.
+3. **MANDATORY** — `repo_read_file("jenkins_pipeline", "resources/scripts/non_web_healthy.sh", 1, 80)`
+   (or `resources/scripts/healthy.sh` if service_type is web). This is the
+   poll loop that printed the timeout — you MUST read it to cite in evidence.
 4. `list_runbooks()` if unsure of class; you are already reading this
 5. **MANDATORY** — `aws_describe(service='elbv2', operation='DescribeTargetGroups',
    params={'TargetGroupArns': [<tg_arn>]}, aws_account=..., aws_region=...)`
-   → returns `Port` + `HealthCheckPath` + `HealthCheckProtocol`. You MUST use
-   these exact values in suggested_commands (do NOT default to 8080 or
-   `/admin/version`).
-6. `aws_describe(service='elbv2', operation='DescribeTargetHealth',
-   params={'TargetGroupArn': <tg_arn>}, ...)` → instance state + reason
-7. `aws_describe(service='ec2', operation='DescribeInstances',
-   params={'InstanceIds': [<instance_id>]}, ...)` → confirm state
+   → returns `HealthCheckPath` + `HealthCheckProtocol`. Use `HealthCheckPath`
+   verbatim in suggested_commands curl.
+6. **MANDATORY** — `aws_describe(service='elbv2', operation='DescribeTargetHealth',
+   params={'TargetGroupArn': <tg_arn>}, ...)` → `Target.Port` (the port the
+   instance is registered at, may differ from TG default Port) + health state
+   + reason. Use `Target.Port` for the curl port in suggested_commands.
+7. **MANDATORY** — `aws_describe(service='ec2', operation='DescribeInstances',
+   params={'InstanceIds': [<instance_id>]}, ...)` → confirm instance state
 
-If iter 0 results show drill-deeper need (e.g. canary TG had different
-state than blue), iter 1 can fetch
+**Port source rule:** `DescribeTargetGroups.Port` is the ALB-side default port
+(what the listener forwards to the TG). `DescribeTargetHealth.Target.Port` is
+the port the specific instance is registered at — this is the port the service
+binds to on the OS, and the port ALB actually health-checks. Use
+`DescribeTargetHealth.Target.Port` for `ss -tlnp` and `curl` in suggested_commands.
+
+If iter results show drill-deeper need (e.g. canary TG had different
+state than blue), next iter can fetch
 `aws_describe(elbv2, DescribeRules, {'RuleArns': [<rule_arn>]})`
 to see traffic split. Most cases finish in 1-2 iters.
 
@@ -106,12 +122,13 @@ Action:
 
   Inside the shell, check (in order, USE REAL VALUES):
     sudo tail -n 200 <REAL_LOG_PATH from service.lookup.filebeat_log_path>
-    sudo ss -tlnp | grep <REAL_PORT from aws_describe.Port>
-    curl -i http://localhost:<REAL_PORT><REAL_HC_PATH from aws_describe.HealthCheckPath>
+    sudo ss -tlnp | grep <REAL_PORT from DescribeTargetHealth.Target.Port>
+    curl -i http://localhost:<REAL_PORT><REAL_HC_PATH from DescribeTargetGroups.HealthCheckPath>
     systemctl status <REAL_SVC_NAME>
 
-  If aws_describe(DescribeTargetGroups) returned Port=7005 and
-  HealthCheckPath=/actuator/health, the suggested_commands MUST read:
+  If DescribeTargetHealth returned Target.Port=7005 and
+  DescribeTargetGroups returned HealthCheckPath=/actuator/health, the
+  suggested_commands MUST read:
     curl -i http://localhost:7005/actuator/health
   NOT:
     curl -i http://localhost:8080/admin/version
@@ -127,27 +144,34 @@ Verify:
 
 ## STRICT — values discipline for health_check class
 
-| Forbidden default (training-data bias)         | Real source                                 |
-|------------------------------------------------|---------------------------------------------|
-| port 8080                                      | aws_describe(elbv2, DescribeTargetGroups).Port |
-| /admin/version                                 | aws_describe(elbv2, DescribeTargetGroups).HealthCheckPath |
-| /var/log/blackbuck/gps.log                     | service.lookup.filebeat_log_path            |
-| /var/lib/jenkins/.ssh/blackbuck_production.pem | service.lookup.pem_path_hint (use BBCTL anyway) |
+| Forbidden default (training-data bias)         | Real source                                                       |
+|------------------------------------------------|-------------------------------------------------------------------|
+| port 8080 in curl/ss                           | DescribeTargetHealth.Target.Port (instance registration port)     |
+| port 80 in curl/ss                             | Same — use Target.Port, not TG-level Port                         |
+| /admin/version                                 | aws_describe(elbv2, DescribeTargetGroups).HealthCheckPath         |
+| /var/log/blackbuck/gps.log                     | service.lookup.filebeat_log_path                                  |
+| /var/lib/jenkins/.ssh/blackbuck_production.pem | service.lookup.pem_path_hint (use BBCTL anyway)                   |
 
-If you wrote port 8080 in your draft JSON and the aws_describe
-returned a different port, REVISE before emitting. Each value in
-suggested_commands must trace to a tool result from THIS RCA.
+`DescribeTargetGroups.Port` = ALB listener default forward port (not what service binds to).
+`DescribeTargetHealth.Target.Port` = port this instance is registered at = what ALB actually
+health-checks = what service must be listening on. Always use Target.Port for ss/curl.
+
+If you wrote any port in your draft JSON that didn't come from DescribeTargetHealth.Target.Port,
+REVISE before emitting. Each value in suggested_commands must trace to a tool result from THIS RCA.
 
 ## Output schema notes
 - `error_class: "health_check"`
 - `failed_stage: "Deploy"` or "Deploy Prod+1"
-- `evidence[]` must include:
+- `evidence[]` must include ALL of the following — missing any is incomplete:
   - `jenkins_log` showing health-check timeout
   - `jenkins_pipeline/vars/deployProdPlusOne.groovy:<line>` (or
-    `nonwebdeploy.groovy`) — the helper that orchestrated the deploy
+    `nonwebdeploy.groovy`) — the vars/ helper that orchestrated deploy.
+    **NOT** `main_stagger_prod_plus_one.groovy` — main pipeline only dispatches;
+    implementation is in the vars/ file.
   - `jenkins_pipeline/resources/scripts/non_web_healthy.sh:<line>` — poll loop
-  - `aws:target_health(<tg_arn>)` — state + reason from describe
-  - `aws:target_group(<tg_arn>)` — expected port + health_check_path
+    script (the line that printed the timeout message)
+  - `aws:target_health(<tg_arn>)` — state + reason from DescribeTargetHealth
+  - `aws:target_group(<tg_arn>)` — HealthCheckPath + HealthCheckProtocol
   - `aws:instance(<instance_id>)` — running state + tags
 
 ## suggested_commands
@@ -165,8 +189,8 @@ Examples:
 
 - DO NOT emit `aws_run_ssm_command(...)` — tool is removed.
 - DO NOT emit `ssh -i <pem>` — never use raw SSH.
-- DO NOT default to port `8080` — use `target_port` from
-  service.lookup or `aws_describe_target_group.port`.
+- DO NOT default to any port — use `DescribeTargetHealth.Target.Port`
+  (the port the instance is registered at in the target group).
 - DO NOT default to `/var/log/blackbuck/gps.log` — that's the GPS
   service's log. Use `service.lookup.log_path` (e.g.
   `/var/log/blackbuck/test-supply-wrapper-nonweb.log` for service

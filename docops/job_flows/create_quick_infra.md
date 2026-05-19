@@ -1,11 +1,10 @@
 # Job flow: create-quick-infra
 
 ## Match
-Job whose Jenkins config `script_path` is `create-quick-infra.groovy`
-OR whose job name contains `quick-infra` / `create-quick-infra` /
-`-devops-test`. The pipeline body invokes `QuickBuildJob`, `QuickDeploy`,
-`buildJobFrontend`, `QuickDeployFrontend`, `JiraDetails`,
-`UpdateJiraStatus` as the major helpers.
+- `script_path` ends with `create-quick-infra.groovy`, OR
+- `inline_script` contains stage bodies calling `QuickBuildJob(...)`
+  AND `QuickDeploy(...)` (the QuickBuildJob/QuickDeploy pair is
+  distinctive — no other flow uses these).
 
 ## Main pipeline
 `jenkins_pipeline/create-quick-infra.groovy`

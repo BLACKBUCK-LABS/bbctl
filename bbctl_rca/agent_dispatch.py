@@ -28,6 +28,7 @@ TOOL_DISPATCH: dict[str, callable] = {
 
     # ── local repos (jenkins_pipeline / InfraComposer) ──
     "repo_read_file":              mcp_tools.repo_read_file,
+    "repo_list_dir":               mcp_tools.repo_list_dir,
     "repo_search":                 mcp_tools.repo_search,
     "repo_find_function":          mcp_tools.repo_find_function,
     "repo_recent_commits":         mcp_tools.repo_recent_commits,

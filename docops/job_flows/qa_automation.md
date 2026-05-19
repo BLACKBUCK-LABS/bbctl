@@ -1,9 +1,10 @@
 # Job flow: QA-Automation
 
 ## Match
-Job whose Jenkins config `script_path` is `QA-Automation.groovy` OR
-whose name contains `QA-automation` / `qa-automation`. The pipeline
-runs test cases for a service, uploads reports to Slack.
+- `script_path` ends with `QA-Automation.groovy`, OR
+- `inline_script` contains stages `git checkout`, `Run Test Cases`,
+  `Test Reports` (these three stage names together are distinctive
+  for QA automation jobs).
 
 ## Main pipeline
 `jenkins_pipeline/QA-Automation.groovy`

@@ -1,10 +1,12 @@
 # Job flow: stagger-prod-plus-one-frontend
 
 ## Match
-Job whose Jenkins config `script_path` is
-`stagger-prod-plus-one-frontend.groovy` OR whose `inline_script`
-contains `prodPlusOneFrontend(params.SERVICE, params.COMMIT_ID)` as a
-stage body. SERVICE param resolves to a frontend service.
+- `script_path` ends with `stagger-prod-plus-one-frontend.groovy`, OR
+- `inline_script` contains a stage body
+  `prodPlusOneFrontend(params.SERVICE, params.COMMIT_ID)`.
+This flow handles FRONTEND services. Do not confuse with the non-
+frontend variant — they share many stage NAMES but route to different
+wrapper helpers internally.
 
 ## Main pipeline
 `jenkins_pipeline/stagger-prod-plus-one-frontend.groovy`

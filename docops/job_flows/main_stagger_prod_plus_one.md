@@ -1,10 +1,13 @@
 # Job flow: main_stagger_prod_plus_one
 
 ## Match
-Job whose Jenkins config `script_path` is `main_stagger_prod_plus_one.groovy`
-OR whose `inline_script` contains `prodPlusOne(params.SERVICE)` as a stage
-body. Service param `SERVICE` resolves to a web-style backend service
-(non-frontend, non-nonweb).
+- `script_path` (from `get_jenkins_job_config`) ends with
+  `main_stagger_prod_plus_one.groovy`, OR
+- `inline_script` (when `script_path` is null) contains a stage body
+  `prodPlusOne(params.SERVICE)` AND does NOT contain
+  `prodPlusOneFrontend(...)`.
+The Jenkins display name is irrelevant — match on script_path or
+inline_script content only.
 
 ## Main pipeline
 `jenkins_pipeline/main_stagger_prod_plus_one.groovy`

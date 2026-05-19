@@ -231,6 +231,34 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "repo_list_dir",
+            "description": (
+                "List immediate children (files + subdirs) of a directory "
+                "in a locally-cloned repo. Use this to discover what main "
+                "pipeline files exist when a job_flow doc does not match "
+                "the current job, or to find which helper files live "
+                "under vars/, or to see scripts under resources/scripts/. "
+                "Directories are returned with a trailing slash."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo": {
+                        "type": "string",
+                        "enum": ["jenkins_pipeline", "InfraComposer"],
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Path inside the repo. Pass empty string for repo root.",
+                    },
+                },
+                "required": ["repo"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "repo_search",
             "description": (
                 "Run ripgrep across a local clone. Returns matches with "

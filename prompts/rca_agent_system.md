@@ -84,14 +84,33 @@ file content. Fetch what you need.
       That is the failed stage.
 
    b. Call `list_job_flows()` (in iter 0 alongside other independent
-      calls). Match your Jenkins job to one of the listed flows by
-      the entry's `match` text — usually the `script_path` returned
-      by `get_jenkins_job_config(job)` plus the SERVICE param.
+      calls). MATCH BY EVIDENCE FROM get_jenkins_job_config, NOT by
+      Jenkins display name:
+        - If `script_path` is non-null, match its stem
+          (filename without `.groovy`) to a flow doc name.
+        - If `script_path` is null, scan `inline_script` body for the
+          distinctive signature lines listed in each flow's `## Match`
+          section.
+      The Jenkins display name in `build_meta.job` is irrelevant for
+      routing — ops can rename it any time without code changes.
 
    c. Call `read_job_flow(<matched name>)`. The flow doc tells you
       which main pipeline file to read and which top-level stages
       delegate to which helpers. The doc names FILE paths only — it
       does NOT contain example values like ARNs or ports.
+
+   c2. **Fallback for unknown jobs** — if `list_job_flows()` shows no
+       match for the current job:
+        - Call `repo_list_dir("jenkins_pipeline", "")` to enumerate
+          available main pipeline files.
+        - Pick the .groovy file whose name best matches the
+          `script_path` returned by `get_jenkins_job_config`, OR
+          whose content best matches `inline_script` signature lines
+          (use `repo_search` if you need to confirm).
+        - Read that main pipeline file with `repo_read_file` and
+          derive the chain from its body using the universal Jenkins
+          facts above. Do NOT pick an unrelated flow doc just to
+          have something to read.
 
    d. Call `repo_read_file("jenkins_pipeline", <main pipeline path>,
       1, 200)` to verify the current stage-to-helper mapping in code.

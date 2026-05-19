@@ -1,10 +1,11 @@
 # Job flow: hotfix-noncanary
 
 ## Match
-Job whose Jenkins config `script_path` is `hotfix-noncanary.groovy` OR
-whose pipeline body uses `pre_deployment`, `instance_provisioning`,
-`artifact_deployment`, `health_validation`, `cutover_cleanup`,
-`hotfix_rollback` as the major stage helpers.
+- `script_path` ends with `hotfix-noncanary.groovy`, OR
+- `inline_script` contains stage bodies calling `pre_deployment(...)`,
+  `instance_provisioning(...)`, `artifact_deployment(...)`,
+  `health_validation(...)`, `cutover_cleanup(...)`, with
+  `hotfix_rollback()` in the `post { failure { ... } }` block.
 
 ## Main pipeline
 `jenkins_pipeline/hotfix-noncanary.groovy`

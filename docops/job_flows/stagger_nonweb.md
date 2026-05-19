@@ -1,10 +1,13 @@
 # Job flow: stagger-nonweb
 
 ## Match
-Job whose Jenkins config `script_path` is `stagger-nonweb.groovy` OR
-whose `SERVICE` parameter resolves to a non-web service (typically
-suffixed `-nonweb`, `-non-web`, `-nw-*`, or otherwise marked
-`is_non_web=true` in `service.lookup`).
+- `script_path` ends with `stagger-nonweb.groovy`, OR
+- `inline_script` contains stage bodies `createGreenInfra(...)` and
+  `deploy(..., "prod")` and `rollout(...)` and `destroyBlueInfra(...)`
+  with NO `prodPlusOne(...)` stage between Build and Infra (no Prod+1
+  wrapper).
+Optional confirmation: `service.lookup.is_non_web == true` for the
+SERVICE param.
 
 ## Main pipeline
 `jenkins_pipeline/stagger-nonweb.groovy`

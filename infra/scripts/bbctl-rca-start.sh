@@ -4,7 +4,7 @@
 # arn:aws:secretsmanager:ap-south-1:<acct>:secret:bbctl-rca/prod-*
 set -euo pipefail
 
-APP_DIR="/opt/bbctl-rca"
+APP_DIR="/home/ubuntu/project/bbctl"
 VENV="$APP_DIR/.venv"
 export AWS_REGION="${AWS_REGION:-ap-south-1}"
 export BBCTL_SECRET_ID="${BBCTL_SECRET_ID:-bbctl-rca/prod}"
@@ -18,9 +18,4 @@ SECRETS_OUTPUT=$("$VENV/bin/python" -m bbctl_rca.secrets) || {
 }
 eval "$SECRETS_OUTPUT"
 
-exec "$VENV/bin/uvicorn" bbctl_rca.main:app \
-  --host 0.0.0.0 \
-  --port 7070 \
-  --workers 2 \
-  --log-level info \
-  --no-access-log
+exec "$VENV/bin/uvicorn" bbctl_rca.main:app --host 0.0.0.0 --port 7070 --workers 2 --log-level info --no-access-log

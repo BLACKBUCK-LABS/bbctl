@@ -1,222 +1,80 @@
 # Runbook: health_check
 
 ## What this class means
-The ALB target group probe never returned healthy for the new instance
-during deploy. Pipeline aborts in the `Deploy` (or `Deploy Prod+1`) stage
-after N failed poll iterations. The service either crashed at startup,
-bound to the wrong port, or the health-check path returns non-2xx.
-
-**Important — scope of this RCA:** RCA confirms WHERE the failure is
-(which TG, which instance, what config it expected) but DOES NOT log
-into the instance to determine WHY the service is unhealthy. That last
-step is for the operator via `bbctl shell <instance_id>`. We never use
-SSM SendCommand or any other instance-shell path.
+ALB target group probe never returned healthy during deploy. Pipeline aborts
+in `Deploy` or `Deploy Prod+1` stage after N failed poll iterations. Service
+crashed at startup, bound to wrong port, or health-check path returns non-2xx.
+RCA confirms WHERE (TG, instance, config) — does NOT determine WHY without
+instance access. Operator uses `bbctl shell <instance_id>` for that.
 
 ## Detect signals
 - `Health Status failed to move to healthy within the time limit`
-- `ALB target unhealthy`
-- `Iteration <N> of <M>: still draining` repeated
-- Failed stage = "Deploy" or "Deploy Prod+1"
+- `ALB target unhealthy` / `Iteration <N> of <M>: still draining`
+- Failed stage = `Deploy` or `Deploy Prod+1`
 
-## Pipeline source to cross-check (MANDATORY) — CHAIN-WALK
+## Chain-walk rule (MANDATORY)
 
-**Architecture rule:** The main pipeline file (e.g. `main_stagger_prod_plus_one.groovy`)
-is ONLY an entry point — it dispatches to helper functions defined in `vars/`.
-`vars/<helper>.groovy` contains the actual implementation. Evidence must cite
-`vars/` implementation files, NOT just the main pipeline's stage block.
+Main pipeline file = dispatch only. `vars/<helper>.groovy` = implementation.
+Evidence must cite `vars/` files, NOT the main pipeline stage block.
 
-Follow the chain from log → main pipeline → outer helper → inner helper
-→ resource script. Each file tells you where to look next; don't guess.
+Chain: `main_*.groovy` → `vars/prodPlusOne.groovy` → `vars/deployProdPlusOne.groovy`
+→ read `libraryResource 'scripts/X'` line → `resources/scripts/X`
 
-Concrete chain for a Prod+1 failure:
+- `libraryResource 'X'` resolves on disk to `resources/X`
+- Do NOT assume script name — read `deployProdPlusOne.groovy` to find actual `libraryResource` reference (`healthy.sh` or `non_web_healthy.sh`)
+- Script lives under `resources/scripts/` only — not `vars/` or `resources/` root
 
-```
-console log says: stage 'Deploy Prod+1' status=FAILED
-                  Health Status failed to move to healthy ...
-       ↓
-get_jenkins_job_config(job) returns scriptPath, e.g.
-  main_stagger_prod_plus_one.groovy
-       ↓
-repo_read_file(jenkins_pipeline, main_stagger_prod_plus_one.groovy)
-  shows stage('Prod+1') calls: prodPlusOne(params.SERVICE)
-  ← this is NOT the implementation; it's a dispatch to vars/prodPlusOne.groovy
-       ↓
-repo_read_file(jenkins_pipeline, vars/prodPlusOne.groovy)
-  shows stage('Deploy Prod+1') calls: deployProdPlusOne(service, env)
-  ← inner helper; follow to its vars/ file
-       ↓
-repo_read_file(jenkins_pipeline, vars/deployProdPlusOne.groovy)
-  shows:
-    def healthyScript = libraryResource 'scripts/healthy.sh'
-                                         ↑ Jenkins shared-lib path
-                                           (may be healthy.sh OR
-                                            non_web_healthy.sh — read
-                                            deployProdPlusOne.groovy
-                                            to find the actual reference)
-       ↓
-repo_read_file(jenkins_pipeline, resources/scripts/healthy.sh)
-  shows the actual poll loop that printed "Health Status failed..."
-  ← THIS is the implementation line to cite in evidence
-```
+## Drill plan — ALL in parallel once runbook loaded
 
-**Known correct paths (Jenkins shared-lib convention):**
-- `vars/<helper>.groovy` — pipeline step implementation (dispatch target)
-- `libraryResource 'X'` → on disk = `resources/X`
-- `resources/scripts/healthy.sh` — health poll script (used by `deployProdPlusOne.groovy`)
-- `resources/scripts/non_web_healthy.sh` — alternate poll script (used by some other helpers)
-- `resources/canary.py` — canary measurement
+1. `get_jenkins_job_config(job)` — confirm scriptPath (may already be done)
+2. **MANDATORY** `repo_read_file("jenkins_pipeline", "vars/deployProdPlusOne.groovy", 1, 80)` — implementation helper
+3. **MANDATORY** `repo_read_file` the health script found in step 2's `libraryResource 'scripts/X'` line — the poll loop
+4. **MANDATORY** `aws_describe(elbv2, DescribeTargetGroups, {TargetGroupArns:[<tg_arn>]}, ...)` → `HealthCheckPath`
+5. **MANDATORY** `aws_describe(elbv2, DescribeTargetHealth, {TargetGroupArn:<tg_arn>}, ...)` → `Target.Port` + state
+6. **MANDATORY** `aws_describe(ec2, DescribeInstances, {InstanceIds:[<instance_id>]}, ...)` → instance state
 
-**Do NOT assume which health script is used.** Read `vars/deployProdPlusOne.groovy`
-first — the `libraryResource 'scripts/X'` line tells you the actual script name.
+Note: steps 3 depends on step 2 result — sequential read is correct.
 
-DO NOT try `vars/healthy.sh` or `resources/healthy.sh` — those don't
-exist. The script lives under `resources/scripts/`.
+## Values discipline
 
-DO NOT stop chain-walk at the main pipeline file. `main_*.groovy:91-97`
-citing `stage('Deploy') { deploy(...) }` is NOT acceptable evidence —
-that's a one-line dispatch, not implementation.
-
-## Drill plan — execute ALL in parallel once runbook is loaded
-
-After reading this runbook, emit ALL of the following in a single iteration:
-
-1. `get_jenkins_job_config(job)` → confirm scriptPath (may already be done)
-2. **MANDATORY** — `repo_read_file("jenkins_pipeline", "vars/deployProdPlusOne.groovy", 1, 80)`
-   (or `vars/nonwebdeploy.groovy` for plain Deploy stage). This is the
-   implementation helper — you MUST read it to cite in evidence.
-3. **MANDATORY** — read the health-check script referenced in `deployProdPlusOne.groovy`.
-   Look for `libraryResource 'scripts/X'` in that file — X is either `healthy.sh`
-   or `non_web_healthy.sh` depending on the helper. Read `resources/scripts/X`.
-   This poll loop printed the timeout — you MUST read it to cite in evidence.
-4. `list_runbooks()` if unsure of class; you are already reading this
-5. **MANDATORY** — `aws_describe(service='elbv2', operation='DescribeTargetGroups',
-   params={'TargetGroupArns': [<tg_arn>]}, aws_account=..., aws_region=...)`
-   → returns `HealthCheckPath` + `HealthCheckProtocol`. Use `HealthCheckPath`
-   verbatim in suggested_commands curl.
-6. **MANDATORY** — `aws_describe(service='elbv2', operation='DescribeTargetHealth',
-   params={'TargetGroupArn': <tg_arn>}, ...)` → `Target.Port` (the port the
-   instance is registered at, may differ from TG default Port) + health state
-   + reason. Use `Target.Port` for the curl port in suggested_commands.
-7. **MANDATORY** — `aws_describe(service='ec2', operation='DescribeInstances',
-   params={'InstanceIds': [<instance_id>]}, ...)` → confirm instance state
-
-**Port source rule:** `DescribeTargetGroups.Port` is the ALB-side default port
-(what the listener forwards to the TG). `DescribeTargetHealth.Target.Port` is
-the port the specific instance is registered at — this is the port the service
-binds to on the OS, and the port ALB actually health-checks. Use
-`DescribeTargetHealth.Target.Port` for `ss -tlnp` and `curl` in suggested_commands.
-
-If iter results show drill-deeper need (e.g. canary TG had different
-state than blue), next iter can fetch
-`aws_describe(elbv2, DescribeRules, {'RuleArns': [<rule_arn>]})`
-to see traffic split. Most cases finish in 1-2 iters.
+| Value in suggested_commands | Required source |
+|---|---|
+| curl/ss port | `DescribeTargetHealth.Target.Port` — instance registration port, NOT `DescribeTargetGroups.Port` (ALB-side default) |
+| health-check path | `DescribeTargetGroups.HealthCheckPath` |
+| log path | `service.lookup.filebeat_log_path` |
 
 ## Action template
+
 ```
-Finding: Service '<svc>' on instance <instance_id> in account
-         <aws_account> (<region>) failed to become healthy during
-         <failed_stage>. ALB target health = unhealthy, reason =
-         <reason from describe_target_health>. Target group expects
-         port=<tg.port>, health_check_path=<tg.health_check_path>.
+Finding: <svc> on <instance_id> in <aws_account>/<region> failed to become
+healthy during <failed_stage>. Target.Port=<from DescribeTargetHealth>,
+HealthCheckPath=<from DescribeTargetGroups>, state=unhealthy,
+reason=<from DescribeTargetHealth>.
 
-Action:
-  Investigate service-side cause on the instance using BBCTL. RCA
-  cannot determine WHY the service is unhealthy without instance
-  access — operator runs these checks. SUBSTITUTE the real values
-  from aws_describe + service.lookup BEFORE emitting; do NOT leave
-  <placeholder> strings.
+Action: bbctl shell <instance_id>
+  sudo tail -n 200 <service.lookup.filebeat_log_path>
+  sudo ss -tlnp | grep <DescribeTargetHealth.Target.Port>
+  curl -i http://localhost:<Target.Port><HealthCheckPath>
+  systemctl status <svc>
 
-    bbctl shell <REAL_INSTANCE_ID>      # from log_window verbatim
-
-  Inside the shell, check (in order, USE REAL VALUES):
-    sudo tail -n 200 <REAL_LOG_PATH from service.lookup.filebeat_log_path>
-    sudo ss -tlnp | grep <REAL_PORT from DescribeTargetHealth.Target.Port>
-    curl -i http://localhost:<REAL_PORT><REAL_HC_PATH from DescribeTargetGroups.HealthCheckPath>
-    systemctl status <REAL_SVC_NAME>
-
-  If DescribeTargetHealth returned Target.Port=7005 and
-  DescribeTargetGroups returned HealthCheckPath=/actuator/health, the
-  suggested_commands MUST read:
-    curl -i http://localhost:7005/actuator/health
-  NOT:
-    curl -i http://localhost:8080/admin/version
-
-  If service is up + endpoint returns 200, ALB connectivity is the
-  issue: check the instance's security group ingress from the
-  ALB SG on the TG port.
-
-Verify:
-  Re-run pipeline AFTER fixing the service-side cause. The Deploy
-  stage should pass past the health-check loop.
+Verify: re-run pipeline; Deploy stage should pass health-check loop.
 ```
 
-## STRICT — values discipline for health_check class
+## Output schema — evidence[] required (ALL must be present)
 
-| Forbidden default (training-data bias)         | Real source                                                       |
-|------------------------------------------------|-------------------------------------------------------------------|
-| port 8080 in curl/ss                           | DescribeTargetHealth.Target.Port (instance registration port)     |
-| port 80 in curl/ss                             | Same — use Target.Port, not TG-level Port                         |
-| /admin/version                                 | aws_describe(elbv2, DescribeTargetGroups).HealthCheckPath         |
-| /var/log/blackbuck/gps.log                     | service.lookup.filebeat_log_path                                  |
-| /var/lib/jenkins/.ssh/blackbuck_production.pem | service.lookup.pem_path_hint (use BBCTL anyway)                   |
+- `jenkins_log` — health-check timeout line
+- `jenkins_pipeline/vars/deployProdPlusOne.groovy:<line>` — deploy helper (NOT main pipeline)
+- `jenkins_pipeline/resources/scripts/<X>:<line>` — health poll script (`libraryResource` reference from above)
+- `aws:target_health(<tg_arn>)` — state + reason
+- `aws:target_group(<tg_arn>)` — HealthCheckPath
+- `aws:instance(<instance_id>)` — running state
 
-`DescribeTargetGroups.Port` = ALB listener default forward port (not what service binds to).
-`DescribeTargetHealth.Target.Port` = port this instance is registered at = what ALB actually
-health-checks = what service must be listening on. Always use Target.Port for ss/curl.
+## STRICT — DO NOT
 
-If you wrote any port in your draft JSON that didn't come from DescribeTargetHealth.Target.Port,
-REVISE before emitting. Each value in suggested_commands must trace to a tool result from THIS RCA.
-
-## Output schema notes
-- `error_class: "health_check"`
-- `failed_stage: "Deploy"` or "Deploy Prod+1"
-- `evidence[]` must include ALL of the following — missing any is incomplete:
-  - `jenkins_log` showing health-check timeout
-  - `jenkins_pipeline/vars/deployProdPlusOne.groovy:<line>` (or
-    `nonwebdeploy.groovy`) — the vars/ helper that orchestrated deploy.
-    **NOT** `main_stagger_prod_plus_one.groovy` — main pipeline only dispatches;
-    implementation is in the vars/ file.
-  - `jenkins_pipeline/resources/scripts/<X>:<line>` — the health poll script
-    referenced by `libraryResource` in `deployProdPlusOne.groovy` (either
-    `healthy.sh` or `non_web_healthy.sh` — follow the code, do not assume)
-  - `aws:target_health(<tg_arn>)` — state + reason from DescribeTargetHealth
-  - `aws:target_group(<tg_arn>)` — HealthCheckPath + HealthCheckProtocol
-  - `aws:instance(<instance_id>)` — running state + tags
-
-## suggested_commands
-
-ALL commands are `tier: safe` (BBCTL UI interactive login is read-only
-from the operator's perspective — they decide what to run inside).
-Examples:
-- `bbctl shell <instance_id>` (safe — interactive login)
-- `aws elbv2 describe-target-health --target-group-arn <arn> --region <region>`
-  (safe — describe only)
-- `aws ec2 describe-instances --instance-ids <id> --region <region>`
-  (safe — describe only)
-
-## STRICT — DO NOT WRITE
-
-- DO NOT emit `aws_run_ssm_command(...)` — tool is removed.
-- DO NOT emit `ssh -i <pem>` — never use raw SSH.
-- DO NOT default to any port — use `DescribeTargetHealth.Target.Port`
-  (the port the instance is registered at in the target group).
-- DO NOT default to `/var/log/blackbuck/gps.log` — that's the GPS
-  service's log. Use `service.lookup.log_path` (e.g.
-  `/var/log/blackbuck/test-supply-wrapper-nonweb.log` for service
-  `test-supply-wrapper-nonweb`).
-- DO NOT default to `/admin/version` — use `health_check_path` from
-  `aws_describe_target_group` (e.g. `/actuator/health`).
-- DO NOT fabricate "instance state: unhealthy" if `aws_describe_*`
-  returned an error or empty. Set `needs_deeper: true` instead.
-- **DO NOT FINALIZE** if `vars/deployProdPlusOne.groovy` (or
-  `vars/nonwebdeploy.groovy` for plain Deploy stage) is absent from
-  `evidence[]`. AWS state alone is insufficient — the vars/ helper file
-  confirms WHICH deploy path ran. Having AWS data does NOT exempt you
-  from reading the implementation file.
-- **DO NOT FINALIZE** if the health-check shell script is absent from
-  `evidence[]`. Read `vars/deployProdPlusOne.groovy` to find the
-  `libraryResource 'scripts/X'` reference, then read
-  `resources/scripts/X` (either `healthy.sh` or `non_web_healthy.sh`
-  — the code tells you which). This script contains the poll loop that
-  emitted the timeout message. Read it even if AWS state already
-  confirms the class.
+- `aws_run_ssm_command(...)` — removed tool
+- `ssh -i <pem>` — use BBCTL only
+- hardcode port 8080 or 80 — use `DescribeTargetHealth.Target.Port`
+- hardcode `/admin/version` — use `DescribeTargetGroups.HealthCheckPath`
+- hardcode `/var/log/blackbuck/gps.log` — use `service.lookup.filebeat_log_path`
+- finalize without `vars/deployProdPlusOne.groovy` in evidence — AWS state alone is insufficient
+- finalize without the health poll script in evidence — read `resources/scripts/X` first

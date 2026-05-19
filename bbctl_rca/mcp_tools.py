@@ -1,9 +1,11 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 
-REPOS_DIR = Path("/opt/bbctl-rca/repos")
-DOCS_DIR = Path("/opt/bbctl-rca/docops")
+_BASE_DIR = Path(__file__).resolve().parent.parent
+REPOS_DIR = Path(os.environ.get("BBCTL_REPOS_DIR", str(_BASE_DIR / "repos")))
+DOCS_DIR  = Path(os.environ.get("BBCTL_DOCS_DIR",  str(_BASE_DIR / "docops")))
 CONFIG_JSON = REPOS_DIR / "jenkins_pipeline" / "resources" / "config.json"
 
 _config: dict | None = None
@@ -171,15 +173,10 @@ def docs_get(name: str) -> str:
 # after an error class (compliance.md, health_check.md, …). Local-dev
 # fallback in the repo tree so tests can run without /opt/bbctl-rca/.
 RUNBOOKS_DIR = DOCS_DIR / "runbooks"
-RUNBOOKS_DIR_FALLBACK = Path(__file__).resolve().parent.parent / "docops" / "runbooks"
 
 
 def _runbooks_dir() -> Path:
-    # Use primary only if it exists AND has .md files.
-    # An empty primary dir must not shadow the git-tracked fallback.
-    if RUNBOOKS_DIR.is_dir() and any(RUNBOOKS_DIR.glob("*.md")):
-        return RUNBOOKS_DIR
-    return RUNBOOKS_DIR_FALLBACK
+    return RUNBOOKS_DIR
 
 
 def list_runbooks() -> list[dict]:

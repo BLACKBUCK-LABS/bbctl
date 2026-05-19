@@ -988,7 +988,7 @@ def _fill_repo_snippets(evidence: list) -> list:
         is passed through unchanged (LLM still emits `snippet`
         verbatim for those, per the system-prompt schema).
       - Reads the file from the local clone under
-        $BBCTL_REPOS_DIR (defaults to /opt/bbctl-rca/repos).
+        $BBCTL_REPOS_DIR (defaults to /home/ubuntu/project/bbctl/repos).
       - Strips the optional `:<line>` suffix from `source` if the
         LLM left one — we treat it as legacy and replace with the
         line range fields below.
@@ -1001,7 +1001,7 @@ def _fill_repo_snippets(evidence: list) -> list:
     """
     if not isinstance(evidence, list):
         return evidence
-    repos_dir = Path(os.environ.get("BBCTL_REPOS_DIR", "/opt/bbctl-rca/repos"))
+    repos_dir = Path(os.environ.get("BBCTL_REPOS_DIR", "/home/ubuntu/project/bbctl/repos"))
     out = []
     for item in evidence:
         if not isinstance(item, dict):
@@ -1156,7 +1156,7 @@ def _filter_hallucinated_snippets(evidence: list, read_files: set[str]) -> tuple
     # Cache file contents we read so multiple evidence entries for the
     # same file only hit disk once.
     file_cache: dict[str, str] = {}
-    repos_dir = Path(os.environ.get("BBCTL_REPOS_DIR", "/opt/bbctl-rca/repos"))
+    repos_dir = Path(os.environ.get("BBCTL_REPOS_DIR", "/home/ubuntu/project/bbctl/repos"))
 
     def _load_file(repo_path: str) -> str | None:
         if repo_path in file_cache:

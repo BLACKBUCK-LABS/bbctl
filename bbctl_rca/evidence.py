@@ -5,10 +5,11 @@ This module checks each evidence entry against the synced repos on disk and
 annotates with `verified: true|false`. Does not fail the RCA — just adds
 ground-truth signal for the operator.
 """
+import os
 from pathlib import Path
 import re
 
-REPOS_DIR = Path("/opt/bbctl-rca/repos")
+REPOS_DIR = Path(os.environ.get("BBCTL_REPOS_DIR", str(Path(__file__).resolve().parent.parent / "repos")))
 
 # Sources that are tool/pipeline outputs (not files on disk) — auto-verified
 _TOOL_SOURCES = {

@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 
-REPOS_DIR = Path(os.environ.get("BBCTL_REPOS_DIR", "/opt/bbctl-rca/repos"))
+REPOS_DIR = Path(os.environ.get("BBCTL_REPOS_DIR", str(Path(__file__).resolve().parent.parent / "repos")))
 FETCH_TIMEOUT_SEC = 3
 DEDUP_WINDOW_SEC = 60
 

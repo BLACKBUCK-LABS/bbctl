@@ -5,12 +5,13 @@ the jenkins_pipeline (groovy/java) and InfraComposer (terraform) repos to find
 the source file that emits that error. Result fed into LLM tool context so the
 LLM cites the real file:line instead of guessing.
 """
+import os
 import re
 import subprocess
 from pathlib import Path
 
 
-REPOS_DIR = Path("/opt/bbctl-rca/repos")
+REPOS_DIR = Path(os.environ.get("BBCTL_REPOS_DIR", str(Path(__file__).resolve().parent.parent / "repos")))
 SEARCH_DIRS = ["jenkins_pipeline", "InfraComposer"]
 MAX_QUERIES = 4
 # Wider sweep when the classifier returned `unknown` — let the LLM see more

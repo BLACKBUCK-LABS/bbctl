@@ -102,11 +102,15 @@ _CHAIN_VERIFY_PROMPT = (
     "(Scripts only — skip config/template files like config.json, *.yml, "
     "*.conf, fluent-bit.conf, etc. Those are data files, not scripts.)\n"
     "4. Is there any function or script you cited in evidence or reasoning "
-    "that you never actually read?\n\n"
-    "If YES to any of the above — call repo_read_file for those missing "
-    "files NOW before writing the final answer.\n"
-    "If the chain is fully walked and every referenced file is read — "
-    "emit your FINAL JSON answer."
+    "that you never actually read?\n"
+    "5. For each repo evidence entry you plan to emit: is (line_end - line_start) > 15? "
+    "If yes — that is your READ WINDOW, not evidence. Re-read the file content you saw "
+    "and identify the 1-5 specific lines that directly show the failure (e.g. the function "
+    "call that triggers the failed action, the exit condition, the resource declaration). "
+    "Set line_start + line_end to THOSE lines only. A range of 80 lines in evidence means "
+    "you haven't identified the cause yet.\n\n"
+    "If YES to any of the above — fix NOW before writing the final answer.\n"
+    "If chain complete AND all evidence entries cite ≤15 lines — emit your FINAL JSON answer."
 )
 
 # Forced final-answer prompt. Used both for "tool budget exhausted" and

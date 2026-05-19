@@ -246,7 +246,7 @@ dl.fix-list dd:last-child { margin-bottom: 0; }
 .ev-badge.no { background: rgba(248, 113, 113, 0.15); color: var(--danger); border: 1px solid rgba(248, 113, 113, 0.3); }
 .ev-badge.unk { background: #1f2937; color: var(--fg-muted); border: 1px solid var(--border); }
 .ev-src { font-family: ui-monospace, monospace; font-size: 11px; color: var(--fg-muted); margin-bottom: 2px; }
-.ev-snippet { font-size: 13.5px; color: #cbd5e1; word-break: break-word; }
+.ev-snippet { font-size: 12.5px; color: #cbd5e1; white-space: pre; overflow-x: auto; font-family: 'SFMono-Regular', Consolas, monospace; background: #0d1117; border-radius: 4px; padding: 8px 10px; margin-top: 4px; display: block; max-height: 300px; overflow-y: auto; }
 
 /* Metadata */
 dl.meta { display: grid; grid-template-columns: 1fr; gap: 14px 32px; margin: 0; }
@@ -407,7 +407,7 @@ footer .author strong { color: var(--fg-strong); font-weight: 600; }
           </span>
           <div style="flex:1; min-width:0">
             <div class="ev-src">{{ e.source }}</div>
-            <div class="ev-snippet">{{ e.snippet }}</div>
+            {% if e.snippet %}<code class="ev-snippet">{{ e.snippet }}</code>{% endif %}
           </div>
         </li>
         {% endfor %}

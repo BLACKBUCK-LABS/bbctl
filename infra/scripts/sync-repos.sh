@@ -3,16 +3,15 @@
 # the bbctl-rca LLM tool-context builder. Run via cron every 2 hours.
 #
 # Repos: hard reset against origin/<branch> — never carry local edits.
+#        Auto-clones if not present yet (reads GITHUB_PAT from Secrets Manager).
 # Docs:  rsync from an S3 bucket (read-only mirror of s3_docs/docs/).
 #
 # Restart bbctl-rca at the end so its in-process config.json cache reloads.
-#
-# Failures must be loud but must NOT leave the service stopped — `set -e`
-# bails before the restart, so restart runs in a trap.
 set -uo pipefail
 
-REPOS_DIR="/opt/bbctl-rca/repos"
-DOCS_DIR="/opt/bbctl-rca/docops"
+BASE_DIR="/home/ubuntu/project/bbctl"
+REPOS_DIR="$BASE_DIR/repos"
+DOCS_DIR="$BASE_DIR/docops"
 LOG="/var/log/bbctl-rca/sync.log"
 
 # Branches to track per repo (override via env if needed)
@@ -22,7 +21,10 @@ IC_BRANCH="${IC_BRANCH:-main}"
 # S3 source for docops/ (read-only mirror)
 DOCS_S3_URI="${DOCS_S3_URI:-s3://docops-doc-storage/docs/}"
 
-mkdir -p "$(dirname "$LOG")"
+REGION="${AWS_REGION:-ap-south-1}"
+SECRET_ID="${BBCTL_SECRET_ID:-bbctl-rca/prod}"
+
+mkdir -p "$REPOS_DIR" "$(dirname "$LOG")"
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log() { echo "[$(ts)] $*" | tee -a "$LOG"; }
 
@@ -30,15 +32,21 @@ restart_service() {
     log "restarting bbctl-rca to pick up new config.json / docs"
     sudo systemctl restart bbctl-rca
 }
-# Ensure restart even if a sync step fails partway
 trap 'restart_service' EXIT
 
 log "==== sync start ===="
 
-# Self-heal: ensure ubuntu has write on every file in both clones. Earlier
-# someone ran `chmod -R a-w` (or similar) which makes `git reset --hard`
-# fail with "unable to unlink old <file>: Permission denied". Make this
-# idempotent + cheap.
+# Fetch GitHub PAT from Secrets Manager (used for initial clone only)
+get_github_pat() {
+    aws secretsmanager get-secret-value \
+        --secret-id "$SECRET_ID" \
+        --region "$REGION" \
+        --query 'SecretString' \
+        --output text 2>/dev/null \
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('github_pat',''))" 2>/dev/null || true
+}
+
+# Self-heal permissions
 for d in jenkins_pipeline InfraComposer; do
     if [ -d "$REPOS_DIR/$d" ]; then
         chown -R ubuntu:ubuntu "$REPOS_DIR/$d" 2>/dev/null || true
@@ -53,7 +61,17 @@ if [ -d "$REPOS_DIR/jenkins_pipeline/.git" ]; then
         && sudo -u ubuntu git -C "$REPOS_DIR/jenkins_pipeline" reset --hard "origin/$JP_BRANCH" --quiet \
         || log "WARN: jenkins_pipeline sync failed"
 else
-    log "WARN: $REPOS_DIR/jenkins_pipeline not a git clone — skipping"
+    log "jenkins_pipeline not cloned — cloning now"
+    PAT=$(get_github_pat)
+    if [ -n "$PAT" ]; then
+        sudo -u ubuntu git clone --branch "$JP_BRANCH" \
+            "https://x-access-token:${PAT}@github.com/BLACKBUCK-LABS/jenkins_pipeline.git" \
+            "$REPOS_DIR/jenkins_pipeline" \
+            && log "jenkins_pipeline cloned (branch=$JP_BRANCH)" \
+            || log "WARN: jenkins_pipeline clone failed"
+    else
+        log "WARN: no github_pat in Secrets Manager — cannot clone jenkins_pipeline"
+    fi
 fi
 
 # 2. InfraComposer
@@ -63,7 +81,17 @@ if [ -d "$REPOS_DIR/InfraComposer/.git" ]; then
         && sudo -u ubuntu git -C "$REPOS_DIR/InfraComposer" reset --hard "origin/$IC_BRANCH" --quiet \
         || log "WARN: InfraComposer sync failed"
 else
-    log "WARN: $REPOS_DIR/InfraComposer not a git clone — skipping"
+    log "InfraComposer not cloned — cloning now"
+    PAT=$(get_github_pat)
+    if [ -n "$PAT" ]; then
+        sudo -u ubuntu git clone \
+            "https://x-access-token:${PAT}@github.com/BLACKBUCK-LABS/InfraComposer.git" \
+            "$REPOS_DIR/InfraComposer" \
+            && log "InfraComposer cloned (branch=$IC_BRANCH)" \
+            || log "WARN: InfraComposer clone failed"
+    else
+        log "WARN: no github_pat in Secrets Manager — cannot clone InfraComposer"
+    fi
 fi
 
 # 3. docops/ from S3 (mirror — deletes anything not in S3)

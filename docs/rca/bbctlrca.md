@@ -45,32 +45,25 @@ Automated Root Cause Analysis service for Jenkins `stagger-prod-plus-one` pipeli
 
 ## EC2 layout (bbctl-ec2 = 10.34.120.223)
 
-**Single source of truth**: `/home/ubuntu/project/bbctl` is the git clone. `/opt/bbctl-rca` is a symlink → `/home/ubuntu/project/bbctl`.
+**Single source of truth**: `/home/ubuntu/project/bbctl` is the git clone and the live runtime directory. `git pull` here is the deploy step. `/opt/bbctl-rca/` is no longer used (service migrated away in May 2026 — see "Repo / sync history" item 99).
 
 ```
-/opt/bbctl-rca           → symlink → /home/ubuntu/project/bbctl
 /home/ubuntu/project/bbctl/
 ├── bbctl_rca/           # Python service (FastAPI)
 ├── prompts/             # LLM system + few-shot prompts
-├── docops/              # Class-specific runbook docs (loaded into prompt)
+├── docops/              # Class-specific runbook docs, job_flows, runbooks
+│   ├── runbooks/        # Per-error-class drill plans (health_check.md, aws_limit.md, …)
+│   └── job_flows/       # Per-pipeline-family stage→helper maps
 ├── classifier_rules.yml # Ordered error-class regex rules
 ├── sanitize_rules.yml   # Log redaction patterns
 ├── infra/scripts/bbctl-rca-start.sh   # systemd ExecStart target (must be +x)
-├── repos/               # External clones (read-only) for source.trace + config.json
-│   ├── jenkins_pipeline/
-│   └── InfraComposer/
 ├── docs/                # Project documentation (this file lives here too)
-└── .venv/               # Python venv (not in git)
+└── .venv/               # Python venv (not in git) — created via python3 -m venv .venv
 ```
 
-**Why the symlink**: previously the code lived in two places (laptop git repo + `/opt/bbctl-rca/` runtime copy) and drifted whenever someone forgot to manually copy. Symlinking collapses them: `git pull` is the one and only deploy step.
+**Repos**: external git clones (jenkins_pipeline, InfraComposer) are at `BBCTL_REPOS_DIR`, which defaults to `$BASE_DIR/repos` (relative to the package, i.e. `/home/ubuntu/project/bbctl/repos/`). The start script sets `BBCTL_REPOS_DIR=/var/cache/bbctl-rca/repos` so writes land in the writable cache dir (required by `ProtectSystem=strict`). `repos/*/` is `.gitignore`d.
 
-**Repos at `repos/`**: these are external git clones (jenkins_pipeline, InfraComposer) used by:
-- `mcp_tools.service_lookup()` to read `resources/config.json` (NewRelic appName, ASG, etc.)
-- `mcp_tools.repo_read_file()` for source-code citations
-- Periodic refresh via cron / on-demand sync (e.g. `git fetch && git reset --hard origin/<branch>`)
-
-`repos/*/` should be `.gitignore`d in the parent `bbctl` repo so external clone state doesn't pollute.
+**Python path constants** (`mcp_tools.py`, `git_fresh.py`, `evidence.py`, `source_trace.py`) use `Path(__file__).resolve().parent.parent` as `_BASE_DIR` with `os.environ.get("BBCTL_REPOS_DIR/DOCS_DIR", str(_BASE_DIR/...))` fallback — no hardcoded `/opt/` paths remain.
 
 ---
 
@@ -81,10 +74,12 @@ Automated Root Cause Analysis service for Jenkins `stagger-prod-plus-one` pipeli
 ```
 /etc/systemd/system/bbctl-rca.service
 User=ubuntu
-ExecStart=/opt/bbctl-rca/infra/scripts/bbctl-rca-start.sh
+ExecStart=/home/ubuntu/project/bbctl/infra/scripts/bbctl-rca-start.sh
+ReadWritePaths=/var/cache/bbctl-rca /var/log/bbctl-rca /tmp
+ProtectSystem=strict
 ```
 
-The start script fetches secrets from AWS Secrets Manager (`bbctl-rca/prod` in `ap-south-1`) using the instance's IAM role, exports them as env vars, then launches uvicorn on `0.0.0.0:7070` with 2 workers.
+The start script (`infra/scripts/bbctl-rca-start.sh`) fetches secrets from AWS Secrets Manager (`bbctl-rca/prod` in `ap-south-1`) using the instance's IAM role, exports them as env vars, sets `BBCTL_REPOS_DIR=/var/cache/bbctl-rca/repos` (writable under `ProtectSystem=strict`), then launches uvicorn from `APP_DIR=/home/ubuntu/project/bbctl` with venv at `VENV=/home/ubuntu/project/bbctl/.venv` on `0.0.0.0:7070` with 2 workers.
 
 ### Common commands
 
@@ -108,23 +103,27 @@ curl -sf https://jenkins-rca.jinka.in/rca/healthz
 ### Deploy a code change
 
 ```bash
-# On laptop
+# On laptop — commit + push
 cd /Users/hariharan/cost_exp_aibot/BBCTLLLM/bbctl
 # ...edit code...
+git add <files>
 git commit -m "fix(rca): ..."
-git push
+git push origin feature/bbctl-rca-agent-only
 
 # On bbctl-ec2
 cd /home/ubuntu/project/bbctl
-git pull
+git pull origin feature/bbctl-rca-agent-only
 sudo systemctl restart bbctl-rca
 sudo journalctl -u bbctl-rca -n 30 --no-pager   # confirm clean start
 ```
 
+> **Note**: Local files in `/Users/hariharan/cost_exp_aibot/BBCTLLLM/bbctl/` are NOT a git repo (workspace). To deploy changes made locally, either push via another git workflow or SCP to the EC2 git repo, commit there, then pull.
+
 ### Refresh external repos under `repos/`
 
 ```bash
-cd /opt/bbctl-rca/repos/jenkins_pipeline
+# repos live at BBCTL_REPOS_DIR = /var/cache/bbctl-rca/repos (set by start script)
+cd /var/cache/bbctl-rca/repos/jenkins_pipeline
 sudo git fetch && sudo git reset --hard origin/master   # or relevant branch
 ```
 
@@ -290,34 +289,9 @@ Polished, self-contained dark-theme HTML page served by FastAPI. Same URL appear
 
 Before: `/opt/bbctl-rca/` was a flat copy of the Python service, manually rsynced from laptop. `/home/ubuntu/project/bbctl/` was a separate git clone used only for reading source via `repo_read_file`. Two copies drift; one fix lands in git but not in `/opt`, and a redeploy quietly breaks.
 
-After (current state):
+**May 2026 migration (item 99 below)**: `/opt/bbctl-rca/` removed entirely. Service now runs directly from `/home/ubuntu/project/bbctl/`. All hardcoded `/opt/bbctl-rca/` paths in Python files made relative. systemd `ExecStart` points to `~/project/bbctl/infra/scripts/bbctl-rca-start.sh`. New venv at `~/project/bbctl/.venv`. `git pull` in `~/project/bbctl/` is the one and only deploy step.
 
-1. Stopped service.
-2. Moved real venv from `/opt/bbctl-rca/.venv` → `/home/ubuntu/project/bbctl/.venv` (the empty `/home` venv was deleted first; venv shebangs still point to `/opt/bbctl-rca/.venv/bin/python3`, which resolves through the symlink).
-3. Renamed old `/opt/bbctl-rca` → `/opt/bbctl-rca.bak.YYYYMMDD` as rollback.
-4. `ln -s /home/ubuntu/project/bbctl /opt/bbctl-rca`.
-5. Migrated `repos/` and `docops/` from the backup into the git repo (these are not git-tracked — `repos/` is gitignored external clones, `docops/` is doc snapshots).
-6. Verified `.venv` works through the symlink (`import fastapi, openai, anthropic`).
-7. Fixed `infra/scripts/bbctl-rca-start.sh` filesystem exec bit (git index was `100755` already, only filesystem perm was wrong).
-8. Restarted service. Health OK.
-9. Triggered test build. End-to-end Auto-RCA block rendered in Jenkins console.
-
-Rollback (still available until backup deleted):
-
-```bash
-sudo systemctl stop bbctl-rca
-sudo rm /opt/bbctl-rca
-sudo mv /opt/bbctl-rca.bak.YYYYMMDD /opt/bbctl-rca
-# move venv back
-sudo mv /home/ubuntu/project/bbctl/.venv /opt/bbctl-rca/.venv
-sudo systemctl start bbctl-rca
-```
-
-Once stable for a few days:
-
-```bash
-sudo rm -rf /opt/bbctl-rca.bak.*
-```
+Rollback: re-clone at `/opt/bbctl-rca/` is no longer the rollback path. Use `git revert` + `git pull` + `systemctl restart` instead.
 
 ---
 
@@ -773,3 +747,23 @@ After item 68, manager review of build-15 (compliance) trace flagged that the LL
 | Server-side snippet filler (phase 10) | `bbctl_rca/agent.py:_fill_repo_snippets` — reads files from disk for repo evidence |
 | Per-build trace files | `/tmp/bbctl-rca-trace-<job>-<build>.txt` (latest-only mirror at `/tmp/bbctl-rca-last-trace.txt`) |
 | Full request dump (latest run only) | `/tmp/bbctl-rca-last-prompt.txt` |
+
+---
+
+## Recent improvements (May–June 2026, branch `feature/bbctl-rca-agent-only` continued)
+
+98. **Chain-walk self-verification injected before finalize** — when the agent stops voluntarily (tool_calls=[]) and `_parse_final_json` returns None, a `_CHAIN_VERIFY_PROMPT` is injected ONCE (guarded by `_chain_verify_done` flag). The prompt asks the LLM to review every function call and `libraryResource 'scripts/...'` reference it saw in files it read, and call `repo_read_file` for any unread ones before finalizing. Universal — works for all job types without hardcoding file lists. Skipped when the LLM already emits valid JSON at voluntary stop (normal flow). Second stop always finalizes.
+
+99. **Service migrated from `/opt/bbctl-rca/` to `/home/ubuntu/project/bbctl/`** — `/opt/bbctl-rca/` was a stale flat copy with no git tracking; docops/runbooks and code changes deployed there never reflected git state. Migration: (1) all hardcoded `/opt/bbctl-rca/` paths in `mcp_tools.py`, `git_fresh.py`, `evidence.py`, `source_trace.py` replaced with `Path(__file__).resolve().parent.parent` relative paths + `os.environ.get("BBCTL_REPOS_DIR/BBCTL_DOCS_DIR", ...)` overrides; (2) `infra/scripts/bbctl-rca-start.sh` updated: `APP_DIR=/home/ubuntu/project/bbctl`, `VENV=/home/ubuntu/project/bbctl/.venv`, `BBCTL_REPOS_DIR=/var/cache/bbctl-rca/repos`; (3) systemd `ExecStart` updated to new script path; `ReadWritePaths` kept as `/var/cache/bbctl-rca /var/log/bbctl-rca /tmp` (repos go to cache dir, satisfying `ProtectSystem=strict`); (4) new venv created at `~/project/bbctl/.venv` with all deps from `bbctl_rca/requirements.txt`; (5) cron `bbctl-rca-sync` updated to `~/project/bbctl/infra/scripts/sync-repos.sh`. `git pull` in `~/project/bbctl/` is now the complete deploy step.
+
+100. **Evidence output schema hardened — 5 rules** — system prompt evidence section tightened: (a) `line_start/line_end` for repo evidence MUST be specific 1-5 lines of interest, NOT the full read window (read wide, cite narrow); (b) `main_*.groovy` dispatch pipeline file MUST NOT appear in `evidence[]` — dispatch only, no implementation; (c) `jenkins_log` source ALWAYS required — must contain exact fatal error line verbatim; (d) port in `suggested_commands` MUST come from `DescribeTargetHealth.TargetHealthDescriptions[0].Target.Port` (NOT `DescribeTargetGroups.Port`); (e) health script name derived from `libraryResource 'scripts/...'` line in deploy helper — never assumed.
+
+101. **health_check.md trimmed (11.7K → 5.5K chars)** — verbose chain-walk diagrams, redundant port-source explanations, and multi-line action template removed. All rules preserved. Saves ~15K tokens per RCA across 6 iters (~$0.04/RCA).
+
+102. **Skip main pipeline read for `*Prod+1*` stage markers** — for any failed stage marker containing "Prod+1" (`Infra Prod+1`, `Deploy Prod+1`), system prompt step d now says: skip reading `main_stagger_prod_plus_one.groovy` entirely — go directly to `vars/prodPlusOne.groovy`. Main pipeline just calls `prodPlusOne(...)` which the job_flow doc already documents; reading 200 lines of dispatch adds nothing and wastes one iteration. Also reinforced in `main_stagger_prod_plus_one.md` job_flow doc.
+
+103. **Chain-walk follows `scripts/` only, not config/data files** — `_CHAIN_VERIFY_PROMPT` updated: "follow `libraryResource 'scripts/...'` references only — skip `config.json`, `*.yml`, `*.conf`, `fluent-bit.conf` etc. (data files, not scripts)." Previously LLM was following `libraryResource 'config.json'` from `createRuleForProdPlusOne.groovy` → reading `resources/config.json` → adding irrelevant service config to evidence and costing an extra iter.
+
+104. **Wrong filename derivation fix** — system prompt step e: "When you see function call `foo(...)`, file is EXACTLY `vars/foo.groovy` — the token before `(`, verbatim. Do NOT append stage name words. Example: `createRuleForProdPlusOne(service, 150)` → `vars/createRuleForProdPlusOne.groovy`, NOT `vars/createRuleForProdPlusOneInfra.groovy` (stage name 'Infra Prod+1' does not append to the function name)." Fixed a recurring regression where LLM appended the nested stage's leading word to the function name.
+
+105. **`_runbooks_dir()` fallback for empty primary dir** — `mcp_tools._runbooks_dir()` previously returned the primary dir (`DOCS_DIR/runbooks/`) if it existed as a directory, even if empty. An empty `/opt/bbctl-rca/docops/runbooks/` silently shadowed the git-tracked fallback, causing `read_runbook("health_check")` to return "not found" and skip all MANDATORY AWS describes. Fixed: primary is used only if `RUNBOOKS_DIR.is_dir() AND any(RUNBOOKS_DIR.glob("*.md"))`. Empty primary → fallback. Now superseded by item 99 (single path, no two-dir ambiguity).

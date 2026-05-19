@@ -85,6 +85,28 @@ def _log(msg: str) -> None:
     print(f"[agent] {msg}", file=sys.stderr, flush=True)
 
 
+# Chain-walk self-verification prompt. Injected ONCE when LLM first stops
+# calling tools (before FORCE_FINAL_PROMPT). LLM reviews its own tool history,
+# decides if any function calls / libraryResource references it saw were never
+# followed to their vars/ or resources/ implementation files, and calls them if
+# so. Universal — works for any job type / error class without hardcoding files.
+_CHAIN_VERIFY_PROMPT = (
+    "Before finalizing, verify your chain-walk is complete:\n"
+    "1. Look at every function call you saw in files you read — e.g., "
+    "`deployProdPlusOne(...)`, `createRuleForProdPlusOne(...)`, any "
+    "`libraryResource 'X'`, any `deploy(...)` or helper step.\n"
+    "2. Did you follow EACH call to its `vars/<name>.groovy` implementation "
+    "file via repo_read_file?\n"
+    "3. Did you follow EACH `libraryResource 'path/to/x'` reference to "
+    "`resources/path/to/x` via repo_read_file?\n"
+    "4. Is there any function or script you cited in evidence or reasoning "
+    "that you never actually read?\n\n"
+    "If YES to any of the above — call repo_read_file for those missing "
+    "files NOW before writing the final answer.\n"
+    "If the chain is fully walked and every referenced file is read — "
+    "emit your FINAL JSON answer."
+)
+
 # Forced final-answer prompt. Used both for "tool budget exhausted" and
 # "cost cap reached" paths. The explicit schema + "JSON object only, no
 # markdown" guard rails are necessary because gpt-4o sometimes emits a
@@ -404,6 +426,9 @@ async def run_agent(
     # Track runbook names that were actually fetched and returned content
     # (non-"not found"). Used to drop evidence citing unfetched runbooks.
     read_runbooks: set[str] = set()
+    # Chain-walk self-verification gate. Injected once when LLM first stops
+    # voluntarily. Prevents finalize until LLM has checked its own chain.
+    _chain_verify_done: bool = False
     # Dedup map: (tool_name, sorted_args_json) -> (iter, cached_result, hit_count).
     # 1st repeat → return cached + soft warning.
     # 2nd+ repeat → return ERROR ONLY, no data, so the LLM is forced to
@@ -594,6 +619,20 @@ async def run_agent(
                 # force-final prompt. Adds ~$0.05 in worst case but
                 # rescues the otherwise-wasted 6 tool calls.
                 if not force_final and _parse_final_json(final_text) is None:
+                    # Chain-walk self-verification gate: injected ONCE before
+                    # the first finalize attempt. LLM checks its own tool
+                    # history for unread vars/ / resources/ files and calls
+                    # them if needed. Universal — no hardcoded file lists.
+                    if not _chain_verify_done:
+                        _chain_verify_done = True
+                        _log("LLM stopped — injecting chain-walk verification "
+                             "before finalizing")
+                        messages.append({
+                            "role": "user",
+                            "content": _CHAIN_VERIFY_PROMPT,
+                        })
+                        continue  # re-enter loop; LLM may call more tools
+
                     # JSON FINALIZE STEP — normal flow, not a failure.
                     # When LLM stops calling tools (signals "I am done")
                     # it sometimes emits the answer as markdown headings

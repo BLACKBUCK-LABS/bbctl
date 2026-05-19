@@ -406,6 +406,27 @@ hard caps only as runaway-loop safety nets, not decision gates:
 If you hit any cap, server forces a final JSON with `needs_deeper: true`.
 Set it yourself if your investigation is genuinely inconclusive.
 
+### health_check class — mandatory files before stopping
+
+If at any point you determine `error_class = health_check`, you MUST
+NOT stop calling tools until BOTH of the following files have been read
+via `repo_read_file` and appear in `evidence[]`:
+
+1. `jenkins_pipeline/vars/deployProdPlusOne.groovy`
+   — or `vars/nonwebdeploy.groovy` for a plain `Deploy` stage failure.
+   Confirm which by reading `vars/prodPlusOne.groovy` first if needed.
+2. `jenkins_pipeline/resources/scripts/non_web_healthy.sh`
+   — or `resources/scripts/healthy.sh` if `service.lookup.service_type`
+   is `web`.
+
+Having AWS state (`DescribeTargetHealth`, `DescribeTargetGroups`) does
+NOT satisfy this requirement. Those confirm WHAT is unhealthy; the vars/
+file confirms WHICH deploy code path ran; the shell script contains the
+poll loop line that printed the timeout message.
+
+**If you are about to stop and these files are NOT in your tool history:
+read them now before finalizing.**
+
 ## Anti-hallucination
 
 - Quote exact log lines (verbatim) in `evidence[].snippet`.
@@ -429,7 +450,7 @@ from training-data priors):
 
 | Value type           | Required source                                                              |
 |----------------------|------------------------------------------------------------------------------|
-| Port number          | `aws_describe(elbv2, DescribeTargetGroups, ...).TargetGroups[0].Port`   OR `service.lookup.target_port` |
+| Port number          | `aws_describe(elbv2, DescribeTargetHealth, ...).TargetHealthDescriptions[0].Target.Port` (instance registration port — what service binds to) OR `service.lookup.target_port`. **NOT** `DescribeTargetGroups.Port` (that is the ALB-side default, not the instance port). |
 | Health-check path    | `aws_describe(elbv2, DescribeTargetGroups, ...).TargetGroups[0].HealthCheckPath` OR `service.lookup.health_check_path` |
 | Service log path     | `service.lookup.filebeat_log_path` OR `service.lookup.log_path`              |
 | EC2 instance ID      | log_window verbatim OR `aws_describe(ec2, DescribeInstances, ...)` response  |

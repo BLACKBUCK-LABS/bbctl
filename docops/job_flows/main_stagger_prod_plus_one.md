@@ -81,8 +81,13 @@ Prod+1 sub-stages. Reading the wrong file leads to wrong evidence.
 - Shell scripts referenced by `libraryResource`: `jenkins_pipeline/resources/scripts/<name>.sh`
 - Top-level config / templates: `jenkins_pipeline/resources/`
 - Canary script: `jenkins_pipeline/resources/canary.py`
-- Terraform code invoked by `infraComposer(...)` call inside infra
-  helpers: lives in the `InfraComposer` repo (separate clone).
+- Terraform code: both `createGreenInfra.groovy` and
+  `createRuleForProdPlusOne.groovy` call an `infraComposer()` function
+  that clones the `InfraComposer` repo and runs terraform from it.
+  Config path: `InfraComposer/config/<service>/<env>/main.tf` where
+  `<env>` = `prod` for the `(Infra)` stage, `prodplusone` for
+  `(Infra Prod+1)`. Read the config's module reference to find the
+  relevant `InfraComposer/module/<name>/main.tf`.
 
 ## Where to look for AWS state
 - `aws_account`, `aws_region`, `rule_arn`, `lb_listener_arn`,

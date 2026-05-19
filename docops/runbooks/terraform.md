@@ -32,21 +32,43 @@ state cleanup is fine. If the apply fails, the Error: line below has
 the real cause; do NOT stop at the stale-state line.
 
 ## Pipeline source to cross-check (MANDATORY)
-- `jenkins_pipeline/vars/createGreenInfra.groovy` (or similar) — the
-  helper that runs `terraform plan/apply`
-- `InfraComposer/config/<service>/<env>/main.tf` — the per-service config
-- `InfraComposer/module/<module-name>/` — the module being used
+
+Both infra helpers call an `infraComposer()` function that clones the
+InfraComposer repo at runtime and runs terraform from within it:
+
+- `(Infra)` stage → `jenkins_pipeline/vars/createGreenInfra.groovy`
+  reads `infraComposer(service)` → clones InfraComposer →
+  `cd config/<service>/prod/` → terraform init/plan/apply
+- `(Infra Prod+1)` stage → `jenkins_pipeline/vars/createRuleForProdPlusOne.groovy`
+  reads `infraComposer(service)` → clones InfraComposer →
+  `cd config/<service>/prodplusone/` → terraform init/plan/apply
+
+InfraComposer repo layout (use `repo_read_file("InfraComposer", ...)` to read):
+- `config/<service>/<env>/main.tf` — root module; declares which
+  module from `module/<name>/` to call, plus input variables
+- `config/<service>/<env>/variable.tf` — variable declarations for this env
+- `module/<name>/main.tf` — the module; typically composes sub-modules
+  (e.g. ec2, target-group, tg-attachment, listener-rule sub-modules)
+
+Available env dirs in `config/<service>/`: `prod`, `prodplusone`,
+`prod-scale`, `quick-deploy`. Derive the env from the failed stage name.
 
 ## Drill plan
-1. `get_jenkins_job_config(job)` → scriptPath
-2. `repo_read_file("jenkins_pipeline", "vars/createGreenInfra.groovy", ...)` — see the tf command
-3. From log, identify the offending resource (e.g. `aws_instance.alchemist`)
-4. Extract service + env from build params or service.lookup
-5. `repo_read_file("InfraComposer", "config/<service>/<env>/main.tf", 1, 100)` — see config
-6. `repo_search("InfraComposer", "<resource-name>")` — find module that declares this resource
-7. `repo_read_file("InfraComposer", "module/<module>/main.tf", ...)` — inspect module
-8. If resource-exists conflict: `aws_describe_instance(<id>)` or equivalent describe call to confirm AWS state
-9. `repo_recent_commits("InfraComposer", 10)` — check for just-pushed module changes
+1. `get_jenkins_job_config(job)` → confirm scriptPath
+2. From log, identify the failing helper: `createGreenInfra.groovy`
+   (Infra stage) or `createRuleForProdPlusOne.groovy` (Infra Prod+1);
+   read it to find the `infraComposer()` call and the terraform vars passed
+3. From log, extract the offending resource address and terraform error
+4. Derive service name + env dir from build params or failed stage
+5. `repo_read_file("InfraComposer", "config/<service>/<env>/main.tf", 1, 60)`
+   → see which module is invoked and what input vars are wired
+6. `repo_read_file("InfraComposer", "module/<module>/main.tf", 1, 60)`
+   → inspect the module; follow any sub-module `source` refs if error
+   points deeper
+7. If resource-exists / state-drift conflict: call appropriate
+   `aws_describe` for the resource type to confirm current AWS state
+8. `repo_recent_commits("InfraComposer", 10)` — check for recent module
+   changes that may have introduced the regression
 
 ## Action template
 ```
@@ -80,9 +102,11 @@ Verify:
 - `failed_stage: "Infra"`
 - `evidence[]` must include:
   - `jenkins_log` with terraform error
-  - `jenkins_pipeline/vars/createGreenInfra.groovy:<line>` (caller)
-  - `InfraComposer/config/<service>/<env>/main.tf:<line>` (config)
-  - For 'already exists': `aws:instance(<id>)` or equivalent confirming AWS state
+  - `jenkins_pipeline/vars/createGreenInfra.groovy:<line>` or
+    `jenkins_pipeline/vars/createRuleForProdPlusOne.groovy:<line>` — the caller
+  - `InfraComposer/config/<service>/<env>/main.tf:<line>` — root config
+  - `InfraComposer/module/<name>/main.tf:<line>` — module with failing resource
+  - For 'already exists': `aws:<resource>(<id>)` confirming AWS state
 
 ## Common pitfalls
 - DO NOT suggest `terraform destroy` as a fix — destructive and rarely correct.

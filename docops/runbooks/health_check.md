@@ -71,7 +71,7 @@ In a single LLM iteration, emit these tool calls in parallel:
 3. `repo_read_file("jenkins_pipeline", "resources/scripts/non_web_healthy.sh", 1, 80)`
    (or `resources/scripts/healthy.sh` if service_type is web — distinguish
    via service.lookup.service_type)
-4. `read_runbook("health_check")` (this file)
+4. `list_runbooks()` if unsure of class; you are already reading this
 5. **MANDATORY** — `aws_describe(service='elbv2', operation='DescribeTargetGroups',
    params={'TargetGroupArns': [<tg_arn>]}, aws_account=..., aws_region=...)`
    → returns `Port` + `HealthCheckPath` + `HealthCheckProtocol`. You MUST use
@@ -145,7 +145,7 @@ suggested_commands must trace to a tool result from THIS RCA.
   - `jenkins_log` showing health-check timeout
   - `jenkins_pipeline/vars/deployProdPlusOne.groovy:<line>` (or
     `nonwebdeploy.groovy`) — the helper that orchestrated the deploy
-  - `jenkins_pipeline/scripts/non_web_healthy.sh:<line>` — poll loop
+  - `jenkins_pipeline/resources/scripts/non_web_healthy.sh:<line>` — poll loop
   - `aws:target_health(<tg_arn>)` — state + reason from describe
   - `aws:target_group(<tg_arn>)` — expected port + health_check_path
   - `aws:instance(<instance_id>)` — running state + tags

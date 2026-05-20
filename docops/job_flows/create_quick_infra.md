@@ -1,13 +1,13 @@
 # Job flow: create-quick-infra
 
 ## Match
-- `script_path` ends with `create-quick-infra.groovy`, OR
+- `script_path` ends with `Jenkinsfile_create_quick_infra`, OR
 - `inline_script` contains stage bodies calling `QuickBuildJob(...)`
   AND `QuickDeploy(...)` (the QuickBuildJob/QuickDeploy pair is
   distinctive — no other flow uses these).
 
 ## Main pipeline
-`jenkins_pipeline/create-quick-infra.groovy`
+`jenkins_pipeline/Jenkinsfile_create_quick_infra`
 
 ## Top-level stages
 | Stage marker in console log | Body in main pipeline                |

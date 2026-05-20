@@ -13,7 +13,7 @@ distinct sub-modes exist; pick ONE based on the log + Jira ticket data.
 
 ## Pipeline source to cross-check (MANDATORY)
 - `jenkins_pipeline/vars/JiraDetails.groovy` — the gate implementation
-- Whatever script_path Jenkins runs (e.g. `create-quick-infra.groovy`)
+- Whatever script_path Jenkins runs (e.g. `Jenkinsfile_create_quick_infra`)
   for the call site
 
 ## Modes — pick one

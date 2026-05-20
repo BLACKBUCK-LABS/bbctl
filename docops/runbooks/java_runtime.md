@@ -34,7 +34,7 @@ service itself. The log usually has a stack trace.
 ## Action template
 ```
 Finding: <ExceptionClass> at <file>:<line> — <one-line description of mismatch>.
-         Example: "Call site at create-quick-infra.groovy:330 passes 1 arg
+         Example: "Call site at Jenkinsfile_create_quick_infra:330 passes 1 arg
          (the Jira ticket), but the helper at vars/JiraDetails.groovy:9
          requires 3 args: service, commitId, jiraTicket."
 Action:  Edit <file>:<line> to match helper signature.

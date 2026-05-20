@@ -34,11 +34,25 @@ listener rules. Adding one more (the new prodplusone TG) is rejected
 by AWS. Hard service quota — default 100 per ALB, raisable to ~200
 via Service Quotas request.
 
+**ALB ARN derivation (MANDATORY — derive from service.lookup.rule_arn):**
+
+`service.lookup.rule_arn` format:
+```
+arn:aws:elasticloadbalancing:<region>:<account>:listener-rule/app/<alb-name>/<alb-id>/<listener-id>/<rule-id>
+```
+Extract ALB ARN by keeping the first 4 slash-segments after `arn:...:`:
+```
+arn:aws:elasticloadbalancing:<region>:<account>:loadbalancer/app/<alb-name>/<alb-id>
+```
+Example: `rule_arn` ends with `listener-rule/app/prod-private-internal-alb/fdbcf4c344dbed6d/...`
+→ `alb_arn` = `arn:aws:elasticloadbalancing:ap-south-1:735317561518:loadbalancer/app/prod-private-internal-alb/fdbcf4c344dbed6d`
+
+Use this ALB ARN in `suggested_commands`. NEVER emit `<alb_arn>` placeholder.
+
 **Drill:**
-1. `repo_read_file("InfraComposer", "module/listener_rule_for_prod_plus_one/main.tf", 1, 80)` — see what the module declares
-2. `aws_describe_listener_rule(<rule_arn>)` — get the ALB ARN from the rule
-3. (Optional) operator confirms TG count via AWS console:
-   `aws elbv2 describe-target-groups --load-balancer-arn <alb_arn> --region <region> | jq '.TargetGroups | length'`
+1. Derive `alb_arn` from `service.lookup.rule_arn` using the formula above
+2. `aws_describe(elbv2, DescribeRules, {ListenerArn: <listener_arn>})` — optional, confirms TG count
+3. `repo_read_file("InfraComposer", "module/listener_rule_for_prod_plus_one/main.tf", 1, 80)` — see what the module declares
 
 **Action template (ALB-TG-count case):**
 ```

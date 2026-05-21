@@ -16,6 +16,33 @@ distinct sub-modes exist; pick ONE based on the log + Jira ticket data.
 - Whatever script_path Jenkins runs (e.g. `Jenkinsfile_create_quick_infra`)
   for the call site
 
+## STEP 0 (do this ONLY for the `create-quick-infra` job family)
+
+For the bootstrap job (`create-quick-infra` and its variants), the
+compliance gate was patched in May 2026 to source the service identity
+from git build params instead of `config.json`. If you see a compliance
+failure on that job family, the gate may have regressed rather than the
+build truly needing a config change.
+
+For this job family ONLY:
+1. `repo_recent_commits("jenkins_pipeline", 10)` — list the last 10
+   commits on the pipeline repo.
+2. If any commit within the last ~30 days touched
+   `vars/JiraDetails.groovy` or a file containing "Compliance" in its
+   name, open the diff and verify the failure mode you are about to
+   recommend a fix for is *still* a real check in the current code.
+3. If the current code does NOT make this check (or the check was
+   weakened/removed), the gate regressed — see Mode 6 below.
+
+Skipping this step has caused at least one wrong-fix RCA (build 42 of
+`create-quick-infra`: the agent told the operator to add a service to
+`config.json` when the actual fix was to restore the build-param
+fallback in `JiraDetails.groovy`).
+
+For OTHER job families (`Stagger Prod Plus One`, `Stagger Prod`, deploy
+jobs, canary jobs), skip STEP 0 and go straight to Mode 1-5 — those
+jobs legitimately require services to be registered in `config.json`.
+
 ## Modes — pick one
 
 ### Mode 1 — Ticket status not in allowed list
@@ -111,9 +138,89 @@ grandparent). Re-run pipeline with that ticket as Jira-Ticket param.
 
 **Action:**
 ```
-gh pr edit <PR_NUMBER> --title '<KEY> <existing title>'
+gh pr edit <PR_NUMBER> --title '`<KEY>` <existing title>'
 ```
 Re-run pipeline.
+
+### Mode 6 — Service not in `config.json` (GATE BUG, `create-quick-infra` family ONLY)
+
+**Job scope (REQUIRED):**
+This mode applies ONLY when ALL of:
+- `build_meta.job` ∈ {`create-quick-infra`, `create-quick-infra-*`,
+  `*-quick-infra`} — the quick-infra family
+- Log signal matches `Compliance: SERVICE '<service>' not found in config.json`
+  (or close wording: "service ... not registered", "no entry in service
+  registry")
+
+For any OTHER job (`Stagger Prod Plus One`, `Stagger Prod`, deploy jobs,
+canary jobs, …) a missing `config.json` entry is the legitimate failure
+mode — those jobs DO require the service to be registered, and the
+correct fix is to add the entry. Use the default "register service"
+guidance for those, NOT Mode 6.
+
+**Why this is a gate bug ONLY for `create-quick-infra`:**
+`create-quick-infra` is the bootstrap job — it spins up infra for a NEW
+service that does not yet exist in `config.json` (that's the whole
+point). The compliance gate was patched in May 2026 to source the
+service identity from the **git build parameters** (`SERVICE` /
+`COMMIT_ID` / repo URL passed in by the trigger) for this job, with
+`config.json` used only as an enrichment lookup (team, NewRelic name,
+Jira board). A missing `config.json` entry should not block the
+quick-infra build.
+
+If you see this error in a fresh `create-quick-infra` run, the gate
+either regressed (someone reverted the May-2026 patch) or the build is
+running pre-patch code on a stale branch.
+
+**Drill plan:**
+1. Confirm job scope: `build_meta.job` matches the quick-infra family.
+   If not, abandon Mode 6 and go back to the regular registration fix.
+2. `repo_recent_commits("jenkins_pipeline", 10)` — find the May-2026
+   patch on `vars/JiraDetails.groovy` (commit message likely mentions
+   "compliance", "config.json", "quick-infra", "service routing", or
+   "build params").
+3. `repo_read_file("jenkins_pipeline", "vars/JiraDetails.groovy", ...)`
+   at the lines that decide the service lookup — confirm the
+   build-param fallback path exists for the quick-infra job branch.
+4. If the fallback is missing → the patch reverted or was never merged
+   on this branch.
+5. If the fallback is present but did not fire → check the build params
+   actually carried `SERVICE`. The Jenkins job config or the trigger
+   payload may have dropped it.
+
+**Action (`create-quick-infra` family ONLY):**
+```
+Finding: create-quick-infra build failed with 'SERVICE <s> not found in
+         config.json'. For the quick-infra bootstrap job this message
+         is misleading — the gate is supposed to derive SERVICE from
+         git build params (the service is new and not yet in
+         config.json by design). Either the May-2026 gate patch
+         regressed or build params dropped SERVICE.
+Action:  DO NOT edit config.json. Either:
+         (a) Verify vars/JiraDetails.groovy has the build-param
+             fallback for the quick-infra branch (recent patch on
+             this file). If missing, re-apply / cherry-pick the
+             patch and re-run.
+         (b) If the fallback is present, inspect the Jenkins job's
+             SERVICE / build-param wiring — the trigger likely
+             dropped SERVICE from the parameter set.
+Verify:  Re-run pipeline; expect 'Jira Details' stage to pass without
+         any config.json change.
+```
+
+**STRICT — what NOT to write for Mode 6:**
+- DO NOT apply Mode 6 to any job outside the `create-quick-infra`
+  family. Other jobs' compliance gates legitimately require
+  `config.json` registration; treating them as gate bugs would mask
+  real misconfiguration.
+- DO NOT recommend editing `jenkins_pipeline/resources/config.json` to
+  add the missing service for `create-quick-infra` — that workaround
+  re-couples the gate to a file the patch specifically decoupled it
+  from for the bootstrap case.
+- DO NOT cite `config.json` as the offending file in `evidence[]` for
+  Mode 6. The offender is `vars/JiraDetails.groovy` (the gate) or the
+  Jenkins job parameter wiring.
+- DO NOT propose a `vim config.json` + `git push` recipe.
 
 ## Output schema notes
 - `error_class: "compliance"`

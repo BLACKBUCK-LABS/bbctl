@@ -14,8 +14,14 @@ REPOS_DIR="$BASE_DIR/repos"
 DOCS_DIR="$BASE_DIR/docops"
 LOG="/var/log/bbctl-rca/sync.log"
 
-# Branches to track per repo (override via env if needed)
-JP_BRANCH="${JP_BRANCH:-release/REQ-463-staggerprodplusupdate-v2}"
+# Branches to track per repo (override via env if needed).
+# jenkins_pipeline → master. Master is the canonical default branch and
+# carries the latest landed fixes (e.g. JiraDetails build-param fallback).
+# Earlier the agent tracked release/REQ-463-staggerprodplusupdate-v2, but
+# that branch lagged behind master and the RCA agent saw stale gate code.
+# If a specific historical build needs to be diagnosed against an older
+# branch, override via env: `JP_BRANCH=<branch> ./bbctl-sync.sh`.
+JP_BRANCH="${JP_BRANCH:-master}"
 IC_BRANCH="${IC_BRANCH:-main}"
 
 # S3 source for docops/ (read-only mirror)

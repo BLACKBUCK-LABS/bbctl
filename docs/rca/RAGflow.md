@@ -332,9 +332,10 @@ sudo -u postgres psql -d bbctl_rca -c '
 
 | Phase | Scope | Status |
 |---|---|---|
-| **R1** | PG + pgvector install, schema, `rag.py`, indexer CLI | ✅ this branch |
-| **R2** | `rag_search` MCP tool wired into agent's tool_schemas/dispatch | next |
-| **R3** | Auto-inject top-k into agent system prompt every build | next |
+| **R1** | PG + pgvector install, schema, `rag.py`, indexer CLI | ✅ shipped |
+| **R2** | `rag_search` MCP tool wired into agent's tool_schemas/dispatch | ✅ shipped |
+| **R3** | Auto-inject top-k into agent system prompt every build | ✅ shipped |
+| **R3.1** | Selectivity tuning — audit-only for known class, Error: line anchor as query | ✅ shipped |
 | **R4** | Audit indexer hook — `index_audits()` runs on each RCA write | next |
 | **R5** | Log-window embed per build + nearest-past-build lookup tool | next |
 | **R6** | Operator feedback (thumbs up/down) → meta.operator_verdict → re-rank | next |
@@ -363,8 +364,192 @@ patterns. R6 closes the feedback loop so wrong RCAs get downweighted.
 
 ---
 
-## 11. References
+## 11. Lessons learned from first deployment
+
+### 11.1 First R3 cut was redundant for known classes
+
+The initial R3 implementation injected top-4 chunks from `{runbook, doc, audit}`
+on every build. For a known `error_class`, the per-class runbook is already
+pre-loaded as the `## runbooks.<class>` block (the 5c pre-fetch in
+`_build_tool_context`). RAG kept returning slices of the same runbook the
+model already had — `~1K tokens wasted per build`, zero new signal.
+
+Build 5177 (aws_limit) post-R3, pre-R3.1:
+```
+cost      $0.473
+input     182K tokens
+tool_calls 9
+retrieved.rag → 4× chunks all from runbooks/aws_limit.md (same as ## runbooks.aws_limit)
+```
+
+### 11.2 Full log_window as query was too noisy
+
+`text-embedding-3-small` precision drops fast on noisy queries. The Jenkins
+log window includes NewRelic agent chatter, terraform plan output, unzip
+listings, build artefacts — all irrelevant. The fatal `Error:` / `Exception:`
+/ `FAIL:` line is the strongest semantic signal in the window.
+
+CLI smoke proved this:
+```
+Query "TooManyUniqueTargetGroupsPerLoadBalancer ALB orphan target group"
+  → top hit at score 0.608 (specific build-5177 chunk)
+
+Query (full log_window, ~6KB of mixed signal)
+  → top hit at score 0.384 (generic Action template chunk)
+```
+
+### 11.3 R3.1 fix — selectivity + sharper query
+
+`bbctl/bbctl_rca/llm.py` was changed to:
+
+1. **Anchor query on the fatal log line.** Extract the last `Error:` /
+   `Exception:` / `FAIL:` / `FAILURE:` / `Caused by:` line + 500 char suffix.
+   Fall back to `log_window[:6000]` if no anchor matches.
+
+2. **Restrict source_types by class.** Known class → `["audit"]` only
+   (past-incident memory; runbook is already in the prompt via 5c).
+   Unknown class → `["runbook", "doc", "audit"]` (full corpus; no
+   class-specific runbook to lean on).
+
+3. **k lowered 4 → 3.** Tighter scope; less prompt bloat.
+
+4. **Distinct header text** — `## retrieved.rag (top-k past-incident matches)`
+   for known class vs `(top-k semantic matches)` for unknown — so the LLM
+   knows what it's looking at.
+
+Build 5177 post-R3.1:
+```
+cost       $0.356        (-25% vs R3)
+input      134K tokens   (-26% vs R3)
+tool_calls  7            (-2 vs R3)
+retrieved.rag → 1× past-incident audit chunk (class=aws_limit, score 0.281)
+```
+
+Quality preserved (real ALB ARN, real evidence cites, validator caught
+`<orphan_arn>`). Token+cost reduction came purely from killing redundancy.
+
+### 11.4 LLM rarely calls `rag_search` even though it's available
+
+R2 exposed `rag_search` as a function tool. Across multiple build-5177
+runs, the agent never invoked it on its own — it uses `read_runbook`
+and `repo_search` instead. R3.1 auto-inject covers the main case, so
+the tool is currently a fallback for edge cases (unknown class with
+deep drill needs, follow-up queries mid-investigation). Don't remove
+the tool; do soften expectations about LLM-driven usage.
+
+---
+
+## 12. Optimization paths (concrete next moves)
+
+Sorted by leverage. (R4–R6 are roadmap items; the rest are sub-tunings
+worth queuing alongside.)
+
+### High leverage — ship next
+
+| ID | Idea | Effort | Expected win |
+|---|---|---|---|
+| **R4** | Index each new RCA on write path (`audit.write()` → `rag.index_audits()`) | 30 min | Memory grows passively. Today: 12 audits. After 2 weeks: ~100+. |
+| **R5** | Per-build log-window embed + `nearest_past_build(log)` tool | 1 hr | "We saw this exact log signature before" — works even before a runbook exists |
+| **eval-harness** | Save (log_window, expected_chunk_ids) pairs; nightly recall@5 metric | 2 hr | Stop guessing whether tuning helped; quantify it |
+
+### Mid leverage — soak first, decide later
+
+| ID | Idea | Effort | Expected win |
+|---|---|---|---|
+| **R6** | `/v1/rca/feedback` endpoint → `meta.operator_verdict` → boost/penalize at rank time | 2 hr | Close the loop. Validated chunks rank higher; bad ones decay |
+| **hybrid-retrieval** | Vector + BM25 (`to_tsvector`) fused via RRF | 1 hr | Catches exact-token matches (quota codes like `L-417A185B`) that pure vector misses |
+| **re-ranker** | Cross-encoder pass over top-25 → return top-5 by precision | 4 hr | Bigger recall gain than embedding model swap, smaller cost than `-large` |
+| **smarter chunking** | Semantic chunking (sentence-window) instead of fixed-size + H2 split | 2 hr | Higher precision on tight queries; lower recall on broad ones — needs eval |
+
+### Low leverage — defer until pain shows
+
+| ID | Idea | Effort | Expected win |
+|---|---|---|---|
+| `text-embedding-3-large` | 6× cost, modest recall lift | 5 min config | Worth only if eval shows recall@5 < 0.8 |
+| Local embeddings (`bge-small-en`) | CPU-only, free, slower | 2 hr | Outage hedge; not a quality win |
+| RDS migration | Managed PG, multi-az | 4 hr | Only when bbctl-rca fans out across instances |
+| Vector dimensionality reduction | PCA to 512d for storage savings | 2 hr | Premature — storage is free here |
+
+### Why this ordering
+
+* **R4 first** because RAG without growing memory plateaus immediately.
+  12 frozen audits = a snapshot, not a memory.
+* **R5 next** because it unlocks the "I've seen this exact failure" case
+  that's invisible to the current class-tagged retrieval.
+* **eval-harness** so we stop arguing about whether R3.1 / R6 / re-ranker
+  helped — measure recall@5 over a frozen test set of 20 historical
+  RCAs, run the metric nightly.
+* **R6 after eval** because R6 changes ranking — without eval we won't
+  know if it's actually a win.
+* **Hybrid retrieval** is cheap and the GIN index already exists; ship
+  alongside R4/R5 once we have eval evidence pure-vector is missing
+  cases.
+* **Re-ranker** is the biggest leverage but worst ROI without a baseline
+  metric — its whole pitch is "we picked the wrong top-5"; if you can't
+  measure that, you can't tell whether the re-ranker helped.
+
+---
+
+## 13. How RAG is actually wired (end-to-end, current state after R3.1)
+
+```
+                             ╔═══════════════════════════════════════╗
+                             ║   bbctl-rca service on EC2            ║
+                             ║                                       ║
+                             ║  Jenkins POST /v1/rca                 ║
+                             ║       │                               ║
+                             ║       ▼                               ║
+                             ║  classifier(log_window) → error_class ║
+                             ║       │                               ║
+                             ║       ▼                               ║
+                             ║  AGENT_CLASSES?                       ║
+                             ║       │  yes                          ║
+                             ║       ▼                               ║
+                             ║  build_initial_tool_ctx(...)          ║
+                             ║       ├── service.lookup              ║
+                             ║       ├── source.trace                ║
+                             ║       ├── docs.<CLASS_DOCS>           ║
+                             ║       ├── runbooks.<class> (5c)       ║
+                             ║       └── retrieved.rag (R3.1)  ◀──── ║ ◀── extract Error: line
+                             ║                                       ║         ▼
+                             ║                                       ║     rag.search(query, k=3,
+                             ║                                       ║       source_types=["audit"]   ◀── known class
+                             ║                                       ║         or full corpus,        ◀── unknown
+                             ║                                       ║       error_class=<class>)
+                             ║                                       ║         ▼
+                             ║                                       ║     query_emb_cache → hit? skip embed
+                             ║                                       ║         ▼
+                             ║                                       ║     OpenAI embed(query)
+                             ║                                       ║         ▼
+                             ║                                       ║     retrieval_cache → hit? return ids
+                             ║                                       ║         ▼
+                             ║                                       ║     pgvector HNSW search
+                             ║                                       ║         ▼
+                             ║                                       ║     top-3 chunks
+                             ║       │                               ║
+                             ║       ▼                               ║
+                             ║  run_agent(initial_ctx, ...)          ║
+                             ║       │ iter loop (max ~8 iters)      ║
+                             ║       ▼                               ║
+                             ║  validator (Phase-10 annotate-only)   ║
+                             ║       │                               ║
+                             ║       ▼                               ║
+                             ║  audit/<request_id>.json              ║  ◀── R4 will hook here
+                             ║       │                               ║
+                             ║       ▼                               ║
+                             ║  return JSON to Jenkins               ║
+                             ╚═══════════════════════════════════════╝
+```
+
+The `retrieved.rag` block is the only RAG-specific touch in the request
+path. Everything else is the existing agent architecture.
+
+---
+
+## 14. References
 
 * [pgvector](https://github.com/pgvector/pgvector) — extension + HNSW + IVFFlat
 * [OpenAI Embeddings](https://platform.openai.com/docs/guides/embeddings) — model + pricing
 * `bbctl/docs/rca/bbctlrca.md` — main bbctl-rca service doc; this is the companion
+* `bbctl/bbctl_rca/llm.py` — `_build_tool_context` is where the R3 / R3.1 inject lives
+* `bbctl/bbctl_rca/rag.py` — public surface: `embed`, `upsert`, `search`, `index_docops`, `index_audits`

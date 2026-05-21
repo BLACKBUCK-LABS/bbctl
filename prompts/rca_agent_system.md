@@ -136,10 +136,30 @@ file content. Fetch what you need.
       The Jenkins display name in `build_meta.job` is irrelevant for
       routing — ops can rename it any time without code changes.
 
+      **Quick reference across all pipelines:**
+      `read_doc("jenkins_pipelines_golden")` is the org-wide index.
+      It carries (i) a cross-pipeline reference table mapping every
+      pipeline to its Build / Prod+1 / Infra / Deploy / Rollout /
+      Cleanup / Failure-path helpers, (ii) a UNIVERSAL `stage → likely
+      error classes` table that helps when the classifier hint
+      conflicts with the failed stage marker (e.g. stage marker is
+      `1.3 Validate Config Resources` but classifier said
+      `health_check` — the golden index makes the disambiguation
+      explicit), and (iii) a helper signature table. Read this
+      whenever the classifier hint and the stage marker disagree, or
+      when the failure is in a stage the per-pipeline doc does not
+      drill into yet. Skip it when both classifier and stage clearly
+      align and the per-pipeline doc already covers your case — it is
+      a fallback, not a default.
+
    c. Call `read_job_flow(<matched name>)`. The flow doc tells you
       which main pipeline file to read and which top-level stages
-      delegate to which helpers. The doc names FILE paths only — it
-      does NOT contain example values like ARNs or ports.
+      delegate to which helpers. It also carries a per-pipeline
+      `Stage → likely failure modes` table that supersedes the
+      universal one in the golden index when the two diverge — the
+      per-pipeline doc has stage-specific context the universal table
+      lacks. The doc names FILE paths only — it does NOT contain
+      example values like ARNs or ports.
 
    c2. **Fallback for unknown jobs** — if `list_job_flows()` shows no
        match for the current job:

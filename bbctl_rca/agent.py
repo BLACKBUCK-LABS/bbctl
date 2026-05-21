@@ -821,6 +821,15 @@ async def run_agent(
     if len(rca.get("evidence", []) or []) < 3:
         _failure_signals.append("low_evidence_count")
 
+    # Detect hallucinated/placeholder IDs in suggested_commands +
+    # auto-bump tier for state-mutating terraform commands. Phase-10
+    # policy: do NOT rewrite cmd strings, but annotating rationale
+    # surfaces the issue to the operator (rationale is the operator-
+    # visible context, not the literal command). Tier correction is a
+    # categorization fix, not a value substitution.
+    _cmd_signals = _check_suggested_commands(rca.get("suggested_commands", []))
+    _failure_signals.extend(_cmd_signals)
+
     rca["tokens_used"] = {"input": total_in, "output": total_out}
     rca["agent_tool_calls"] = tool_call_count
     rca["files_read"] = sorted(read_files)
@@ -1094,6 +1103,73 @@ def _drop_unfetched_runbook_evidence(evidence: list, read_runbooks: set[str]) ->
             dropped += 1
             _log(f"  evidence: dropped unfetched runbook cite source={src!r} (runbook was not found)")
     return kept, dropped
+
+
+# Hallucinated/placeholder ID patterns commonly emitted by the LLM in
+# suggested_commands when the agent could not derive a real ID from
+# tool calls. Each one is a giveaway that the LLM made up an ID rather
+# than failing safely (the latter is the desired behavior — see Option
+# 0 in the system prompt: when aws_describe returns NotFound, propose
+# a pipeline re-run instead of fabricating IDs to delete/import).
+_HALLUCINATED_ID_PATTERNS = [
+    re.compile(r"<[\w-]*_?(arn|id|name|account|region|account_id)>", re.IGNORECASE),  # <arn>, <tg_id>, <instance-id>
+    re.compile(r"\b1234567[89]?0?123456\b"),                            # 1234567890123456 sequential
+    re.compile(r"\b1234abcd\w*\b", re.IGNORECASE),                      # 1234abcd... fake hex
+    re.compile(r"\b(?:0{12,}|f{12,})\b", re.IGNORECASE),                # all-zeros, all-f
+    re.compile(r"\b(?:placeholder|EXAMPLE|XXXXXXXX|YOURACCOUNT|YOUR_ACCOUNT)\b", re.IGNORECASE),
+    re.compile(r"\b(?:abcdef[0-9a-f]{6,}|123456[0-9a-f]{6,})\b"),       # fake hex digests
+    re.compile(r"\bi-(?:0{8,}|1234567)\b"),                             # i-0000... / i-1234567
+]
+
+
+# Terraform commands that mutate state — must always be tier=restricted.
+_TF_RESTRICTED_RE = re.compile(
+    r"\bterraform\s+(import|state\s+\w+|apply|destroy|taint|untaint|workspace\s+(delete|new))\b",
+    re.IGNORECASE,
+)
+
+
+def _check_suggested_commands(commands: list) -> list[str]:
+    """Validate + annotate suggested_commands in-place.
+
+    Returns a list of failure_signals discovered. Mutates each command
+    dict to:
+      - Bump `tier` to "restricted" for state-mutating terraform cmds
+        (categorization correction — these are not "safe").
+      - Prepend a WARNING to `rationale` when the cmd contains a
+        hallucinated/placeholder ID. Does NOT touch the `cmd` field
+        (Phase-10 policy: never silently substitute LLM output values).
+    """
+    signals: list[str] = []
+    if not isinstance(commands, list):
+        return signals
+    for entry in commands:
+        if not isinstance(entry, dict):
+            continue
+        cmd = entry.get("cmd", "")
+        if not isinstance(cmd, str):
+            continue
+
+        # 1. Hallucinated ID detection
+        for pat in _HALLUCINATED_ID_PATTERNS:
+            m = pat.search(cmd)
+            if m:
+                signals.append("hallucinated_id_in_command")
+                rationale = entry.get("rationale", "")
+                warn = (
+                    f"[VALIDATOR WARN: cmd contains placeholder/likely-"
+                    f"hallucinated value '{m.group(0)}' — verify before "
+                    f"running; the agent could not derive the real ID]"
+                )
+                entry["rationale"] = f"{warn} {rationale}".strip()
+                break
+
+        # 2. Terraform state-mutating tier bump
+        if _TF_RESTRICTED_RE.search(cmd) and entry.get("tier") != "restricted":
+            signals.append("tier_autobumped_terraform_restricted")
+            entry["tier"] = "restricted"
+
+    return signals
 
 
 def _filter_fake_repo_evidence(evidence: list, read_files: set[str]) -> list:

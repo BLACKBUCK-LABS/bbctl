@@ -451,53 +451,29 @@ those are not tiers, they're domains).
 
 ### STRICT — terraform "already exists" pattern
 
-When the log contains `Error: <AWS resource type> (<name>) already exists`,
-the operator's BEST fix is `terraform import` (preserves resource history
-+ audit trail). `delete + recreate` is the FALLBACK, not the first action.
+Log says `Error: <type> (<name>) already exists`. Order of `Action`:
 
-**MANDATORY for terraform-already-exists `suggested_fix.Action`:**
+1. **Option 0 (FIRST CHECK)** — if `aws_describe(...)` returned
+   `NotFound` for that resource, tell operator: "Resource may already
+   be cleaned up — re-run pipeline first." STOP here; no import/delete.
 
-1. **Option 0 — re-run check.** If `aws_describe(DescribeTargetGroups/
-   DescribeInstances/etc.)` returned `NotFound` for the resource the
-   log claims exists, the operator likely cleaned it up between the
-   build run and now. Tell operator: "Re-run the pipeline first —
-   the conflicting resource may already be gone." THIS COMES BEFORE
-   import/delete.
+2. **Option A (RECOMMENDED)** — `terraform import <dotted-addr-from-error>
+   <real-arn-from-aws_describe>`. Tier=restricted (import mutates state).
 
-2. **Option A (RECOMMENDED if Option 0 doesn't apply) — `terraform import`:**
-   ```
-   cd <InfraComposer>/config/<svc>/<env>/
-   terraform import <resource-address-from-error> <existing-id>
-   ```
-   Where `<resource-address-from-error>` is the dotted address shown in
-   the terraform error (e.g. `module.createProdPlusOneInfra.module.createNewTg.aws_lb_target_group.tg_v1`)
-   and `<existing-id>` is the AWS resource identifier (ARN for ELBv2,
-   instance-id for EC2, etc.) DERIVED from `aws_describe` output.
+3. **Option B (FALLBACK only)** — delete + recreate. Use only if import
+   fails OR resource is confirmed orphan.
 
-3. **Option B (FALLBACK) — delete + recreate:**
-   Only when import fails OR resource is confirmed orphan (zero healthy
-   targets, no listener refs).
+**Hard rule — `suggested_commands.cmd` must contain REAL IDs:**
 
-**MANDATORY — derive concrete IDs in `suggested_commands`:**
-
-NEVER emit `<arn>`, `<tg_arn>`, `<existing-id>`, `<instance-id>`
-placeholders in `suggested_commands.cmd`. Always inline the derivation:
-
-```bash
-# WRONG (LLM keeps doing this):
-aws elbv2 delete-target-group --target-group-arn <arn> --region ap-south-1
-
-# CORRECT — derive via shell substitution OR cite the ARN you already saw
-# in the aws_describe tool result:
-TG_ARN=$(aws elbv2 describe-target-groups --names fms-toll-web-pp1-tg \
-  --region ap-south-1 --query 'TargetGroups[0].TargetGroupArn' --output text)
-aws elbv2 delete-target-group --target-group-arn "$TG_ARN" --region ap-south-1
-```
-
-If you DID call `aws_describe` and got a concrete ARN back, use that
-ARN literally in the command (no `<placeholder>`). If the API returned
-`NotFound`, switch to Option 0 — do not propose deletion of something
-that isn't there.
+- NEVER emit `<arn>`, `<tg_arn>`, `<existing-id>`, `<instance-id>`.
+- NEVER emit fake plausible IDs like `1234567890123456`,
+  `i-1234567`, `arn:...:targetgroup/.../1234abcd`. These are
+  hallucination — operator will run and break stuff. Server-side
+  validator now flags these and bumps a `hallucinated_id_in_command`
+  signal.
+- If `aws_describe` returned a real ARN → paste it literally.
+- If `aws_describe` returned `NotFound` → switch to Option 0; do NOT
+  fabricate an ARN to delete/import.
 
 ## BBCTL command conventions (when log into instance is needed)
 

@@ -36,6 +36,28 @@ file content. Fetch what you need.
    c. Then scan UPWARDS to find the most recent `[Pipeline] { (<X>)`
       marker BEFORE that error — that's the failed stage.
 
+   d. **Trace the error string to its emitter.** When the fatal line
+      is a Jenkins/groovy `error "<message>"` call (compliance gates,
+      precheck failures, validation aborts), the SAME message string
+      lives literally in one of the helper `.groovy` files. Find it:
+
+         `repo_search("jenkins_pipeline", "<unique substring of the error>")`
+
+      The match returns the file:line of the `error '...'` call that
+      actually emitted the message. That line is the authoritative
+      evidence — cite IT, not adjacent code that looks topically
+      related. Then read the function containing the emitter (read
+      ~30 lines AROUND it, not just from the top of the file) plus
+      the call chain that reaches it (caller site in main pipeline
+      and any helpers in between).
+
+      Why this matters: large helper files have many sections that
+      look related to the failure class (e.g. JiraDetails.groovy has
+      a "Clone detection" section and a "resolveGitRepo" section).
+      Citing a section that looks topical but doesn't emit the
+      observed message produces a wrong-fix RCA. The error string is
+      unique — finding the literal match disambiguates instantly.
+
    **Why backwards:** Pipelines emit informational chatter from many
    earlier steps (`Stale state detected — auto-destroying`,
    `Health Status iteration N`, `Verifying compliance`, etc). Those

@@ -336,14 +336,17 @@ sudo -u postgres psql -d bbctl_rca -c '
 | **R2** | `rag_search` MCP tool wired into agent's tool_schemas/dispatch | ✅ shipped |
 | **R3** | Auto-inject top-k into agent system prompt every build | ✅ shipped |
 | **R3.1** | Selectivity tuning — audit-only for known class, Error: line anchor as query | ✅ shipped |
+| **R3.2** | Anti-anchoring overhaul — drop 5c runbook pre-fetch; classifier hint = heuristic, not pre-loaded content; per-pipeline doc index; trace-error-to-emitter rule | ✅ shipped |
 | **R4** | Audit indexer hook — `index_audits()` runs on each RCA write | next |
 | **R5** | Log-window embed per build + nearest-past-build lookup tool | next |
 | **R6** | Operator feedback (thumbs up/down) → meta.operator_verdict → re-rank | next |
 
 R2+R3 unlock the visible quality win — until then RAG is a CLI you can
-poke at, not something the agent uses. R4 turns past RCAs into a
-growing knowledge base. R5 catches "we saw this exact log last week"
-patterns. R6 closes the feedback loop so wrong RCAs get downweighted.
+poke at, not something the agent uses. R3.2 fixed a class of wrong-RCA
+cases driven by classifier misroutes anchoring the LLM on the wrong
+runbook. R4 turns past RCAs into a growing knowledge base. R5 catches
+"we saw this exact log last week" patterns. R6 closes the feedback loop
+so wrong RCAs get downweighted.
 
 ---
 
@@ -546,10 +549,201 @@ path. Everything else is the existing agent architecture.
 
 ---
 
-## 14. References
+## 14. R3.2 — Anti-anchoring overhaul
 
-* [pgvector](https://github.com/pgvector/pgvector) — extension + HNSW + IVFFlat
-* [OpenAI Embeddings](https://platform.openai.com/docs/guides/embeddings) — model + pricing
-* `bbctl/docs/rca/bbctlrca.md` — main bbctl-rca service doc; this is the companion
-* `bbctl/bbctl_rca/llm.py` — `_build_tool_context` is where the R3 / R3.1 inject lives
-* `bbctl/bbctl_rca/rag.py` — public surface: `embed`, `upsert`, `search`, `index_docops`, `index_audits`
+R3.1 sharpened RAG retrieval but left a deeper problem in place: the
+classifier's output was being treated as a fact, not a heuristic. When
+it mis-routed, the agent followed the wrong narrative even with the
+right data in context. R3.2 is the structural fix.
+
+### 14.1 What was wrong
+
+The HotFix-NonCanary build 61 wrong-RCA case made the chain visible:
+
+1. Classifier had a loose `health.*fail` regex that matched
+   `Stage 'Health Validation' skipped due to earlier failure(s)` —
+   a line Jenkins emits for every downstream stage of any failed
+   build. So a config-validation failure (`Key pair not found in AWS`)
+   got tagged `health_check`.
+2. The `5c` pre-fetch in `llm._build_tool_context` then auto-loaded
+   `docops/runbooks/health_check.md` into the prompt — full TG-poll
+   drill plan.
+3. The LLM anchored on that pre-loaded narrative for the rest of the
+   trace. It even *read* the fatal log line about the key pair, but
+   stuck with the target-group story because that was the narrative
+   it had been handed first.
+
+The fix is not "make RAG smarter." RAG was fine. The fix is "stop
+pre-feeding the LLM a narrative tied to a heuristic that can be
+wrong."
+
+### 14.2 What changed (shipped together)
+
+1. **Dropped `5c` runbook pre-fetch** in `llm._build_tool_context`.
+   `docops/runbooks/<error_class>.md` is no longer auto-loaded into
+   the prompt. The LLM derives the class from the log and calls
+   `read_runbook(<class>)` itself once it's confident. Classifier
+   output stays — used for `AGENT_CLASSES` routing and as a soft
+   hint passed to RAG's `error_class` filter — just not as content.
+
+2. **Tightened the classifier.** Dropped the loose `health.*fail`
+   regex from `health_check`. Added a new `config_validation` class
+   with patterns for `Config resource validation failed`,
+   `Key pair '<x>' not found in AWS`, `Subnet ... not found`,
+   `AMI ... not found`, `Security group ... not found`,
+   `IAM profile ... not found`. Added `config_validation` and
+   `compliance` to `AGENT_CLASSES` so the agent loop (and tool
+   access) fires for them instead of one-shot.
+
+3. **Wrote `docops/runbooks/config_validation.md`.** Stage 1.3 of
+   `pre_deployment` drill plan, with explicit "do NOT recreate target
+   groups / do NOT terraform import / do NOT health-check drill"
+   pitfalls.
+
+4. **Prompt rule: log = ground truth, classifier = heuristic.**
+   `rca_agent_system.md` gained an explicit block stating that the
+   fatal log line is ground truth; the classifier hint is a regex
+   matcher that can be wrong; the LLM must override when the line
+   disagrees. Lists three concrete override-now signals (TooMany /
+   stale_tf_state abort line / already-exists / config_validation
+   patterns) so the model sees the override pattern, not just the
+   abstract rule.
+
+5. **Trace-error-to-emitter rule (universal).** Same prompt added
+   step (d) to the log-scan procedure: when the fatal line is a
+   `error "<message>"` call from groovy code, the SAME string lives
+   literally in one of the helper `.groovy` files. The LLM must
+   `repo_search("jenkins_pipeline", "<unique substring>")` to find
+   the file:line of the emitter, then read the function containing
+   it. Citing topical-but-unrelated code (e.g. the Clone-detection
+   block in `JiraDetails.groovy` for a "SERVICE not in config.json"
+   error) is by-construction wrong; the literal-search disambiguates
+   instantly.
+
+6. **Universal recent-commits rule.** Both repos
+   (`jenkins_pipeline/` + `InfraComposer/`) are iterated on
+   continuously; many wrong-fix RCAs come from following a runbook
+   recipe that's now stale because the code moved. Before drilling,
+   the agent now calls
+   `repo_recent_commits("jenkins_pipeline", 5)` and
+   (for terraform / Infra / Destroy stages)
+   `repo_recent_commits("InfraComposer", 5)`. For each commit
+   touching the file you'd otherwise cite, open the diff via
+   `github_get_commit(<repo>, <sha>)`. This rule lives in the
+   prompt and in `docops/jenkins_pipelines_golden.md` §3.
+
+7. **Per-pipeline doc system (golden index + flow docs).**
+   `docops/jenkins_pipelines_golden.md` is a lean index — pipeline
+   catalogue, universal stage → likely-error-class table, helper
+   summary table, pointers to per-pipeline docs. Each pipeline has
+   its own `docops/job_flows/<name>.md` (hotfix_noncanary,
+   create_quick_infra, main_stagger_prod_plus_one, stagger_nonweb,
+   stagger_prod_plus_one_frontend, stagger_onboarding) carrying
+   identity, parameters, stages, helper chain, post block, and a
+   per-pipeline Stage → failure-modes table that supersedes the
+   universal one when they diverge. The agent reads the matching
+   one via `read_job_flow(<name>)` instead of relying on a
+   pre-fetched class runbook.
+
+### 14.3 Why this is "anti-anchoring"
+
+Each item above is, individually, a way to make the LLM less likely
+to lock onto a wrong narrative early:
+
+- Drop 5c → LLM has no narrative to lock onto from iter 0.
+- Tighten classifier → if anchoring still happens via tool calls,
+  the anchor is more likely to be the right one.
+- Add `config_validation` runbook → when the LLM does call
+  `read_runbook`, a real-world failure mode has its own doc instead
+  of being shoe-horned into `health_check`.
+- log = ground truth rule → if the LLM ever starts to anchor on a
+  hint, the rule tells it to verify against the actual log line.
+- repo_search emitter trace → forces the LLM to ground evidence in
+  the line that actually emitted the message, not topical-adjacent
+  code.
+- recent-commits rule → the code itself may have moved since the
+  runbook was written; check before recommending.
+- per-pipeline docs → the matched flow doc is closer to the failure
+  than a class runbook, and won't anchor the model to a wrong narrative.
+
+### 14.4 Measured impact (single-build samples)
+
+Before R3.2, build 61 of HotFix-NonCanary classified `health_check`,
+ran 8 tool calls, $0.18, suggested "recreate target group" — fully
+wrong fix.
+
+After R3.2, same build:
+
+- classified `config_validation`
+- 6 tool calls
+- $0.18
+- cited `vars/pre_deployment.groovy` (the actual emitter file)
+- aws_describe-d the key pair, found it exists in AWS
+- suggested verifying AWS profile / region — the right diagnostic
+
+Compliance + create-quick-infra Mode 6 is the remaining residual
+edge case: the LLM still pattern-matches `not found in config.json`
+→ "add to config.json" sometimes, even with the right runbook
+content available via `read_runbook`. The right diagnosis depends on
+whether the build-param fallback patch (`gitRepoOverride` on master)
+is present on the branch the pipeline loaded — which is a code-
+state question the LLM can answer with `repo_search` but doesn't
+always choose to. Reasoning gap, not data gap; flagged for future
+prompt iteration.
+
+### 14.5 What this doesn't change
+
+The RAG store (R1) and retrieval injection (R3.1) keep working as
+designed:
+
+- `## retrieved.rag` block still goes into the prompt, audit-only
+  for known classes, full corpus for unknown.
+- `rag_search` MCP tool still exposed for LLM-driven retrieval.
+- pgvector index, caches, indexer CLI, schema — all unchanged.
+
+R3.2 is a prompt + classifier + doc-layout change. No PG schema
+changes, no embedding-model changes, no chunking changes.
+
+### 14.6 Files touched in R3.2
+
+```
+bbctl/bbctl_rca/llm.py                 5c block removed, R3.1 retrieval kept
+bbctl/bbctl_rca/main.py                AGENT_CLASSES += {config_validation, compliance}
+bbctl/bbctl_rca/git_fresh.py           default branch master (was release/REQ-463)
+bbctl/classifier_rules.yml             dropped health.*fail, added config_validation
+bbctl/prompts/rca_agent_system.md      ground-truth rule, override signals,
+                                        emitter-trace rule, recent-commits rule
+bbctl/docops/runbooks/config_validation.md            NEW
+bbctl/docops/runbooks/compliance.md                   STEP 0 + Mode 6 for quick-infra
+bbctl/docops/jenkins_pipelines_golden.md              NEW lean index + universal tables
+bbctl/docops/job_flows/<six pipelines>.md             FULL per-pipeline (replaced/added)
+bbctl/infra/scripts/bbctl-sync.sh      default JP_BRANCH=master
+```
+
+### 14.7 What the agent's iter-0 batch looks like NOW
+
+For a failure that the classifier tagged correctly (e.g. `terraform`
+on a clean stale_tf_state-or-already-exists log):
+
+```
+Iter 0 (parallel):
+  - get_jenkins_job_config(job)
+  - list_job_flows()
+  - read_runbook(<class>)        ← LLM-initiated, NOT pre-loaded
+  - repo_recent_commits("jenkins_pipeline", 5)   ← universal rule
+Iter 1:
+  - read_job_flow(<matched>)
+  - repo_search("jenkins_pipeline", "<error string>")
+  - repo_read_file(<emitter file>, …)
+Iter 2:
+  - aws_describe(<resource>)
+  - cite + emit JSON
+```
+
+For a failure where classifier and stage disagree, the LLM is
+expected to read the log, see the conflict, override the
+`error_class` in its output, and proceed against the correct one.
+
+---
+
+## 15. References

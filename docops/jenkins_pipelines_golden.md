@@ -82,6 +82,35 @@ If the stage marker doesn't match this table, the failure is likely
 **pre-stage** (Load Library / parameter parsing) or a custom inline
 script — read the pipeline file directly via `repo_read_file`.
 
+### Universal rule — when the failure touches infra code, check recent commits FIRST
+
+The `jenkins_pipeline` shared library and the `InfraComposer` terraform
+modules are both iterated on continuously. Many wrong-RCA cases trace
+back to a recent code change that the runbook content didn't yet
+anticipate — the runbook tells you to do X, but X stopped being the
+right answer two days ago.
+
+Before recommending an action for ANY failure that involves either
+repo, do this once:
+
+1. `repo_recent_commits("jenkins_pipeline", 5)` — the last 5 commits.
+2. If the failure involves a terraform / Infra / Destroy stage, ALSO
+   `repo_recent_commits("InfraComposer", 5)`.
+3. For each commit that touches a file you would otherwise cite in
+   your evidence (e.g. `vars/JiraDetails.groovy`, `vars/canary.groovy`,
+   `vars/createGreenInfra.groovy`, `config/<svc>/<env>/main.tf`),
+   open the diff via `github_get_commit(<repo>, <sha>)` and read it.
+4. If the diff modified the code path you are about to recommend a
+   fix for, treat that as the prime suspect. Recent code change >
+   stale runbook recipe.
+5. Widen to 10 or 20 commits only if the last 5 show nothing relevant.
+
+This is the rule that prevents "follow the runbook into the wrong
+fix" when the codebase moved underneath the runbook. It applies to
+all pipelines and is the FIRST step before drilling helpers when the
+failure mode looks unusual or contradicts what the runbook expects.
+Cost is one tool call — cheap insurance against a wrong-fix RCA.
+
 ---
 
 ## 4. Helper summary table

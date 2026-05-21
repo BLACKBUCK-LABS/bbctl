@@ -306,7 +306,7 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
 
     # NOTE — the previous "5c" block here pre-injected
     # `docops/runbooks/<error_class>.md` into the prompt based on the
-    # classifier's output. Removed (May 2026) after the HotFix-NonCanary
+    # classifier's output. Removed after the HotFix-NonCanary
     # build 61 wrong-RCA case: the classifier mis-routed a config-
     # validation failure as `health_check` (loose `health.*fail` regex
     # matched the "Health Validation skipped due to earlier failure(s)"
@@ -318,8 +318,84 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
     #
     # Going forward, the LLM must call `read_runbook(class)` itself
     # AFTER deriving the class from the log. The classifier output is
-    # still used for backend routing (AGENT_CLASSES gate), just not
-    # for content pre-injection.
+    # still used for backend routing (AGENT_CLASSES gate, RAG
+    # source-type filter via meta.error_class), just not for content
+    # pre-injection.
+
+    # R3 — RAG auto-inject. Pull top-k semantically similar chunks
+    # from the pgvector store (docops, runbooks, past audits) seeded
+    # by the current log window. Cheaper than waiting for the LLM to
+    # call `rag_search` mid-loop because we pay one embedding + one
+    # HNSW scan up front, then the model sees relevant context on
+    # iter 0. Lazy import so non-RAG hosts (no psycopg / pgvector,
+    # or PG down) keep working — RAG offline equals "no inject",
+    # not "crash".
+    #
+    # R3.1 — Selectivity (avoid redundancy with the runbook pre-fetch
+    # above):
+    #
+    #   * For KNOWN classes whose runbook just got pre-fetched, the
+    #     full per-class runbook is already in the prompt; restrict
+    #     RAG to `audit` so it only adds *past-incident memory* and
+    #     doesn't re-paste runbook chunks the LLM already has.
+    #
+    #   * For UNKNOWN, pull from all corpora — RAG is the primary
+    #     navigator since there is no specific runbook to lean on.
+    #
+    # R3.1 — Sharper query: anchor on the fatal log line, not the
+    # whole log window. text-embedding-3-small precision drops fast
+    # as the query gets noisier (build logs, NewRelic chatter,
+    # terraform plan output). The last `Error:` / `Exception:` /
+    # `FAIL:` / `Caused by:` line is the strongest signal, so we
+    # take a focused slice around it. Falls back to the truncated
+    # log_window when no anchor matches.
+    try:
+        from . import rag as _rag
+        anchor = re.search(
+            r"(Error:|Exception:|FAIL:|FAILURE:|Caused by:).{0,500}",
+            (log_window or "")[-15000:],
+            re.MULTILINE | re.DOTALL,
+        )
+        q = anchor.group(0) if anchor else (log_window or "")[:6000]
+        if q.strip():
+            # Known class — restrict retrieval to past audits so we
+            # surface "we saw this before" memory rather than re-pasting
+            # generic class runbook chunks (the LLM can fetch the
+            # runbook directly via read_runbook when it derives the
+            # class from the log).
+            # Unknown class — pull from all corpora since there is no
+            # class-specific runbook for the LLM to lean on.
+            known = error_class and error_class != "unknown"
+            src_types = ["audit"] if known else ["runbook", "doc", "audit"]
+            hits = _rag.search(
+                q, k=3,
+                source_types=src_types,
+                error_class=error_class if known else None,
+            )
+            if hits:
+                header = (
+                    "## retrieved.rag (top-k past-incident matches)"
+                    if known else
+                    "## retrieved.rag (top-k semantic matches)"
+                )
+                lines = [header]
+                for h in hits:
+                    meta  = h.get("meta") or {}
+                    klass = meta.get("error_class") or ""
+                    head  = (
+                        f"- [{h['score']:.3f}] "
+                        f"{h['source_type']}/{h['source_id']}"
+                        f"{(' class=' + klass) if klass else ''}"
+                    )
+                    # Trim each chunk to ~1KB so 3 hits stay ~3KB total.
+                    body = h["chunk_text"][:1000].replace("\n", " ")
+                    lines.append(head)
+                    lines.append(f"    {body}…")
+                parts.append("\n".join(lines))
+    except Exception as _e:
+        # RAG offline / module missing / PG down — non-fatal.
+        print(f"[llm] rag auto-inject skipped: {_e}",
+              file=__import__('sys').stderr, flush=True)
 
     # Unknown class — give the LLM a catalog of available runbooks + class
     # taxonomy so it can self-classify by reading. Wider source.trace already

@@ -82,11 +82,25 @@ file content. Fetch what you need.
 
    When you override, state the reason in `root_cause` so the
    operator sees why you disagreed with the hint. The classifier
-   output is NOT pre-loaded as runbook content into your prompt
-   (May 2026 change) — you call `read_runbook(<class>)` yourself
-   after you have derived the class from the log. This is by
-   design: a pre-loaded runbook would anchor you to a narrative
-   that may not match the actual failure.
+   output is NOT pre-loaded as runbook content into your prompt —
+   you call `read_runbook(<class>)` yourself after you have derived
+   the class from the log. This is by design: a pre-loaded runbook
+   would anchor you to a narrative that may not match the actual
+   failure.
+
+   **Check recent commits before recommending a code-related fix.**
+   Both `jenkins_pipeline/` and `InfraComposer/` are iterated on
+   continuously. Many wrong-fix RCAs trace back to a recent code
+   change that invalidated the runbook recipe. For ANY failure that
+   touches code in either repo, call
+   `repo_recent_commits("jenkins_pipeline", 5)` (and
+   `repo_recent_commits("InfraComposer", 5)` for terraform / Infra /
+   Destroy stages) before drilling helpers. If a commit in the last
+   5 touched the file you would otherwise cite as the cause, open
+   that diff with `github_get_commit(<repo>, <sha>)` and read it —
+   recent code change beats stale runbook recipe. See
+   `docops/jenkins_pipelines_golden.md` §3 ("Universal rule") for
+   the full statement.
 
    **Specific override-now signals (apply WHEN the log shows them):**
 

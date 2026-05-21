@@ -120,10 +120,12 @@ def _default_branch(repo_path: Path) -> str:
 
     Priority:
       1. Hardcoded mapping for the two repos we care about (overridable via
-         env). This MUST come first — `origin/HEAD` on jenkins_pipeline points
-         at `master`, but we explicitly track the active release branch, so
-         deferring to symbolic-ref silently resets the clone to the wrong tip
-         on every RCA call.
+         env). `jenkins_pipeline` tracks `master` — that's the canonical
+         branch where landed fixes live (e.g. JiraDetails build-param
+         fallback). The release branch lagged behind master and made the
+         RCA agent read stale code; we track master now. Operators who
+         need to diagnose a historical build against an older branch can
+         override via env: BBCTL_RCA_JP_BRANCH=<branch>.
       2. `symbolic-ref refs/remotes/origin/HEAD` for any other repo (kept as
          a generic fallback for future additions).
       3. Literal "main" as last resort.
@@ -131,7 +133,7 @@ def _default_branch(repo_path: Path) -> str:
     import os as _os
     name = repo_path.name
     if name == "jenkins_pipeline":
-        return _os.environ.get("BBCTL_RCA_JP_BRANCH", "release/REQ-463-staggerprodplusupdate-v2")
+        return _os.environ.get("BBCTL_RCA_JP_BRANCH", "master")
     if name == "InfraComposer":
         return _os.environ.get("BBCTL_RCA_IC_BRANCH", "main")
     try:

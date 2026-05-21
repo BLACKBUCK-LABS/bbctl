@@ -33,9 +33,16 @@ rules:
   # specific precheck-aborted-before-apply mode (checkTerraformStateFile
   # found leftover rows in S3 tfstate for an env that should start empty,
   # e.g. prodplusone). Action is targeted state cleanup, not apply debug.
+  # stale_tf_state = precheck checkTerraformStateFile ABORTED the pipeline
+  # because S3 tfstate is non-empty for an env that should start empty
+  # (prodplusone). MUST come before generic `terraform`. Patterns are the
+  # precheck FAILURE signals only — do NOT match on the precheck *name*
+  # alone, since that appears in every prodplusone build (build 4471 false
+  # positive: precheck ran + passed, apply failed → wrongly tagged
+  # stale_tf_state because 'Executing precheck: checkTerraformStateFile'
+  # matched).
   - class: stale_tf_state
     patterns:
-      - 'Executing precheck: checkTerraformStateFile'
       - 'Stopping pipeline execution due to non-empty Terraform state'
       - 'Terraform state contains resources\. Total resources'
     description: "Precheck checkTerraformStateFile aborted: S3 tfstate non-empty for a fresh-env stage (prodplusone). Operator must clean leftover state rows before pipeline can re-run."
@@ -55,7 +62,14 @@ rules:
       - 'Error: Failed to install provider'
       - 'Error: Backend initialization required'
       - 'terraform.*Error: error inspecting states'
-    description: "Terraform state / lock / apply / backend failure — see TerraformTroubleshoot.md"
+      # Resource-exists conflicts (terraform apply tried to create a
+      # resource that already exists in AWS, e.g. orphan from prior run
+      # whose state was lost / not imported). Build 4471 case:
+      # `Error: ELBv2 Target Group (fms-toll-web-pp1-tg) already exists`
+      - 'Error: \w[\w ]+ \([^)]+\) already exists'
+      - 'Error: .*: resource already exists'
+      - 'A resource with the ID .* already exists'
+    description: "Terraform state / lock / apply / backend failure — see TerraformTroubleshoot.md. Includes resource-already-exists conflicts where AWS has the resource but terraform state lost it."
 
   - class: aws_limit
     patterns:

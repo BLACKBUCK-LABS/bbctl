@@ -1,52 +1,87 @@
 # Job flow: stagger-nonweb
 
+## Identity
+
+- **Script path:** `jenkins_pipeline/stagger-nonweb.groovy`
+- **Likely Jenkins job names:** `Stagger-NonWeb`, `stagger-prod-nonweb`, `nonweb-deploy`
+- **Shared library:** `staggered_plugins@master`
+- **Agent / options:** `agent any`; `tools { maven 'Maven' }`; `ansiColor('xterm')`
+- **Environment:** `SUBMITTER_EMAILS = "thejasvi.bhat@..., rahul.aggarwal@..., vivekanand.matta@..."`
+
 ## Match
+
 - `script_path` ends with `stagger-nonweb.groovy`, OR
-- `inline_script` contains stage bodies `createGreenInfra(...)` and
-  `deploy(..., "prod")` and `rollout(...)` and `destroyBlueInfra(...)`
-  with NO `prodPlusOne(...)` stage between Build and Infra (no Prod+1
-  wrapper).
-Optional confirmation: `service.lookup.is_non_web == true` for the
-SERVICE param.
+- `inline_script` contains stage bodies calling `buildJob(...)`,
+  `createGreenInfra(...)`, `deploy(...)`, `rollout(...)`,
+  `destroyBlueInfra(...)` (no `prodPlusOne` stage), with
+  `rollbackMain("non_web_rollback", ...)` in `post { failure { ... } }`.
 
-## Main pipeline
-`jenkins_pipeline/stagger-nonweb.groovy`
+## Parameters
 
-## Top-level stages
-| Stage marker in console log | Body in main pipeline               |
-|-----------------------------|-------------------------------------|
-| `(Load Library)`            | inline library load                 |
-| `(Jira Details)`            | `JiraDetails(...)`                  |
-| `(Build)`                   | `buildJob(...)`                     |
-| `(Infra)`                   | `createGreenInfra(...)`             |
-| `(Deploy)`                  | `deploy(..., "prod")`               |
-| `(Rollout)`                 | `rollout(...)`                      |
-| `(Destroy)`                 | `destroyBlueInfra(...)`             |
-| post-failure                | `rollbackMain("non_web_rollback",...)` |
+| Param | Type | Default |
+|---|---|---|
+| `COMMIT_ID` | string | `commit_id` |
+| `SERVICE` | choice | hardcoded ~35 non-web services (consumers, crons, kafka) |
+| `Jira-Ticket` | string | `''` |
 
-Helper file for each: `jenkins_pipeline/vars/<helperName>.groovy`.
+## Stages
 
-## Notes specific to non-web
+| # | Stage marker | Helper |
+|---|---|---|
+| 1 | `(Load Library)` | buildName + library |
+| 2 | `(Jira Details)` | `JiraDetails(SERVICE, COMMIT_ID, Jira-Ticket)` |
+| 3 | `(Build)` | `buildJob(SERVICE, COMMIT_ID)` |
+| 4 | `(Infra)` | `createGreenInfra(SERVICE)` |
+| 5 | `(Deploy)` | `deploy(SERVICE, "prod")` — auto-routes to `nonWebDeploy` |
+| 6 | `(Rollout)` | `rollout(SERVICE)` — auto-routes to `nonwebRollout` |
+| 7 | `(Destroy)` | `destroyBlueInfra(SERVICE)` |
 
-- This flow has NO `Prod+1` stage. There is no `prodPlusOne` wrapper.
-  Console markers like `(Infra Prod+1)` do NOT appear in this flow.
-- `deploy(...)` branches inside its body based on service type
-  (`isNonWeb` check). Drill into `vars/deploy.groovy` to see the
-  branch the failing service takes.
-- `rollout(...)` likewise branches; non-web services route through
-  `nonwebRollout(...)`. Drill into `vars/rollout.groovy` to verify.
+NOTE — there is **no Prod+1 stage** in this pipeline.
 
-## Drill procedure
-1. Read main pipeline body to confirm the table above is current.
-2. Pick failed stage marker from log.
-3. Read the helper file from the matching row.
-4. If the helper branches on `service_type` / `isNonWeb`, follow the
-   non-web branch.
-5. Drill inner calls until reaching the file/line that matches the
-   fatal error.
+## Helper chain
 
-## Resources used by this flow
-- Shell scripts: `jenkins_pipeline/resources/scripts/*.sh`
-- Service config: `jenkins_pipeline/resources/config.json`
-- Templates: `jenkins_pipeline/resources/{filebeat.yml,supervisor.conf,fluent-bit.conf,parsers.conf,fluent-bit-config.json}`
-- Terraform for infra stages: `InfraComposer` repo.
+```
+Same buildJob → createGreenInfra → deploy → rollout → destroyBlueInfra
+as main_stagger_prod_plus_one, but:
+deploy
+  └─ nonWebDeploy(SERVICE, "prod", serviceType)
+       ├─ same script bundle as web + non_web_healthy.sh
+       ├─ optional fluent-bit.conf
+       └─ parallel SSM deploy
+rollout
+  └─ nonwebRollout(service)
+       ├─ reads canary_timing from config
+       ├─ non-web-cron: clamps each value to [0..60]; default [5]
+       ├─ non-web-consumer: default [0]
+       └─ time-based delays; no NewRelic canary call
+```
+
+## Post
+
+| Result | Action |
+|---|---|
+| `always` | `NOT_BUILT` → `triggerRcaWebhook()`; `deleteDir()` |
+| `success` | `UpdateJiraStatus(params['Jira-Ticket'])` |
+| `unstable` | `triggerRcaWebhook()` |
+| `failure` | `rollbackMain("non_web_rollback", params.SERVICE)` — **NO VictorOps, NO Slack RCA post, NO BB-AI failure call.** |
+| `aborted` | `rollbackMain("non_web_rollback", params.SERVICE)` |
+
+## Stage → likely failure modes
+
+| Stage marker | Error class | Drill |
+|---|---|---|
+| `(Load Library)` | scm, dependency | library branch / ref not resolvable |
+| `(Jira Details)` | compliance | Modes 1-5 in `docops/runbooks/compliance.md` |
+| `(Build)` | scm, dependency, java_runtime | git fetch / maven dep / JAR build error |
+| `(Infra)` | terraform, stale_tf_state, aws_limit | terraform apply errors; "already exists" |
+| `(Deploy)` | ssm, java_runtime | SSM exec fail; app launch crash; `non_web_healthy.sh` fail |
+| `(Rollout)` | timeout | `nonwebRollout` time-based stagger timeout. Do NOT classify as `canary_fail` — there is no canary here. |
+| `(Destroy)` | terraform, aws_limit | destroy fail |
+
+## Gotchas (operator-relevant)
+
+- **NO Prod+1 stage** (non-web services don't take HTTP traffic, so no preprod validation).
+- Failure path is intentionally thin — no on-call paging, no Slack RCA post.
+- `nonwebRollout` uses time-based stagger, not canary score. Don't write RCAs that assume Kayenta / NewRelic canary semantics here.
+- `non_web_healthy.sh` is the health-check signal (NOT `healthy.sh` which is for web services).
+- Some pipelines under "non-web" are actually consumers / kafka workers — they don't serve HTTP, so an ALB target group may or may not exist depending on config. Don't assume TG presence for these.

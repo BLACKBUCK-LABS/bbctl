@@ -36,6 +36,13 @@ Failure-signal events that agent.py appends as they happen:
   hallucinated_snippet        — ≥1 evidence entry's snippet contained quoted-string
                                 literals NOT present in the actual file content.
                                 Entry dropped from evidence[].
+  malformed_final_schema      — final JSON parsed as a dict but missing required
+                                RCA keys (summary / failed_stage / error_class /
+                                root_cause / evidence / suggested_fix). One
+                                schema-completion retry fired; signal records the
+                                degraded emission regardless of retry outcome.
+                                Observed when LLM emits a single suggested_command
+                                object as the entire final response.
 
 Queryable via bbctl_rca/cli_outcomes.py.
 

@@ -789,6 +789,58 @@ async def run_agent(
     # despite response_format=json_object). Log the raw text on failure so
     # the actual model output is visible in journalctl for debugging.
     rca = _parse_final_json(final_text)
+
+    # Schema-completeness gate. _parse_final_json accepts ANY dict, including
+    # degenerate ones (e.g. LLM emits a single `{cmd, tier, rationale}` and
+    # nothing else — observed on Build 15 Stagger Scaling 2nd run). When the
+    # parsed dict is missing required RCA keys, do ONE retry with an explicit
+    # schema-reminder prompt + response_format=json_object so the LLM emits
+    # the full RCA object. Adds ~$0.05 in worst case.
+    _RCA_REQUIRED = ("summary", "failed_stage", "error_class", "root_cause",
+                     "evidence", "suggested_fix")
+    if rca is not None:
+        _missing = [k for k in _RCA_REQUIRED if k not in rca]
+        if _missing:
+            _failure_signals.append("malformed_final_schema")
+            _log(f"final JSON missing required RCA keys: {_missing} — "
+                 f"issuing schema-completion retry")
+            messages.append({
+                "role": "user",
+                "content": (
+                    "STOP. The JSON you emitted is missing required RCA "
+                    f"keys: {', '.join(_missing)}. Emit the FULL RCA JSON "
+                    "object now, matching the schema in the system prompt. "
+                    "Required keys: summary, failed_stage, error_class, "
+                    "root_cause, evidence (array of {source, snippet} or "
+                    "{source, line_start, line_end} for repo files), "
+                    "suggested_fix (object with Finding/Action/Verify), "
+                    "suggested_commands (array). Return ONLY the JSON "
+                    "object, starting with { and ending with }."
+                ),
+            })
+            _retry_kwargs = {
+                "model": model, "messages": messages,
+                "response_format": {"type": "json_object"},
+                "temperature": 0.1,
+            }
+            _trace("SCHEMA COMPLETION RETRY REQUEST",
+                   _fmt_request_payload(messages, _retry_kwargs))
+            try:
+                retry = client.chat.completions.create(**_retry_kwargs)
+                total_in += retry.usage.prompt_tokens
+                total_out += retry.usage.completion_tokens
+                _retry_text = retry.choices[0].message.content
+                _trace("SCHEMA COMPLETION RETRY RESPONSE",
+                       f"prompt_tokens={retry.usage.prompt_tokens} "
+                       f"completion_tokens={retry.usage.completion_tokens}\n"
+                       f"content={(_retry_text or '')[:1500]}")
+                _rca_retry = _parse_final_json(_retry_text)
+                if _rca_retry is not None:
+                    rca = _rca_retry
+                    final_text = _retry_text
+            except Exception as _e:
+                _log(f"schema completion retry failed: {_e}")
+
     if rca is None:
         _failure_signals.append("final_json_parse_failed")
         _log("agent did not emit valid JSON; falling back to error stub")
@@ -804,6 +856,29 @@ async def run_agent(
             "confidence": 0.0,
             "needs_deeper": True,
         }
+
+    # Backfill any STILL-missing required keys with safe defaults so the
+    # outer serializer + UI never crash on a partial object. The schema-
+    # completion retry above is the primary fix; this is the last-resort
+    # safety net (retry might also have produced an incomplete object).
+    _defaults = {
+        "summary": "Agent did not emit a summary.",
+        "failed_stage": build_meta.get("detected_failed_stage", "—"),
+        "error_class": error_class,
+        "root_cause": (final_text or "")[:400] or
+                      "Agent did not emit root_cause prose.",
+        "evidence": [],
+        "suggested_fix": {
+            "Finding": "Agent did not emit a structured fix.",
+            "Action": "Re-run with deep:true or inspect agent stderr logs.",
+            "Verify": "",
+        },
+    }
+    for _k, _v in _defaults.items():
+        if _k not in rca:
+            rca[_k] = _v
+    if "suggested_commands" not in rca:
+        rca["suggested_commands"] = []
 
     # Phase-10 (revised May 2026): annotate-only stayed too lenient.
     # Build 15 Stagger Scaling case had evidence citing

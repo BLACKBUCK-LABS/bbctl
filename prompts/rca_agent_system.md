@@ -55,6 +55,27 @@ file content. Fetch what you need.
    over `terraform` — the Terraform module is just the resource that
    tripped the underlying AWS limit; the cause is the limit itself.
 
+   **Override the classifier hint (`build_meta.error_class`) when warranted.**
+   The classifier is a first-pass regex matcher; it can be wrong. Specific
+   overrides that you MUST apply when the log supports them:
+
+   - Log contains `TooMany*` / `LimitExceeded` / `QuotaExceeded` /
+     `ResourceLimitExceeded` / `maximum number of` → emit
+     `error_class: "aws_limit"` regardless of hint. Build 5177 case:
+     classifier said `stale_tf_state` because of normal precheck chatter,
+     but actual abort was `TooManyUniqueTargetGroupsPerLoadBalancer`.
+   - Log contains `Stopping pipeline execution due to non-empty Terraform
+     state` → `error_class: "stale_tf_state"` (this IS the abort signal).
+     But the line `Terraform state contains resources. Total resources
+     here: N` ALONE is normal precheck recovery — does NOT indicate abort.
+     Do NOT keep `stale_tf_state` on that line alone.
+   - Log contains `Error: ... already exists` for an AWS resource (and no
+     quota error) → `error_class: "terraform"` (resource-exists conflict;
+     read `terraform.md` runbook for the import recipe).
+
+   When you override, state the reason in `root_cause` so the operator
+   sees why you disagreed with the hint.
+
    If you skip step 1 and start fetching tool calls based on the FIRST
    log signals you see, you'll fix the wrong problem.
 

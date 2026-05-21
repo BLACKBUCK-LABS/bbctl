@@ -432,6 +432,18 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         # wedged. Runbook gives the LLM state-surgery procedures it can
         # surface as suggested_commands.
         "terraform",
+        # stale_tf_state: when classifier is right, the LLM needs the
+        # stale_tf_state.md runbook (precheck abort recipe) + repo access
+        # to walk the precheck.groovy logic. When classifier is wrong
+        # (build 5177: real cause was TooMany ALB limit), agent mode gives
+        # the LLM tools to read aws_limit runbook + derive ARNs + reclassify
+        # in output. One-shot path traps it in the wrong class.
+        "stale_tf_state",
+        # aws_limit: runbook has exact ARN derivation steps (rule_arn →
+        # alb_arn) the LLM cannot improvise. Without tool access, one-shot
+        # emits <alb_arn> placeholders (build 5177). Agent path lets the
+        # LLM read aws_limit.md + run aws_describe to fill real IDs.
+        "aws_limit",
         # java_runtime: stack trace points at a file:line. Agent can read
         # that file via repo_read_file and cite the exact line for the
         # operator (e.g. WorkflowScript:330 → create-quick-infra.groovy:330

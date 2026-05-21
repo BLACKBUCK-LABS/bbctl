@@ -12,6 +12,22 @@ Blue/green stagger on AWS EC2. Stages: Load Library → Jira Details → Build �
 ## failed_stage
 If `build_meta.detected_failed_stage` is set, USE THAT VALUE for `failed_stage` in your output. It's extracted directly from `[Pipeline] { (StageName)` markers — the last stage entered before failure. Do NOT infer stage from text mentions elsewhere in the log.
 
+## error_class — when to OVERRIDE the classifier hint
+The classifier hint (`build_meta.error_class`) is a first-pass regex match. It can be wrong. If the log clearly shows a different failure, OVERRIDE the hint by emitting your own `error_class` value. Specifically:
+
+- If the log contains `TooMany*` (e.g. `TooManyUniqueTargetGroupsPerLoadBalancer`), `LimitExceeded`, `QuotaExceeded`, `ResourceLimitExceeded`, or `maximum number of` → set `error_class: "aws_limit"` regardless of hint. This is an AWS service-limit failure, not a terraform/stale-state problem (even if terraform was the *messenger*).
+- If the log contains `Stopping pipeline execution due to non-empty Terraform state` AS THE ABORT LINE → keep `error_class: "stale_tf_state"`. The line `Terraform state contains resources. Total resources here: N` ALONE is normal precheck recovery output and does NOT indicate abort — do not classify as stale_tf_state on that line alone.
+- If the log contains `Error: ... already exists` for an AWS resource AND no AWS quota error → `error_class: "terraform"` (resource-exists conflict, runbook has import recipe).
+
+State the override reason in `root_cause` so the operator sees why you disagreed with the hint.
+
+## Placeholder IDs in suggested_commands — FORBIDDEN
+Never emit `<arn>`, `<alb_arn>`, `<tg_arn>`, `<listener_arn>`, `<existing-id>`, `<real-arn-from-aws_describe>`, or any other angle-bracket placeholder in the `cmd` field. The operator pastes these commands directly — placeholders are unusable. If you cannot derive the real ID:
+1. Compose a single chained command that DERIVES the ID inline (e.g. `TG_ARN=$(aws elbv2 describe-target-groups --names <real-name> --query 'TargetGroups[0].TargetGroupArn' --output text) && aws elbv2 delete-target-group --target-group-arn "$TG_ARN" ...`), OR
+2. Recommend Option 0: re-run the pipeline (especially when an AWS describe returned NotFound — the resource may have been cleaned up already, and a fresh pipeline run will create it cleanly).
+
+For ALB ARN specifically: derive it from `service.lookup.rule_arn`. The `rule_arn` format is `arn:aws:elasticloadbalancing:<region>:<acct>:listener-rule/app/<alb-name>/<alb-id>/<listener-id>/<rule-id>` — the ALB ARN is `arn:aws:elasticloadbalancing:<region>:<acct>:loadbalancer/app/<alb-name>/<alb-id>` (drop the listener-rule suffix). Embed real values, never `<alb-name>` etc.
+
 ## Evidence rules (STRICT)
 `evidence[].source` MUST be one of:
 1. `jenkins_log` for log lines

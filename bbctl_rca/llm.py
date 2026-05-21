@@ -504,6 +504,22 @@ async def run_rca_openai(
         "output": response.usage.completion_tokens,
     }
 
+    # Validator: annotate placeholder/hallucinated IDs + bump tier for
+    # state-mutating terraform cmds. Same hook as agent path so one-shot
+    # outputs (stale_tf_state, aws_limit, compliance, …) don't ship raw
+    # `<alb_arn>` placeholders to operators. Phase-10 policy preserved:
+    # only annotates rationale + corrects tier, never substitutes cmd.
+    try:
+        from .agent import _check_suggested_commands
+        cmd_signals = _check_suggested_commands(result.get("suggested_commands", []))
+        if cmd_signals:
+            existing = result.get("failure_signals") or []
+            if isinstance(existing, list):
+                result["failure_signals"] = existing + cmd_signals
+    except Exception as _e:
+        print(f"[llm] one-shot validator skipped: {_e}",
+              file=__import__('sys').stderr, flush=True)
+
     # Optional one-shot trace dump (full request + response). Same env var
     # the agent-mode loop uses, but the one-shot path doesn't iterate, so
     # the trace is one block. Writes BOTH a "last" copy and a per-build

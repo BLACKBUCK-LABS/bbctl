@@ -35,16 +35,20 @@ rules:
   # e.g. prodplusone). Action is targeted state cleanup, not apply debug.
   # stale_tf_state = precheck checkTerraformStateFile ABORTED the pipeline
   # because S3 tfstate is non-empty for an env that should start empty
-  # (prodplusone). MUST come before generic `terraform`. Patterns are the
-  # precheck FAILURE signals only — do NOT match on the precheck *name*
+  # (prodplusone). MUST come before generic `terraform`. Pattern is the
+  # precheck FAILURE signal only — do NOT match on the precheck *name*
   # alone, since that appears in every prodplusone build (build 4471 false
   # positive: precheck ran + passed, apply failed → wrongly tagged
   # stale_tf_state because 'Executing precheck: checkTerraformStateFile'
   # matched).
+  # The 'Terraform state contains resources. Total resources' pattern was
+  # also a false-positive trap (build 5177): precheck emits that line as
+  # informational chatter during NORMAL stale-state cleanup recovery
+  # *before* deciding whether to abort or proceed. The actual abort signal
+  # is 'Stopping pipeline execution due to non-empty Terraform state'.
   - class: stale_tf_state
     patterns:
       - 'Stopping pipeline execution due to non-empty Terraform state'
-      - 'Terraform state contains resources\. Total resources'
     description: "Precheck checkTerraformStateFile aborted: S3 tfstate non-empty for a fresh-env stage (prodplusone). Operator must clean leftover state rows before pipeline can re-run."
 
   # terraform MUST come before aws_limit — Terraform state/lock errors

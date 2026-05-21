@@ -1112,7 +1112,12 @@ def _drop_unfetched_runbook_evidence(evidence: list, read_runbooks: set[str]) ->
 # 0 in the system prompt: when aws_describe returns NotFound, propose
 # a pipeline re-run instead of fabricating IDs to delete/import).
 _HALLUCINATED_ID_PATTERNS = [
-    re.compile(r"<[\w-]*_?(arn|id|name|account|region|account_id)>", re.IGNORECASE),  # <arn>, <tg_id>, <instance-id>
+    # Generic angle-bracket placeholder: catches <arn>, <tg_id>,
+    # <instance-id>, <real-arn-from-aws_describe>, <your-account-id>,
+    # <existing-id>, etc. Any <word-chars-and-dashes> inside angle
+    # brackets in a cmd field is suspicious — the LLM didn't fill it.
+    re.compile(r"<[A-Za-z][\w./-]*>"),
+    # Specific fake-but-plausible numeric patterns
     re.compile(r"\b1234567[89]?0?123456\b"),                            # 1234567890123456 sequential
     re.compile(r"\b1234abcd\w*\b", re.IGNORECASE),                      # 1234abcd... fake hex
     re.compile(r"\b(?:0{12,}|f{12,})\b", re.IGNORECASE),                # all-zeros, all-f

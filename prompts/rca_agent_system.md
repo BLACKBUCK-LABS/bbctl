@@ -465,15 +465,24 @@ Log says `Error: <type> (<name>) already exists`. Order of `Action`:
 
 **Hard rule — `suggested_commands.cmd` must contain REAL IDs:**
 
-- NEVER emit `<arn>`, `<tg_arn>`, `<existing-id>`, `<instance-id>`.
+- NEVER emit ANY `<placeholder>` in angle brackets — not `<arn>`,
+  not `<tg_arn>`, not `<existing-id>`, not `<real-arn-from-aws_describe>`,
+  not `<your-account-id>`. Server-side validator flags ALL of them.
 - NEVER emit fake plausible IDs like `1234567890123456`,
-  `i-1234567`, `arn:...:targetgroup/.../1234abcd`. These are
-  hallucination — operator will run and break stuff. Server-side
-  validator now flags these and bumps a `hallucinated_id_in_command`
-  signal.
+  `i-1234567`, `arn:...:targetgroup/.../1234abcd`. Hallucination.
 - If `aws_describe` returned a real ARN → paste it literally.
-- If `aws_describe` returned `NotFound` → switch to Option 0; do NOT
-  fabricate an ARN to delete/import.
+- If `aws_describe` returned `NotFound` → Option 0 (re-run pipeline)
+  is the ENTIRE answer. Omit Option A/B commands. Do NOT emit a
+  terraform import / delete cmd with a fake ID just to "show" the
+  shape — that misleads operators.
+
+**Hard rule — Output format:**
+
+Return ONLY a JSON object matching the schema. NO `### Headings`,
+NO markdown bullets, NO ```json fences, NO preamble like "Here is
+the analysis". The very first character must be `{` and last `}`.
+The server parses your output strictly; markdown wrappers cause the
+`evidence` array to be dropped + `low_evidence_count` signal raised.
 
 ## BBCTL command conventions (when log into instance is needed)
 

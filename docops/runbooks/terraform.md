@@ -91,11 +91,42 @@ Finding: Terraform error during <action> on <resource>:
 
 Action:
   <If 'already exists'>:
-    Option A: Import existing resource into state:
-      terraform import <resource-address> <existing-id>
+    Option A (RECOMMENDED — preserves resource history + audit trail):
+      `terraform import` brings the existing AWS resource into state
+      WITHOUT touching the resource itself. No traffic disruption, no
+      lost tags/attachments. ALWAYS try this BEFORE Option B.
+      Step 1 — Derive the existing-id:
+        # For ELBv2 Target Group:
+        aws elbv2 describe-target-groups --names <tg-name> \
+          --region <region> --profile <acct> \
+          --query 'TargetGroups[0].TargetGroupArn' --output text
+        # For EC2 instance: aws ec2 describe-instances ... --query ...InstanceId
+        # For ALB: aws elbv2 describe-load-balancers --names <name> ...
+      Step 2 — Import into state:
+        cd <InfraComposer>/config/<service>/<env>/
+        terraform import <resource-address-from-error> <existing-id>
+        # resource-address is the dotted path from the error message,
+        # e.g. module.createProdPlusOneInfra.module.createNewTg.aws_lb_target_group.tg_v1
+      Step 3 — Verify state now tracks it:
+        terraform plan   # should show no changes (or only safe drift)
+      Step 4 — Re-run pipeline.
+
+    Option B (FALLBACK — only when Option A fails or resource is genuinely orphan):
+      If `terraform import` returns "already managed" or the resource
+      is confirmed orphan (no live traffic, no upstream refs), delete
+      AWS resource then re-run pipeline so Terraform creates fresh:
+        # Always derive ARN inline, never emit <arn> placeholder:
+        TG_ARN=$(aws elbv2 describe-target-groups --names <tg-name> \
+          --region <region> --profile <acct> \
+          --query 'TargetGroups[0].TargetGroupArn' --output text)
+        # Pre-check: confirm not attached to any active listener rule
+        aws elbv2 describe-target-health --target-group-arn "$TG_ARN" \
+          --region <region> --profile <acct>
+        # If healthy targets present, STOP — this is live, not orphan.
+        # If empty / draining only:
+        aws elbv2 delete-target-group --target-group-arn "$TG_ARN" \
+          --region <region> --profile <acct>
       Then re-run pipeline.
-    Option B: Delete the AWS resource if it was created by mistake,
-      then re-run.
   <If syntax/variable error>:
     Edit <file>:<line> in InfraComposer repo, fix the syntax, commit,
     push, re-run pipeline.
@@ -119,3 +150,18 @@ Verify:
 ## Common pitfalls
 - DO NOT suggest `terraform destroy` as a fix — destructive and rarely correct.
 - DO NOT cite a TF file you didn't open via `repo_read_file`.
+- DO NOT emit `<arn>` / `<tg_arn>` / `<existing-id>` placeholders in
+  `suggested_commands`. Always derive via `aws elbv2 describe-*
+  --query ... --output text` chained into the delete/import command.
+  Placeholder commands are unusable to the operator.
+- DO NOT skip Option A. `terraform import` is ALWAYS safer than delete
+  + recreate. Only fall back to Option B if import fails OR you have
+  positive confirmation the resource is orphan (zero healthy targets,
+  no listener refs).
+
+## Deeper reading
+
+For full state-surgery procedures (state lock recovery, lineage repair,
+manual state edits, cross-env state migration), ALSO call
+`read_doc("TerraformTroubleshoot")` — covers scenarios beyond this
+runbook's drill plan.

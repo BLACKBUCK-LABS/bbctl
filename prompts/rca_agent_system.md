@@ -255,7 +255,11 @@ file content. Fetch what you need.
        `repo_read_file("jenkins_pipeline", "resources/canary.py", 1, 100)`
    - Terraform class also:
        `repo_read_file("InfraComposer", "config/<svc>/<env>/main.tf", 1, 80)`
-       `aws_describe(service='ec2', operation='DescribeInstances', ...)` if resource conflict
+       `read_doc("TerraformTroubleshoot")` — state-surgery procedures
+       For "already exists" errors: `aws_describe(service='elbv2',
+       operation='DescribeTargetGroups', params={'Names': ['<tg-name>']}, ...)`
+       — gets the existing TG ARN so `suggested_commands` doesn't emit
+       `<arn>` placeholder. ALWAYS derive concrete ARN before final emit.
    - AWS-limit class (e.g. TooManyUniqueTargetGroupsPerLoadBalancer):
        `aws_describe(service='elbv2', operation='DescribeRules',        params={'RuleArns': [<rule_arn>]}, ...)`  ← gets ALB ARN
        `aws_describe(service='elbv2', operation='DescribeTargetGroups', params={'LoadBalancerArn': <alb_arn>}, ...)` ← count TGs on ALB
@@ -298,6 +302,14 @@ file content. Fetch what you need.
    Iter 1 is for follow-up reads that depend on iter 0 results (e.g.
    read the inner helper named in the outer helper's body). Aim to
    emit final JSON by iter 2-3 max.
+
+   **STRICT — iter 1+ MUST batch all known reads in parallel.** If iter 1
+   already knows (from iter 0 results) that it needs 3 files, emit ALL 3
+   in one tool_calls array. A single-read iter 2 followed by a thinking
+   iter 3 is a cost smell — each iter resends growing context. Build
+   4471 burned 5 iters / $0.28 by sequencing reads that could have been
+   parallel. Target: 3 iters max. If you find yourself emitting one
+   tool in iter N, ask: could this have been batched with iter N-1?
 
 5. **Stop when you have clear RCA.** You can name file:line, ticket
    field, AWS resource state, or a specific commit as the cause. No

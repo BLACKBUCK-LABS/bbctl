@@ -426,6 +426,13 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
     # one-shot path is the right home for them.
     AGENT_CLASSES = {
         "canary_fail", "canary_script_error",
+        # compliance: drill plan is per-MODE (5 plus Mode 6 for the
+        # quick-infra family). One-shot can't read read_runbook so
+        # the LLM defaults to "add entry to config.json" even for
+        # create-quick-infra where that recipe is wrong. Agent path
+        # lets the LLM fetch the runbook + match the right Mode.
+        # Build 42 of create-quick-infra case.
+        "compliance",
         "health_check", "parse_error", "scm",
         # terraform errors benefit from agent code-trace: failed module
         # in main.tf → read module body → identify which AWS resource is

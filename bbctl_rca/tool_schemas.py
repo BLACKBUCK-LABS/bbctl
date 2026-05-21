@@ -527,6 +527,81 @@ TOOLS: list[dict] = [
         },
     },
 
+    # ─── RAG SEMANTIC SEARCH ──────────────────────────────────────────
+    # Postgres + pgvector backed semantic search over runbooks, org
+    # docs, job_flows, past RCA audits, and embedded log windows. Use
+    # when keyword search (`repo_search`, `list_docs`) is not enough
+    # because you need to find content by MEANING rather than by exact
+    # string. The corpus is embedded ahead-of-time via cron; no live
+    # web call is made. Returns top-k chunks with cosine similarity
+    # scores in [0,1] (1 = identical).
+    {
+        "type": "function",
+        "function": {
+            "name": "rag_search",
+            "description": (
+                "Semantic search across the bbctl-rca knowledge base. "
+                "Use this when you need to find related content by "
+                "meaning — e.g., 'past failures where ALB hit the unique "
+                "target group limit', or 'runbook covering terraform "
+                "state surgery'. Searches runbooks/, docops/, job_flows/, "
+                "and past RCA audit JSONs. Filter by source_type to "
+                "narrow scope. Returns up to k chunks, each with a "
+                "source_id and similarity score. Higher score = closer "
+                "match. Use AFTER you have the error context — call "
+                "`rag_search` with a focused query like the error line "
+                "or a phrase from the runbook you are looking for, not "
+                "the full log window."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Natural-language query or focused error "
+                            "snippet to search for. Example: "
+                            "'TooManyUniqueTargetGroupsPerLoadBalancer "
+                            "ALB orphan target group cleanup'."
+                        ),
+                    },
+                    "k": {
+                        "type": "integer",
+                        "description": (
+                            "Number of chunks to return. Default 5. "
+                            "Cap at 10 to keep prompt-tokens bounded."
+                        ),
+                        "default": 5,
+                    },
+                    "source_types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["runbook", "doc", "job_flow", "audit", "log"],
+                        },
+                        "description": (
+                            "Restrict search to these source types. "
+                            "Examples: ['audit'] to find similar past "
+                            "RCAs only; ['runbook','doc'] to skip past "
+                            "incidents. Omit for all types."
+                        ),
+                    },
+                    "error_class": {
+                        "type": "string",
+                        "description": (
+                            "Restrict to chunks tagged with this "
+                            "error_class in their meta. Useful when you "
+                            "want only same-class neighbors. Allowed "
+                            "values match the classifier classes "
+                            "(aws_limit, terraform, compliance, ...)."
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+
     # ─── AWS CROSS-ACCOUNT (1 generic — Option A) ─────────────────────
     # Single tool covers all AWS read APIs (Describe*/Get*/List*/Lookup*/
     # Search*/Show*/Estimate*). Server validates the operation name + does

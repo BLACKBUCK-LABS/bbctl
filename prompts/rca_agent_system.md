@@ -294,7 +294,27 @@ file content. Fetch what you need.
      - `list_runbooks()` — if no matching runbook for the class
      - `list_docs()` — if log mentions JVM/OOM, SSM, compliance, Jira,
         or another topic not covered by the class runbook
+     - `rag_search(query, k=5)` — when keyword tools are not enough.
+        Semantic search across runbooks/docs/past-RCAs by MEANING, not
+        exact string. Examples of strong queries:
+          rag_search("ALB unique target group limit cleanup orphan")
+          rag_search("terraform state already exists import recipe")
+          rag_search("canary score below threshold web latency")
+        Filter with `source_types=["audit"]` to find similar past
+        incidents and what fixed them. Filter with `error_class=<X>`
+        to restrict to same-class neighbors. RAG is NOT a replacement
+        for `read_runbook` — it surfaces candidates; you still read
+        the full runbook for the action template.
    Then in iter 1 pull the specific docs/runbooks the listings surfaced.
+
+   **NEW (R3): retrieved.rag block.** A `## retrieved.rag` block in
+   the user message may already contain top-k semantic matches for the
+   current log window. Treat its contents as candidates to investigate
+   further, not as ground truth — verify by reading the cited
+   source_id with `read_runbook` / `read_doc` / etc. before citing
+   in your evidence array. The retrieved chunks have similarity
+   scores; high score (>0.7) is strong, mid score (0.5-0.7) is
+   suggestive, below 0.5 is noise.
 
    For class-specific tools (Jira, GitHub, AWS describe), let the
    runbook + log signals drive the call. Examples (NOT exhaustive):

@@ -318,6 +318,47 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
     except Exception:
         pass
 
+    # R3 — RAG auto-inject. Pull top-k similar chunks from the
+    # pgvector store (docops, runbooks, past audits) seeded by the
+    # current log window. Cheaper than waiting for the LLM to call
+    # `rag_search` mid-loop because we pay one embedding + one HNSW
+    # scan up front, then the model sees relevant context on iter 0.
+    # Lazy import so non-RAG hosts (where psycopg/pgvector aren't
+    # installed, or PG isn't running) keep working — RAG offline
+    # equals "no inject", not "crash".
+    try:
+        from . import rag as _rag
+        # Trim the log window to ~6KB for embedding — the API will
+        # truncate anyway and over-long queries reduce retrieval
+        # precision. The classifier already runs on this so it's
+        # focused on the error region.
+        q = (log_window or "")[:6000]
+        if q.strip():
+            hits = _rag.search(
+                q, k=4,
+                source_types=["runbook", "doc", "audit"],
+                error_class=error_class if error_class != "unknown" else None,
+            )
+            if hits:
+                lines = ["## retrieved.rag (top-k semantic matches)"]
+                for h in hits:
+                    meta  = h.get("meta") or {}
+                    klass = meta.get("error_class") or ""
+                    head  = (
+                        f"- [{h['score']:.3f}] "
+                        f"{h['source_type']}/{h['source_id']}"
+                        f"{(' class=' + klass) if klass else ''}"
+                    )
+                    # Trim each chunk to ~1KB so 4 hits stay ~4KB total.
+                    body = h["chunk_text"][:1000].replace("\n", " ")
+                    lines.append(head)
+                    lines.append(f"    {body}…")
+                parts.append("\n".join(lines))
+    except Exception as _e:
+        # RAG offline / module missing / PG down — non-fatal.
+        print(f"[llm] rag auto-inject skipped: {_e}",
+              file=__import__('sys').stderr, flush=True)
+
     # Unknown class — give the LLM a catalog of available runbooks + class
     # taxonomy so it can self-classify by reading. Wider source.trace already
     # ran (deep=True). Include the first heading + first ~250 chars of each

@@ -16,6 +16,45 @@ dispatcher awaits coroutines.
 """
 from . import aws_tools, github, jira, mcp_tools
 
+# rag is imported lazily inside the dispatch wrapper so the agent loop
+# can still start when Postgres / pgvector aren't installed. R1 is
+# dormant infra; this lets non-RAG environments run unchanged.
+try:
+    from . import rag as _rag_mod
+except Exception:
+    _rag_mod = None
+
+
+def _rag_search_wrapper(query: str, k: int = 5,
+                        source_types: list[str] | None = None,
+                        error_class: str | None = None) -> str:
+    """Adapter — returns a formatted string of top-k hits so the LLM
+    can read it back cleanly. Falls back to a clear error string when
+    rag.py is unimportable or PG is down."""
+    if _rag_mod is None:
+        return ("rag_search unavailable: psycopg/pgvector not installed "
+                "or rag module failed to import. Use repo_search / "
+                "list_docs as fallback.")
+    try:
+        hits = _rag_mod.search(
+            query, k=int(k or 5),
+            source_types=source_types, error_class=error_class,
+        )
+    except Exception as e:
+        return f"rag_search error: {e}"
+    if not hits:
+        return "rag_search: no matches"
+    lines = []
+    for h in hits:
+        meta = h.get("meta") or {}
+        eclass = meta.get("error_class") or ""
+        lines.append(
+            f"[{h['score']:.3f}] {h['source_type']}/{h['source_id']}"
+            f"{(' (class=' + eclass + ')') if eclass else ''}\n"
+            f"  {h['chunk_text'][:600]}…"
+        )
+    return "\n\n".join(lines)
+
 
 TOOL_DISPATCH: dict[str, callable] = {
     # ── runbook (error-class drill plans) ──
@@ -62,6 +101,12 @@ TOOL_DISPATCH: dict[str, callable] = {
     # RCA never logs into instances; operator uses `bbctl shell <id>`
     # themselves when service-side detail is needed.
     "aws_describe":                 aws_tools.describe,
+
+    # ── RAG semantic search (R2) ──
+    # Postgres + pgvector. Wrapper imports rag.py lazily and degrades
+    # gracefully when PG is offline so the agent loop still works on
+    # non-RAG hosts. See bbctl/docs/rca/RAGflow.md for design.
+    "rag_search":                   _rag_search_wrapper,
 
     # ── Sanity (Phase 6) ──
     # "code_review":                  claude_review.code_review,

@@ -444,6 +444,13 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         # emits <alb_arn> placeholders (build 5177). Agent path lets the
         # LLM read aws_limit.md + run aws_describe to fill real IDs.
         "aws_limit",
+        # config_validation: stage 1.3 of pre_deployment finds drift
+        # between config.json and live AWS state (missing AMI/subnet/SG/
+        # key-pair/IAM-profile). Needs aws_describe + service_lookup
+        # for the offending resource type before suggesting a config.json
+        # PR. One-shot path can't run those calls. Build 61 of
+        # HotFix-NonCanary case.
+        "config_validation",
         # java_runtime: stack trace points at a file:line. Agent can read
         # that file via repo_read_file and cite the exact line for the
         # operator (e.g. WorkflowScript:330 → create-quick-infra.groovy:330

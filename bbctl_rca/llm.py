@@ -304,19 +304,23 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
             extract = runbook.extract_relevant(doc, error_class, budget_chars=6000)
             parts.append(f"## docs.{doc_name}\n{extract}")
 
-    # Per-class runbook (docops/runbooks/<error_class>.md). Distinct from
-    # CLASS_DOCS above — these are the short action-format recipes (drill
-    # plan, Action template, common pitfalls) the agent would otherwise
-    # have to call `read_runbook(error_class)` to fetch. Pre-loading saves
-    # one tool round-trip AND ensures the LLM has it on first response
-    # even if it skips the read_runbook call (build 5177: agent emitted
-    # a generic fix because it never invoked read_runbook for aws_limit).
-    try:
-        rb = mcp_tools.read_runbook(error_class)
-        if rb and not rb.startswith("runbook ") and not rb.startswith("runbook read error"):
-            parts.append(f"## runbooks.{error_class}\n{rb}")
-    except Exception:
-        pass
+    # NOTE — the previous "5c" block here pre-injected
+    # `docops/runbooks/<error_class>.md` into the prompt based on the
+    # classifier's output. Removed (May 2026) after the HotFix-NonCanary
+    # build 61 wrong-RCA case: the classifier mis-routed a config-
+    # validation failure as `health_check` (loose `health.*fail` regex
+    # matched the "Health Validation skipped due to earlier failure(s)"
+    # line in the skipped-stage chain), the 5c block then auto-loaded
+    # the health_check runbook, and the LLM anchored on that TG-poll
+    # narrative for the rest of the trace even though it had read the
+    # actual "Key pair not found" error in the log window. The pre-
+    # injection turned a wrong classifier hint into wrong action.
+    #
+    # Going forward, the LLM must call `read_runbook(class)` itself
+    # AFTER deriving the class from the log. The classifier output is
+    # still used for backend routing (AGENT_CLASSES gate, RAG
+    # source-type filter via meta.error_class), just not for content
+    # pre-injection.
 
     # R3 — RAG auto-inject. Pull top-k semantically similar chunks
     # from the pgvector store (docops, runbooks, past audits) seeded
@@ -354,8 +358,13 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
         )
         q = anchor.group(0) if anchor else (log_window or "")[:6000]
         if q.strip():
-            # Known class with a runbook = audit-only retrieval; the
-            # runbook itself is already pre-loaded as ## runbooks.<class>.
+            # Known class — restrict retrieval to past audits so we
+            # surface "we saw this before" memory rather than re-pasting
+            # generic class runbook chunks (the LLM can fetch the
+            # runbook directly via read_runbook when it derives the
+            # class from the log).
+            # Unknown class — pull from all corpora since there is no
+            # class-specific runbook for the LLM to lean on.
             known = error_class and error_class != "unknown"
             src_types = ["audit"] if known else ["runbook", "doc", "audit"]
             hits = _rag.search(

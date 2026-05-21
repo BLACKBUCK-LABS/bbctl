@@ -243,56 +243,30 @@ file content. Fetch what you need.
      Then in iter 2+:
        `repo_read_file("jenkins_pipeline", "vars/<helper derived from code>.groovy", 1, 80)`
        (drill inner helpers / `libraryResource` scripts as needed)
-   - Compliance class also: `jira_get_ticket(<KEY>)`
-   - SCM / commit class also: `github_get_commit(<repo>, <sha>)`,
-                              `github_find_pr_for_commit(<repo>, <sha>)`
-   - Health_check class also:
-       `aws_describe(service='elbv2', operation='DescribeTargetHealth', params={'TargetGroupArn': <tg_arn>}, aws_account=..., aws_region=...)`
-       `aws_describe(service='elbv2', operation='DescribeTargetGroups', params={'TargetGroupArns': [<tg_arn>]}, ...)`
-       `aws_describe(service='ec2',   operation='DescribeInstances',    params={'InstanceIds': [<instance_id>]}, ...)`
-   - Canary class also:
-       `aws_describe(service='elbv2', operation='DescribeRules',        params={'RuleArns': [<rule_arn>]}, ...)`
-       `repo_read_file("jenkins_pipeline", "resources/canary.py", 1, 100)`
-   - Terraform class also:
-       `repo_read_file("InfraComposer", "config/<svc>/<env>/main.tf", 1, 80)`
-       `read_doc("TerraformTroubleshoot")` — state-surgery procedures
-       For "already exists" errors: `aws_describe(service='elbv2',
-       operation='DescribeTargetGroups', params={'Names': ['<tg-name>']}, ...)`
-       — gets the existing TG ARN so `suggested_commands` doesn't emit
-       `<arn>` placeholder. ALWAYS derive concrete ARN before final emit.
-   - AWS-limit class (e.g. TooManyUniqueTargetGroupsPerLoadBalancer):
-       `aws_describe(service='elbv2', operation='DescribeRules',        params={'RuleArns': [<rule_arn>]}, ...)`  ← gets ALB ARN
-       `aws_describe(service='elbv2', operation='DescribeTargetGroups', params={'LoadBalancerArn': <alb_arn>}, ...)` ← count TGs on ALB
-   - Parse_error class also:  `repo_read_file("jenkins_pipeline", "resources/config.json", <line-5>, <line+5>)`
+   **Beyond ALWAYS — discover, don't memorize.** Runbooks + org docs
+   are self-describing. The runbook for `<class>` lists which AWS
+   APIs, repo files, and adjacent docs are relevant — follow it,
+   don't preempt with hardcoded class→tool mappings here.
 
-   **Class → org-doc hints (call `read_doc(<name>)` in iter 0 when applicable).**
-   These are the broader docops/*.md beyond runbooks/. List via `list_docs()`
-   if unsure. Concrete pairings:
-   - `health_check` + JVM/OOM signal (`-Xmx*` > instance RAM, `OutOfMemoryError`):
-       `read_doc("ssm-java-heap-dump")`  — heap dump capture procedure
-   - `health_check` + service hangs / 504s:
-       `read_doc("ssm-java-thread-dump")` — thread dump procedure
-   - `health_check` + `filebeat_log_path=""` or wrong log path:
-       `read_doc("ssm-list-directory-files")` — verify actual log path on instance
-   - `health_check` on nonweb pipeline:
-       `read_doc("StaggerNonweb")` — nonweb pipeline shape
-   - `health_check` on Prod+1 frontend:
-       `read_doc("StaggerProdPlusOneFrontend")` — Prod+1 FE flow
-   - `compliance`:
-       `read_doc("JiraDetailsCompliance")` — sign-off + commit-ID rules
-       `read_doc("deployment-compliance-design")` — design context (rare)
-   - `terraform` / `stale_tf_state`:
-       `read_doc("TerraformTroubleshoot")` — full state-surgery playbook
-   - `terraform` on quick-deploy env:
-       `read_doc("CreateQuickInfra")` — quick-deploy infra shape
-   - Hotfix pipeline (any class):
-       `read_doc("HotfixNoncanary")` — hotfix flow context
-   - `ssm` class or any need for SSM command syntax:
-       `read_doc("ssm-permanent-access-guide")` or
-       `read_doc("ssm-temporary-access-jenkins")` or
-       `read_doc("ssm-secure-api-caller")`
-   Call ONLY the docs that match the actual log signals. Do NOT call all
-   of them — costs tokens. When in doubt: `list_docs()` first, pick 1-2.
+   In iter 0 batch also call (when class hints are insufficient):
+     - `list_runbooks()` — if no matching runbook for the class
+     - `list_docs()` — if log mentions JVM/OOM, SSM, compliance, Jira,
+        or another topic not covered by the class runbook
+   Then in iter 1 pull the specific docs/runbooks the listings surfaced.
+
+   For class-specific tools (Jira, GitHub, AWS describe), let the
+   runbook + log signals drive the call. Examples (NOT exhaustive):
+     - compliance log mentions a ticket key → `jira_get_ticket(<KEY>)`
+     - log shows a SHA in failure context → `github_get_commit(...)`
+     - terraform "already exists" → `aws_describe` on that resource
+       type to derive the real ARN (NEVER emit placeholder)
+     - health_check failure → `aws_describe` on the TG / instance
+       named in service.lookup or runbook drill plan
+
+   The runbook drill plan is authoritative for class-specific
+   procedure. If it tells you to read a specific file or call a
+   specific API, do that. If it doesn't, use general SRE judgment
+   plus the log signals.
 
    **STRICT — no instance shell.** `aws_run_ssm_command` is REMOVED.
    RCA never logs into instances. For service-side detail (e.g. WHY
@@ -303,13 +277,11 @@ file content. Fetch what you need.
    read the inner helper named in the outer helper's body). Aim to
    emit final JSON by iter 2-3 max.
 
-   **STRICT — iter 1+ MUST batch all known reads in parallel.** If iter 1
-   already knows (from iter 0 results) that it needs 3 files, emit ALL 3
-   in one tool_calls array. A single-read iter 2 followed by a thinking
-   iter 3 is a cost smell — each iter resends growing context. Build
-   4471 burned 5 iters / $0.28 by sequencing reads that could have been
-   parallel. Target: 3 iters max. If you find yourself emitting one
-   tool in iter N, ask: could this have been batched with iter N-1?
+   **STRICT — parallel batches.** Each iter resends full conversation,
+   so iter cost grows with iter count. If iter N already knows it needs
+   several reads, emit them ALL in one `tool_calls` array — never one-
+   per-iter. A single-read iter followed by a thinking iter is a cost
+   smell. Target ≤ 3 iters total.
 
 5. **Stop when you have clear RCA.** You can name file:line, ticket
    field, AWS resource state, or a specific commit as the cause. No

@@ -41,6 +41,46 @@ body for the current call before drilling.
   cutover that `main_stagger_prod_plus_one` uses; there is no
   `Rollout` or `Destroy` stage at the main level.
 
+## Compliance gate behavior (Jira Details stage) — DIFFERENT from other flows
+
+`create-quick-infra` is the bootstrap job — it spins up infra for a NEW
+service that, by design, does not yet exist in
+`jenkins_pipeline/resources/config.json`. The compliance gate in
+`vars/JiraDetails.groovy` was patched in May 2026 to source the service
+identity from the **git build parameters** (`SERVICE` / `COMMIT_ID` /
+repo URL passed in by the trigger) when invoked from this job, and to
+treat `config.json` as an enrichment lookup only (for team, NewRelic
+name, Jira board, etc.).
+
+What this means for RCAs on the Jira Details stage of this flow:
+
+- A `Compliance: SERVICE '<svc>' not found in config.json` failure on
+  `create-quick-infra` is **not** a "missing config entry" — it is a
+  gate-logic regression. The current intended behavior is to fall
+  back to the build-param value. See
+  `docops/runbooks/compliance.md` Mode 6 for the drill plan.
+
+- Do NOT recommend editing `config.json` to add the new service for
+  this job. That re-couples the gate to a file the patch specifically
+  decoupled it from, and masks the regression.
+
+- For OTHER flows (`main_stagger_prod_plus_one`, deploy jobs, canary
+  jobs), a missing `config.json` entry IS a legitimate failure and
+  the registration fix is correct — that flow's compliance gate
+  *does* require `config.json` membership. The build-param fallback
+  is specific to the quick-infra bootstrap case.
+
+When the LLM is unsure whether the gate code at HEAD still has the
+build-param fallback, it should:
+1. `repo_recent_commits("jenkins_pipeline", 10)` — find the May-2026
+   patch on `vars/JiraDetails.groovy`.
+2. `repo_read_file("jenkins_pipeline", "vars/JiraDetails.groovy", ...)`
+   at the service-lookup lines — verify the quick-infra branch still
+   reads from build params.
+
+If the fallback is missing, the patch was reverted or never reached
+this branch — fix the gate code, do not work around in `config.json`.
+
 ## Drill procedure
 1. Read main pipeline body to confirm exact helper for the failed stage.
 2. Read `vars/<helperName>.groovy`.

@@ -80,6 +80,18 @@ N/A — no Jenkins `post {}` block. `set -e` exits on any failure; rollback is m
 | Step 15 / 17 (git push) | scm | branch protection blocks; merge conflict; PAT lacks write |
 | Step 16 (python enrichment) | dependency, parse_error | `update_config.py` import errors; reference instance not healthy |
 
+## Before drilling — check recent commits
+
+For any failure in this pipeline that traces back to code in
+`jenkins_pipeline/` or `InfraComposer/`, call
+`repo_recent_commits("jenkins_pipeline", 5)` (and
+`repo_recent_commits("InfraComposer", 5)` when terraform / Infra /
+Destroy stages are involved) BEFORE recommending a fix. If a recent
+commit touched the file you would otherwise cite as the cause, open
+the diff via `github_get_commit(<repo>, <sha>)` and read it — the code
+may have moved underneath this doc. See
+`docops/jenkins_pipelines_golden.md` §3 ("Universal rule") for detail.
+
 ## Gotchas (operator-relevant)
 
 - Two separate repos checked out into Jenkins controller filesystem at `/var/lib/jenkins/ramesh/` — fragile, won't work on other controllers.

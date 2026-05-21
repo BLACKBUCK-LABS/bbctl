@@ -306,7 +306,7 @@ async def _build_tool_context(service: str, error_class: str, log_window: str, b
 
     # NOTE — the previous "5c" block here pre-injected
     # `docops/runbooks/<error_class>.md` into the prompt based on the
-    # classifier's output. Removed (May 2026) after the HotFix-NonCanary
+    # classifier's output. Removed after the HotFix-NonCanary
     # build 61 wrong-RCA case: the classifier mis-routed a config-
     # validation failure as `health_check` (loose `health.*fail` regex
     # matched the "Health Validation skipped due to earlier failure(s)"

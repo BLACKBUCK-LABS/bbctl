@@ -104,10 +104,22 @@ rollbackInstances(ids, region, account)  ← script-scope, defined in pipeline
 | `(Deploy)` | ssm, java_runtime, health_check | SSM exec fail; app launch crash |
 | `(Deploy Frontend)` | ssm, dependency | frontend artifact deploy fail |
 
+## Before drilling — check recent commits
+
+For any failure in this pipeline that traces back to code in
+`jenkins_pipeline/` or `InfraComposer/`, call
+`repo_recent_commits("jenkins_pipeline", 5)` (and
+`repo_recent_commits("InfraComposer", 5)` when terraform / Infra /
+Destroy stages are involved) BEFORE recommending a fix. If a recent
+commit touched the file you would otherwise cite as the cause, open
+the diff via `github_get_commit(<repo>, <sha>)` and read it — the code
+may have moved underneath this doc. See
+`docops/jenkins_pipelines_golden.md` §3 ("Universal rule") for detail.
+
 ## Gotchas (operator-relevant)
 
 - **Bootstrap job** — used to spin up infra for a NEW service that does NOT yet exist in `config.json`.
-- The compliance gate in `vars/JiraDetails.groovy` was patched in May 2026 to source `SERVICE` from git build params for this job; `config.json` is enrichment only. A `Compliance: SERVICE '<svc>' not found in config.json` failure on this job is a **gate-logic regression**, NOT a missing-entry bug. See `docops/runbooks/compliance.md` Mode 6.
+- The compliance gate in `vars/JiraDetails.groovy` has a build-param fallback for this job — `SERVICE` is sourced from the git build params and `config.json` is enrichment only. A `Compliance: SERVICE '<svc>' not found in config.json` failure on this job is a **gate-logic regression**, NOT a missing-entry bug. Verify the fallback is still on HEAD via `repo_recent_commits("jenkins_pipeline", 5)` before recommending a fix. See `docops/runbooks/compliance.md` Mode 6.
 - No Prod+1, no canary, no Rollout stage. Single-shot provisioning + deploy.
 - Frontend / Docker services bypass `QuickBuildJob` + `QuickDeploy`; use `buildJobFrontend` + `QuickDeployFrontend`.
 - `discoverInfraFromRuleArn` is gated behind `ALLOW_AWS_INFRA_DISCOVERY=false`; today only `health_check_url` is auto-discovered.

@@ -19,18 +19,19 @@ distinct sub-modes exist; pick ONE based on the log + Jira ticket data.
 ## STEP 0 (do this ONLY for the `create-quick-infra` job family)
 
 For the bootstrap job (`create-quick-infra` and its variants), the
-compliance gate was patched in May 2026 to source the service identity
-from git build params instead of `config.json`. If you see a compliance
-failure on that job family, the gate may have regressed rather than the
-build truly needing a config change.
+compliance gate has a build-param fallback for `SERVICE` — `config.json`
+is enrichment only on this job. A compliance failure on this job family
+may therefore be a gate-logic regression rather than a real missing
+entry. See also the universal "infra-code recent-commits check" in
+`docops/jenkins_pipelines_golden.md` §3.
 
 For this job family ONLY:
-1. `repo_recent_commits("jenkins_pipeline", 10)` — list the last 10
+1. `repo_recent_commits("jenkins_pipeline", 5)` — list the last 5
    commits on the pipeline repo.
-2. If any commit within the last ~30 days touched
-   `vars/JiraDetails.groovy` or a file containing "Compliance" in its
-   name, open the diff and verify the failure mode you are about to
-   recommend a fix for is *still* a real check in the current code.
+2. If any recent commit touched `vars/JiraDetails.groovy` or a file
+   containing "Compliance" in its name, open the diff and verify the
+   failure mode you are about to recommend a fix for is *still* a
+   real check in the current code.
 3. If the current code does NOT make this check (or the check was
    weakened/removed), the gate regressed — see Mode 6 below.
 
@@ -161,24 +162,25 @@ guidance for those, NOT Mode 6.
 **Why this is a gate bug ONLY for `create-quick-infra`:**
 `create-quick-infra` is the bootstrap job — it spins up infra for a NEW
 service that does not yet exist in `config.json` (that's the whole
-point). The compliance gate was patched in May 2026 to source the
-service identity from the **git build parameters** (`SERVICE` /
-`COMMIT_ID` / repo URL passed in by the trigger) for this job, with
-`config.json` used only as an enrichment lookup (team, NewRelic name,
-Jira board). A missing `config.json` entry should not block the
+point). The compliance gate has a build-param fallback for this job:
+the service identity is sourced from the git build parameters
+(`SERVICE` / `COMMIT_ID` / repo URL passed in by the trigger), and
+`config.json` is used only as an enrichment lookup (team, NewRelic
+name, Jira board). A missing `config.json` entry should not block the
 quick-infra build.
 
 If you see this error in a fresh `create-quick-infra` run, the gate
-either regressed (someone reverted the May-2026 patch) or the build is
-running pre-patch code on a stale branch.
+either regressed (the fallback was removed) or the build is running
+on a stale branch that pre-dates the fallback.
 
 **Drill plan:**
 1. Confirm job scope: `build_meta.job` matches the quick-infra family.
    If not, abandon Mode 6 and go back to the regular registration fix.
-2. `repo_recent_commits("jenkins_pipeline", 10)` — find the May-2026
-   patch on `vars/JiraDetails.groovy` (commit message likely mentions
-   "compliance", "config.json", "quick-infra", "service routing", or
-   "build params").
+2. `repo_recent_commits("jenkins_pipeline", 5)` — find the build-param
+   fallback patch on `vars/JiraDetails.groovy` (commit message likely
+   mentions "compliance", "config.json", "quick-infra", "service
+   routing", or "build params"). If it's not within the last 5 commits,
+   widen to 10 or 20.
 3. `repo_read_file("jenkins_pipeline", "vars/JiraDetails.groovy", ...)`
    at the lines that decide the service lookup — confirm the
    build-param fallback path exists for the quick-infra job branch.
@@ -194,8 +196,8 @@ Finding: create-quick-infra build failed with 'SERVICE <s> not found in
          config.json'. For the quick-infra bootstrap job this message
          is misleading — the gate is supposed to derive SERVICE from
          git build params (the service is new and not yet in
-         config.json by design). Either the May-2026 gate patch
-         regressed or build params dropped SERVICE.
+         config.json by design). Either the build-param fallback was
+         removed or build params dropped SERVICE.
 Action:  DO NOT edit config.json. Either:
          (a) Verify vars/JiraDetails.groovy has the build-param
              fallback for the quick-infra branch (recent patch on

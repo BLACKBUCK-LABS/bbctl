@@ -121,6 +121,18 @@ destroyBlueInfra(SERVICE)
 | `(Rollout)` | canary_fail, canary_script_error | NewRelic canary score < 80; canary.py crashed |
 | `(Destroy)` | terraform, aws_limit | destroy fail; orphaned TGs |
 
+## Before drilling — check recent commits
+
+For any failure in this pipeline that traces back to code in
+`jenkins_pipeline/` or `InfraComposer/`, call
+`repo_recent_commits("jenkins_pipeline", 5)` (and
+`repo_recent_commits("InfraComposer", 5)` when terraform / Infra /
+Destroy stages are involved) BEFORE recommending a fix. If a recent
+commit touched the file you would otherwise cite as the cause, open
+the diff via `github_get_commit(<repo>, <sha>)` and read it — the code
+may have moved underneath this doc. See
+`docops/jenkins_pipelines_golden.md` §3 ("Universal rule") for detail.
+
 ## Gotchas (operator-relevant)
 
 - `env.PROD_PLUS_ONE_COMPLETED` gates VictorOps — pre-Prod+1 failures don't page on-call.

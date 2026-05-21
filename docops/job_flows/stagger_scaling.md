@@ -108,7 +108,7 @@ No `triggerRcaWebhook()` is wired into this pipeline's post block (unlike main /
 | `(Pre-Deployment)` / sub-stage `1.1 Validate Parameters` | (pipeline-level) | xor + mandatory-param errors |
 | `(Pre-Deployment)` / sub-stage `1.2 Load Service Configuration` | parse_error, config_validation | jq parse fail; missing config.json keys |
 | `(Pre-Deployment)` / sub-stage `1.3 Validate Config Resources` | **config_validation** (NOT health_check) | AMI / subnet / SG / key-pair / IAM-profile NotFound. Drill `vars/pre_deployment.groovy`. Fix = update `config.json` to a real resource ID, OR create the missing AWS resource. |
-| `(Pre-Deployment)` / sub-stage `1.4 Discover BLUE Target Group` | **java_runtime** (CPS serialization), aws_describe (NotFound) | Build 15 case: slave bounce caused Jenkins to checkpoint pipeline state, `JsonSlurperClassic` retained in `pre_deployment` was not Serializable → `NotSerializableException`. NOT an AWS error. Drill `vars/pre_deployment.groovy` for the JsonSlurperClassic usage and refactor it to discard the parser after extracting primitive values. If the failure IS actually NotFound from `describe-rules`, that's a stale `rule_arn` in config.json. |
+| `(Pre-Deployment)` / sub-stage `1.4 Discover BLUE Target Group` | **jenkins_agent_offline** (PRIMARY when slave-bounce signals present), java_runtime (SECONDARY symptom), aws_describe (NotFound) | Build 15 case: slave-4 disconnected mid-`sh` (`aws elbv2 describe-rules`) multiple times — PRIMARY cause is agent infrastructure instability, NOT pipeline code. Jenkins tried to checkpoint pipeline state during the bounce, `JsonSlurperClassic` retained in `pre_deployment` was not Serializable → `NotSerializableException` (SECONDARY symptom). Drill agent health first (`bbctl shell <slave-id>`, dmesg, jenkins-agent logs); pipeline-code refactor of JsonSlurperClassic in `vars/pre_deployment.groovy` is defense-in-depth only. If the failure IS actually NotFound from `describe-rules`, that's a stale `rule_arn` in config.json. |
 | `(Instance Provisioning)` | aws_limit, config_validation | `RunInstances` quota; AMI / subnet / SG NotFound. Note: scale-out adds N more instances to an ALB target group that may already be close to the per-ALB target-group-target limit. |
 | `(Artifact Deployment)` | scm, ssm, network | JFrog 401 / 404, SSM SendCommand fail, S3 upload denial |
 | `(Health Validation)` | health_check | New instances never healthy; service crash on startup; healthz 4xx/5xx |
@@ -147,17 +147,32 @@ the full statement.
   (`INSTANCE_COUNT.toInteger()`) is what switches it into scale-out
   mode. If you see argument-count errors at line 265, the loaded
   library branch may have the older 4-arg `pre_deployment`.
-- **Build 15 failure was NOT an AWS issue.** The fatal line was
-  `Caused: java.io.NotSerializableException: groovy.json.JsonSlurperClassic`.
-  Slave-4 bounced mid-`sh`, Jenkins tried to checkpoint pipeline
-  state, the retained `JsonSlurperClassic` instance was not
-  Serializable, save failed, pipeline aborted. The earlier
-  `aws elbv2 describe-rules` call in stage 1.4 succeeded; the
-  NotFound / aws-describe path is unrelated. Don't be misled by the
-  slave-4-bouncing chatter into recommending AWS profile / region /
-  permission fixes — fix is on the pipeline-code side
-  (refactor `pre_deployment` / library helper to avoid retaining
-  `JsonSlurperClassic` in any closure or step-spanning variable).
+- **Build 15 failure: PRIMARY cause was slave-4 instability, NOT
+  pipeline code.** The fatal line at the bottom of the log was
+  `Caused: java.io.NotSerializableException: groovy.json.JsonSlurperClassic`,
+  but BEFORE that the log showed REPEATED `slave-4 seems to be removed
+  or offline` lines (the agent disconnected multiple times mid-`sh`).
+  That repetition is the PRIMARY cause signal. Jenkins waited 5 minutes
+  each cycle, tried to checkpoint pipeline state during the bounce, the
+  retained `JsonSlurperClassic` instance was not Serializable, save
+  failed, pipeline aborted. Both are real, but the order matters:
+    - PRIMARY (root cause): slave-4 agent instability → investigate agent
+      health (`bbctl shell <slave-id>`, jenkins-agent logs, dmesg, disk,
+      network). On a healthy agent the bounce wouldn't have happened
+      and the NotSerializableException would never have surfaced.
+    - SECONDARY (symptom that aborted the pipeline): JsonSlurperClassic
+      retained in `vars/pre_deployment.groovy` is not Serializable.
+      Refactor it to extract primitive Map/List/String values
+      immediately and discard the parser before any further `sh` step.
+      This is defense-in-depth — fixes the symptom but NOT the agent
+      instability that triggered it.
+  Do NOT recommend AWS profile / region / permission fixes — the
+  earlier `aws elbv2 describe-rules` call in stage 1.4 succeeded; the
+  NotFound / aws-describe path is unrelated. Do NOT report only the
+  Java exception and skip the slave bounce — a code-only fix means
+  the next slave-bounce will hang the pipeline differently. See
+  `docops/runbooks/jenkins_agent_offline.md` for the full drill +
+  Action template.
 - **No RCA webhook in post.** Failures here don't auto-call
   `triggerRcaWebhook()`. RCAs are operator-initiated via curl.
 - **No on-call paging.** Scale-out is a planned op; no VictorOps

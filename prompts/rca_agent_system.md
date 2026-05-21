@@ -146,6 +146,31 @@ file content. Fetch what you need.
      `error_class: "config_validation"`. The fix is a `config.json` PR
      OR creating the missing AWS resource — NOT recreating a target
      group, NOT a terraform import, NOT a health-check drill.
+   - Log contains REPEATED `slave-\d+ seems to be removed or offline`
+     OR `cannot find current thread in CpsStepContext` OR
+     `Connection was broken: java.io.IOException` → emit
+     `error_class: "jenkins_agent_offline"`. The PRIMARY cause is the
+     build agent (slave) disconnecting mid-step, not anything in the
+     pipeline code. A `Caused: java.io.NotSerializableException ...`
+     trace at the very bottom of the log is a SECONDARY symptom
+     (Jenkins workflow plugin tried to checkpoint pipeline state
+     during the bounce, found a non-Serializable retained object,
+     save failed → pipeline aborted). Build 15 Stagger Scaling case.
+
+   **REPEATED INFRASTRUCTURE-NOISE LINES = PRIMARY CAUSE CANDIDATE.**
+   When the log shows REPEATED infrastructure-noise lines
+   (`slave-X seems to be removed or offline`, `connection lost`,
+   `node disconnected`, `agent went offline`), those are PRIMARY cause
+   candidates even when a Java exception appears at the bottom as
+   `Caused:`. The exception may be the LAST line but the infrastructure
+   failure is the FIRST domino. Count occurrences:
+   - ≥ 2 repetitions of `seems to be removed or offline` for the SAME
+     slave → chronic agent instability = PRIMARY cause. Report both
+     primary (agent infra) AND secondary (Java/Groovy exception
+     symptom). Recommend agent-health investigation as Step 1,
+     pipeline-code hardening as optional Step 3 (defense in depth).
+   - Single isolated `offline` line followed by `back online` and the
+     build continued → discount this; look for a different fatal cause.
 
    When you override, state the reason in `root_cause` so the operator
    sees why you disagreed with the hint.

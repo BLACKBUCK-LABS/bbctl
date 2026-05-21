@@ -458,6 +458,13 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         # PR. One-shot path can't run those calls. Build 61 of
         # HotFix-NonCanary case.
         "config_validation",
+        # jenkins_agent_offline: slave bounce mid-step. Primary cause is
+        # the build agent infrastructure, not the pipeline code. Agent
+        # path lets the LLM repo_search the slave-bounce pattern, count
+        # occurrences (one-off vs repeating), and read the runbook for
+        # the right primary-vs-secondary framing. Build 15 of Stagger
+        # Scaling case.
+        "jenkins_agent_offline",
         # java_runtime: stack trace points at a file:line. Agent can read
         # that file via repo_read_file and cite the exact line for the
         # operator (e.g. WorkflowScript:330 → create-quick-infra.groovy:330

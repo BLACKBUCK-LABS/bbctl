@@ -132,6 +132,22 @@ rules:
       - 'supervisorctl.*FATAL'
     description: "Service health check failed post-deploy — ALB target group never reached healthy threshold"
 
+  # jenkins_agent_offline MUST come before java_runtime — the
+  # `cannot find current thread in CpsStepContext` exception is a
+  # Java-shaped trace but the real cause is the build agent (slave)
+  # disconnecting mid-step. java_runtime would mis-classify it as an
+  # app code bug. Symptom-vs-cause: NotSerializableException at the
+  # bottom of a slave-bounce log is the SECONDARY failure (Jenkins
+  # checkpoint during the bounce); the PRIMARY cause is the agent
+  # going offline. Build 15 of Stagger Scaling case.
+  - class: jenkins_agent_offline
+    patterns:
+      - 'slave-\d+ seems to be removed or offline'
+      - 'agent \S+ seems to be removed or offline'
+      - 'cannot find current thread in CpsStepContext'
+      - 'Connection was broken: java\.io\.IOException'
+    description: "Jenkins build agent (slave) disconnected mid-step. Primary fix is agent infrastructure (slave health, network); pipeline code hardening to avoid non-Serializable retained objects is a secondary defense."
+
   - class: java_runtime
     # Require BOTH a java class name AND exception/error context to avoid
     # false-matching on NewRelic NRQL or log lines that just reference

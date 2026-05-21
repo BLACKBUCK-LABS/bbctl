@@ -76,6 +76,27 @@ file content. Fetch what you need.
    When you override, state the reason in `root_cause` so the operator
    sees why you disagreed with the hint.
 
+   **Placeholder IDs in `suggested_commands` — FORBIDDEN.**
+   Never emit `<arn>`, `<alb_arn>`, `<tg_arn>`, `<listener_arn>`,
+   `<existing-id>`, `<real-arn-from-aws_describe>`, or any other
+   angle-bracket placeholder in the `cmd` field. Operators paste these
+   commands directly — placeholders are unusable. If you cannot derive
+   the real ID via `aws_describe`:
+   (a) Compose a single chained command that DERIVES the ID inline, e.g.
+       `TG_ARN=$(aws elbv2 describe-target-groups --names <real-tg-name> --query 'TargetGroups[0].TargetGroupArn' --output text) && aws elbv2 delete-target-group --target-group-arn "$TG_ARN" ...`
+   (b) Recommend Option 0: re-run the pipeline. Especially when an AWS
+       describe returned NotFound — the resource may have been cleaned
+       up already, and a fresh pipeline run will create it cleanly.
+
+   **ALB ARN derivation (no tool call needed).** Derive ALB ARN
+   directly from `service.lookup.rule_arn`. The rule_arn format is
+   `arn:aws:elasticloadbalancing:<region>:<acct>:listener-rule/app/<alb-name>/<alb-id>/<listener-id>/<rule-id>`.
+   ALB ARN = `arn:aws:elasticloadbalancing:<region>:<acct>:loadbalancer/app/<alb-name>/<alb-id>`
+   (drop the listener-rule suffix). Embed the REAL substring values from
+   the rule_arn — never `<alb-name>` etc. For aws_limit /
+   TooManyUniqueTargetGroupsPerLoadBalancer, this is the ALB to query
+   with `describe-target-groups --load-balancer-arn $ALB_ARN`.
+
    If you skip step 1 and start fetching tool calls based on the FIRST
    log signals you see, you'll fix the wrong problem.
 

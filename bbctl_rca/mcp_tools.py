@@ -152,19 +152,79 @@ def repo_recent_commits(repo: str, n: int = 10) -> str:
     return result.stdout
 
 
+_DOCS_EXCLUDE_SUBDIRS = {"runbooks", "job_flows"}
+
+
 def docs_list() -> list[str]:
-    """List available org docs."""
+    """List available org docs (legacy: top-level docops/*.md only, names
+    as strings). Kept for llm.py pre-fetch path."""
     return [f.name for f in sorted(DOCS_DIR.glob("*.md"))]
 
 
 def docs_get(name: str) -> str:
-    """Read doc content."""
+    """Read doc content (legacy: returns 'doc not found: <name>' on miss).
+    Kept for llm.py pre-fetch path."""
     path = DOCS_DIR / name
     if not path.exists():
         path = DOCS_DIR / f"{name}.md"
     if not path.exists():
         return f"doc not found: {name}"
     return path.read_text()
+
+
+def list_docs() -> list[dict]:
+    """List org-wide docs under docops/ (excluding runbooks/ + job_flows/
+    which have their own list/read tools). Returns name + first-line title
+    so the LLM can pick by topic without loading every file.
+    """
+    if not DOCS_DIR.is_dir():
+        return [{"error": f"docs dir not found at {DOCS_DIR}"}]
+    out = []
+    for p in sorted(DOCS_DIR.rglob("*.md")):
+        # Skip subdirs that have dedicated tools.
+        rel = p.relative_to(DOCS_DIR)
+        if rel.parts and rel.parts[0] in _DOCS_EXCLUDE_SUBDIRS:
+            continue
+        title = ""
+        try:
+            for line in p.read_text(errors="replace").splitlines():
+                ls = line.strip()
+                if ls:
+                    title = ls.lstrip("# ").strip()
+                    break
+        except Exception as e:
+            title = f"<read error: {e}>"
+        out.append({"name": p.stem, "rel": str(rel), "title": title[:160]})
+    return out
+
+
+def read_doc(name: str) -> str:
+    """Read any docops/*.md (or subdir) by stem name. Excludes runbooks/
+    + job_flows/ — use read_runbook / read_job_flow for those.
+    """
+    if not DOCS_DIR.is_dir():
+        return f"docs dir not found at {DOCS_DIR}"
+    candidates = []
+    for p in DOCS_DIR.rglob(f"{name}.md"):
+        rel = p.relative_to(DOCS_DIR)
+        if rel.parts and rel.parts[0] in _DOCS_EXCLUDE_SUBDIRS:
+            continue
+        candidates.append(p)
+    # Also try name as-is (e.g. user passed full filename).
+    p_direct = DOCS_DIR / name
+    if p_direct.is_file():
+        rel = p_direct.relative_to(DOCS_DIR)
+        if not (rel.parts and rel.parts[0] in _DOCS_EXCLUDE_SUBDIRS):
+            candidates.append(p_direct)
+    if not candidates:
+        avail = ", ".join(d["name"] for d in list_docs() if "name" in d)
+        return f"doc '{name}' not found. Available: {avail}"
+    try:
+        return candidates[0].read_text(errors="replace")
+    except Exception as e:
+        return f"doc read error: {e}"
+
+
 
 
 # ─── Runbook tools (Phase 2 — per-class drill plans) ──────────────────

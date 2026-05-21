@@ -433,6 +433,52 @@ TOOLS: list[dict] = [
         },
     },
 
+    # ─── ORG DOCS (broader docops/ — not runbooks, not job_flows) ──────
+    {
+        "type": "function",
+        "function": {
+            "name": "list_docs",
+            "description": (
+                "List org-wide docops/*.md files (excluding runbooks/ + "
+                "job_flows/ which have their own list tools). Each entry "
+                "has name + first-line title so you can pick a doc by "
+                "topic — e.g. ssm-java-heap-dump (OOM debug), "
+                "JiraDetailsCompliance (sign-off), TerraformTroubleshoot "
+                "(state surgery). Call this when the runbook covers the "
+                "class but you need deeper operational context (SSM "
+                "commands, compliance flow, pipeline onboarding)."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_doc",
+            "description": (
+                "Read full markdown of an org doc (docops/*.md). Use "
+                "after list_docs() to load the doc whose title best "
+                "matches your scenario. Examples: read_doc('ssm-java-"
+                "heap-dump') for OOM, read_doc('JiraDetailsCompliance') "
+                "for sign-off failures, read_doc('StaggerNonweb') for "
+                "nonweb pipeline shape."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Doc stem name (no .md). Use list_docs() to "
+                            "see available names."
+                        ),
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+
     # ─── JOB FLOWS (orient on pipeline shape per job family) ───────────
     {
         "type": "function",

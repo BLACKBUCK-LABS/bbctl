@@ -261,6 +261,35 @@ file content. Fetch what you need.
        `aws_describe(service='elbv2', operation='DescribeTargetGroups', params={'LoadBalancerArn': <alb_arn>}, ...)` ← count TGs on ALB
    - Parse_error class also:  `repo_read_file("jenkins_pipeline", "resources/config.json", <line-5>, <line+5>)`
 
+   **Class → org-doc hints (call `read_doc(<name>)` in iter 0 when applicable).**
+   These are the broader docops/*.md beyond runbooks/. List via `list_docs()`
+   if unsure. Concrete pairings:
+   - `health_check` + JVM/OOM signal (`-Xmx*` > instance RAM, `OutOfMemoryError`):
+       `read_doc("ssm-java-heap-dump")`  — heap dump capture procedure
+   - `health_check` + service hangs / 504s:
+       `read_doc("ssm-java-thread-dump")` — thread dump procedure
+   - `health_check` + `filebeat_log_path=""` or wrong log path:
+       `read_doc("ssm-list-directory-files")` — verify actual log path on instance
+   - `health_check` on nonweb pipeline:
+       `read_doc("StaggerNonweb")` — nonweb pipeline shape
+   - `health_check` on Prod+1 frontend:
+       `read_doc("StaggerProdPlusOneFrontend")` — Prod+1 FE flow
+   - `compliance`:
+       `read_doc("JiraDetailsCompliance")` — sign-off + commit-ID rules
+       `read_doc("deployment-compliance-design")` — design context (rare)
+   - `terraform` / `stale_tf_state`:
+       `read_doc("TerraformTroubleshoot")` — full state-surgery playbook
+   - `terraform` on quick-deploy env:
+       `read_doc("CreateQuickInfra")` — quick-deploy infra shape
+   - Hotfix pipeline (any class):
+       `read_doc("HotfixNoncanary")` — hotfix flow context
+   - `ssm` class or any need for SSM command syntax:
+       `read_doc("ssm-permanent-access-guide")` or
+       `read_doc("ssm-temporary-access-jenkins")` or
+       `read_doc("ssm-secure-api-caller")`
+   Call ONLY the docs that match the actual log signals. Do NOT call all
+   of them — costs tokens. When in doubt: `list_docs()` first, pick 1-2.
+
    **STRICT — no instance shell.** `aws_run_ssm_command` is REMOVED.
    RCA never logs into instances. For service-side detail (e.g. WHY
    the service is unhealthy) the LLM tells the operator to use

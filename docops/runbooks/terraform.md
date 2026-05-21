@@ -20,10 +20,18 @@ quota / IAM / config issue surfaced THROUGH terraform. Reclassify when:
 | If the Error line contains ...                                | error_class    | Use runbook |
 |---------------------------------------------------------------|---------------|-------------|
 | `TooManyUniqueTargetGroupsPerLoadBalancer`                    | aws_limit     | aws_limit.md|
+
+**For `TooManyUniqueTargetGroupsPerLoadBalancer` — ALB ARN derivation (use immediately, do NOT emit placeholder):**
+Derive ALB ARN from `service.lookup.rule_arn`:
+- `rule_arn` format: `arn:aws:elasticloadbalancing:<region>:<acct>:listener-rule/app/<alb-name>/<alb-id>/<listener-id>/<rule-id>`
+- ALB ARN = `arn:aws:elasticloadbalancing:<region>:<acct>:loadbalancer/app/<alb-name>/<alb-id>`
+- Example: `rule_arn` contains `listener-rule/app/prod-private-internal-alb/fdbcf4c344dbed6d/...` → `alb_arn` = `arn:...loadbalancer/app/prod-private-internal-alb/fdbcf4c344dbed6d`
+- Quota code for "Target groups per ALB": `L-417A185B`
 | `LimitExceeded` / `Service quota exceeded`                    | aws_limit     | aws_limit.md|
 | `VcpuLimitExceeded` / `InstanceLimitExceeded`                 | aws_limit     | aws_limit.md|
 | `AccessDenied` / `UnauthorizedOperation`                      | aws_limit (perms sub-mode) | aws_limit.md |
 | `Stale state detected — auto-destroying` (alone, no Error:)   | NOT a failure — keep scanning down for the real Error: | — |
+| `Executing precheck: checkTerraformStateFile` + `Stopping pipeline execution due to non-empty Terraform state` | stale_tf_state | stale_tf_state.md |
 
 The "Stale state detected" line is informational chatter emitted by
 `precheck.groovy` — it's a NORMAL recovery step that runs BEFORE the

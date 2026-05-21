@@ -28,14 +28,24 @@ rules:
       - '"canary_run_status":\s*"Fail"'
     description: "Canary analysis failed — Kayenta canary config did not pass threshold"
 
+  # stale_tf_state MUST come before generic `terraform` — both match
+  # 'Terraform state contains resources' but this class is the more
+  # specific precheck-aborted-before-apply mode (checkTerraformStateFile
+  # found leftover rows in S3 tfstate for an env that should start empty,
+  # e.g. prodplusone). Action is targeted state cleanup, not apply debug.
+  - class: stale_tf_state
+    patterns:
+      - 'Executing precheck: checkTerraformStateFile'
+      - 'Stopping pipeline execution due to non-empty Terraform state'
+      - 'Terraform state contains resources\. Total resources'
+    description: "Precheck checkTerraformStateFile aborted: S3 tfstate non-empty for a fresh-env stage (prodplusone). Operator must clean leftover state rows before pipeline can re-run."
+
   # terraform MUST come before aws_limit — Terraform state/lock errors
   # often contain AWS-API capacity strings in their body, and aws_limit
   # would otherwise eat them. State + lock errors are operator-action
   # (devops state surgery), distinct from a pure AWS quota bump.
   - class: terraform
     patterns:
-      - 'Terraform state contains resources'
-      - 'Stopping pipeline execution due to non-empty Terraform state'
       - 'Error acquiring the state lock'
       - 'ConditionalCheckFailedException.*conditional request failed'
       - 'Error: configuring Terraform AWS Provider'

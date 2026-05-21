@@ -26,6 +26,10 @@ TOOL_DISPATCH: dict[str, callable] = {
     "list_job_flows":              mcp_tools.list_job_flows,
     "read_job_flow":               mcp_tools.read_job_flow,
 
+    # ── org docs (broader docops/*.md beyond runbooks + job_flows) ──
+    "list_docs":                   mcp_tools.list_docs,
+    "read_doc":                    mcp_tools.read_doc,
+
     # ── local repos (jenkins_pipeline / InfraComposer) ──
     "repo_read_file":              mcp_tools.repo_read_file,
     "repo_list_dir":               mcp_tools.repo_list_dir,

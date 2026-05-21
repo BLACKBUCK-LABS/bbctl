@@ -737,7 +737,8 @@ async def run_agent(
                 # Untrusted/large outputs (grep, search, aws describe, ...)
                 # keep the cap.
                 _skip_cap = tc.function.name in (
-                    "read_runbook", "repo_read_file", "github_read_file",
+                    "read_runbook", "read_doc", "read_job_flow",
+                    "repo_read_file", "github_read_file",
                 )
                 if not _skip_cap and len(result) > PER_TOOL_RESULT_CAP:
                     result = result[:PER_TOOL_RESULT_CAP] + "\n…[truncated]"

@@ -1,61 +1,79 @@
 # Job flow: stagger-prod-plus-one-frontend
 
+## Identity
+
+- **Script path:** `jenkins_pipeline/stagger-prod-plus-one-frontend.groovy`
+- **Likely Jenkins job names:** `Stagger-Prod-Plus-One-Frontend`, `frontend-deploy`, `stagger-fe`
+- **Shared library:** **`staggered_plugins_fe@stagger-fe-temp`** ← DIFFERENT from all other pipelines
+- **Agent / options:** `agent any`; `tools { maven 'Maven' }`; `ansiColor('xterm')`
+- **Environment:** `SUBMITTER_EMAILS = "thejasvi.bhat@..., rahul.aggarwal@..., vivekanand.matta@..."`
+
 ## Match
+
 - `script_path` ends with `stagger-prod-plus-one-frontend.groovy`, OR
-- `inline_script` contains a stage body
-  `prodPlusOneFrontend(params.SERVICE, params.COMMIT_ID)`.
-This flow handles FRONTEND services. Do not confuse with the non-
-frontend variant — they share many stage NAMES but route to different
-wrapper helpers internally.
+- `inline_script` contains stage bodies calling `prodPlusOneFrontend(...)`
+  AND `frontendRollback(...)` in `post { failure { ... } }`.
 
-## Main pipeline
-`jenkins_pipeline/stagger-prod-plus-one-frontend.groovy`
+## Parameters
 
-## Top-level stages
-| Stage marker in console log | Body in main pipeline                         |
-|-----------------------------|-----------------------------------------------|
-| `(Load Library)`            | inline library load (config.json, aws_account.json) |
-| `(Jira Details)`            | `JiraDetails(...)`                            |
-| `(Build)`                   | `buildJob(...)`                               |
-| `(Prod+1)`                  | `prodPlusOneFrontend(params.SERVICE, params.COMMIT_ID)` |
-| `(Infra)`                   | `createGreenInfra(params.SERVICE)`            |
-| `(Deploy)`                  | `deploy(params.SERVICE, "prod", params.COMMIT_ID)` |
-| `(Rollout)`                 | `rollout(params.SERVICE)`                     |
-| `(Destroy)`                 | `destroyBlueInfra(params.SERVICE)`            |
+| Param | Type | Default |
+|---|---|---|
+| `COMMIT_ID` | string | `commit_id` |
+| `SERVICE` | choice | 7 frontends: `gps-shipper-frontend`, `gps-share-frontend`, `boss-frontend`, `trip-frontend`, `brokerage-bo-fe`, `access-portal`, `bb-transformer` |
+| `Jira-Ticket` | string | `''` |
 
-Helper file for each: `jenkins_pipeline/vars/<helperName>.groovy`.
+## Stages
 
-## CRITICAL — Prod+1 is a WRAPPER. Apply this rule BEFORE reading any helper.
+| # | Stage marker | Helper / inline |
+|---|---|---|
+| 1 | `(Load Library)` | buildName + lib; declarative `steps` block writes libraryResource `config.json` to `${WORKSPACE}/${BUILD_ID}.json` and `aws_account.json` to workspace |
+| 2 | `(Jira Details)` | `JiraDetails(SERVICE, COMMIT_ID, Jira-Ticket)` |
+| 3 | `(Build)` | `buildJob(SERVICE, COMMIT_ID)` — frontend-lib variant |
+| 4 | `(Prod+1)` | `prodPlusOneFrontend(SERVICE, COMMIT_ID)` ← DIFFERENT from main's `prodPlusOne` |
+| 5 | `(Infra)` | `createGreenInfra(SERVICE)` — frontend-lib variant |
+| 6 | `(Deploy)` | `deploy(SERVICE, "prod", COMMIT_ID)` — **3-arg** signature (frontend lib) |
+| 7 | `(Rollout)` | `rollout(SERVICE)` — frontend-lib variant |
+| 8 | `(Destroy)` | `destroyBlueInfra(SERVICE)` — frontend-lib variant |
 
-**Rule (deterministic):**
-- If the failed stage marker is `(Prod+1)` exactly → leaf stage; read
-  the helper `stage('Prod+1')` calls (`prodPlusOneFrontend`).
-- If the marker is `(Infra Prod+1)`, `(Deploy Prod+1)`, or any other
-  marker containing `Prod+1` but not literally equal to `(Prod+1)` →
-  NESTED stage inside the FRONTEND wrapper. You MUST read
-  `vars/prodPlusOneFrontend.groovy` FIRST.
+## Helper chain
 
-**Do NOT use `vars/prodPlusOne.groovy` for this flow.** That file
-belongs to the non-frontend flow (`main_stagger_prod_plus_one`) and
-declares different inner stages / helper names. Wrong file → wrong
-evidence.
+```
+prodPlusOneFrontend(SERVICE, COMMIT_ID)
+  └─ frontend-specific Prod+1 (from staggered_plugins_fe)
+buildJob / createGreenInfra / deploy / rollout / destroyBlueInfra
+  └─ frontend-lib variants — resolve to DIFFERENT implementations
+     than the main staggered_plugins library
+frontendRollback(SERVICE, env, COMMIT_ID)
+  └─ frontend-specific rollback (replaces rollbackMain from main pipeline)
+```
 
-**Chain for any `*Prod+1*` marker (except literal `(Prod+1)`):**
-1. `repo_read_file("jenkins_pipeline", "vars/prodPlusOneFrontend.groovy", 1, 80)`
-2. Find the `stage("<marker>")` block inside its body.
-3. Read the helper name invoked on the next line.
-4. Drill until you reach the line matching the fatal error.
+## Post
 
-## Drill procedure
-1. Read main pipeline body.
-2. Identify failed stage marker from log.
-3. If marker is `(Prod+1)` or any nested `*Prod+1*`, read
-   `vars/prodPlusOneFrontend.groovy` and find the matching inner
-   stage block.
-4. Drill into the named helper from that stage block.
-5. Continue until reaching the line that matches the fatal error.
+| Result | Action |
+|---|---|
+| `always` | `NOT_BUILT` → `triggerRcaWebhook()`; `deleteDir()` |
+| `success` | `UpdateJiraStatus(params['Jira-Ticket'])`; `sh "rm -rf ${WORKSPACE}/${BUILD_ID}.json"` |
+| `unstable` | `triggerRcaWebhook()` |
+| `failure` | `frontendRollback(params.SERVICE, "prod", params.COMMIT_ID)` — **NO VictorOps, NO Slack RCA post, NO BB-AI failure call.** |
+| `aborted` | `frontendRollback(SERVICE, "prod", COMMIT_ID)` |
 
-## Where inner helpers live
-- Helper files: `jenkins_pipeline/vars/<helperName>.groovy`
-- Resources / templates: `jenkins_pipeline/resources/`
-- Terraform invoked by infra helpers: `InfraComposer` repo.
+## Stage → likely failure modes
+
+| Stage marker | Error class | Drill |
+|---|---|---|
+| `(Load Library)` | scm, dependency | frontend lib branch `stagger-fe-temp` not resolvable |
+| `(Jira Details)` | compliance | Modes 1-5 |
+| `(Build)` | dependency, java_runtime | frontend build (npm / webpack) failure |
+| `(Prod+1)` | terraform, stale_tf_state, aws_limit, ssm | frontend prod+1 infra or deploy failure |
+| `(Infra)` | terraform, stale_tf_state, aws_limit | terraform apply errors |
+| `(Deploy)` | ssm, dependency | frontend artifact deploy fail (CloudFront / S3 invalidation issues) |
+| `(Rollout)` | timeout | frontend rollout — typically time-based, no canary |
+| `(Destroy)` | terraform | destroy fail |
+
+## Gotchas (operator-relevant)
+
+- All helpers (`buildJob`, `deploy`, `createGreenInfra`, `rollout`, `destroyBlueInfra`) resolve to DIFFERENT implementations from `staggered_plugins_fe@stagger-fe-temp`. **Do not** assume the frontend `deploy` matches the main `deploy` — signature is 3-arg here, 2-arg in main.
+- Library is loaded in declarative `steps`, NOT inside a `script {}` block — unusual mix; most other pipelines load inside `script {}`.
+- Per-build config snapshot `${WORKSPACE}/${BUILD_ID}.json` is cleaned up only on success — failure leaves it in workspace for debugging.
+- `stagger-fe-temp` library branch name implies it's still on a temporary release branch — be careful before recommending changes to the lib.
+- The `Stagger Prod Plus One Frontend` job is HTTP-serving but the artifacts are static (CloudFront / S3), not running JVMs — RCA shouldn't suggest checking JVM heap or NewRelic Java agent.

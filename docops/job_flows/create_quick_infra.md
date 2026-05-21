@@ -1,94 +1,114 @@
 # Job flow: create-quick-infra
 
+## Identity
+
+- **Script path:** `jenkins_pipeline/Jenkinsfile_create_quick_infra`
+- **Likely Jenkins job names:** `create-quick-infra`, `quick-infra`, `create-quick-infra-onboarding`
+- **Shared library:** `staggered_plugins@${libraryBranch}` — dynamic but currently hardcoded to `release/REQ-463-staggerprodplusupdate-v2`
+- **Agent / options:** `agent any`; `tools { maven 'Maven' }`; `ansiColor('xterm')`
+
 ## Match
+
 - `script_path` ends with `Jenkinsfile_create_quick_infra`, OR
 - `inline_script` contains stage bodies calling `QuickBuildJob(...)`
-  AND `QuickDeploy(...)` (the QuickBuildJob/QuickDeploy pair is
-  distinctive — no other flow uses these).
+  AND `QuickDeploy(...)` (the QuickBuildJob / QuickDeploy pair is
+  distinctive — no other pipeline uses these).
 
-## Main pipeline
-`jenkins_pipeline/Jenkinsfile_create_quick_infra`
+## Parameters (reactive Active Choices)
 
-## Top-level stages
-| Stage marker in console log | Body in main pipeline                |
-|-----------------------------|--------------------------------------|
-| `(Load Library)`            | inline library load                  |
-| `(Jira Details)`            | `JiraDetails(...)`                   |
-| `(Resolve Parameters)`      | resolves SERVICE/COMMIT_ID/JFROG_BUILD into `effectiveParams` |
-| `(Input Validation)`        | enforces COMMIT_ID vs JFROG_BUILD constraints |
-| `(Build)`                   | `QuickBuildJob(effectiveParams.SERVICE, effectiveParams.COMMIT_ID, effectiveParams)` |
-| `(Build Frontend)`          | `buildJobFrontend(effectiveParams.SERVICE, effectiveParams.COMMIT_ID, effectiveParams)` |
-| `(Infra)`                   | infra step (read body to identify exact helper for current pipeline version) |
-| `(Deploy)`                  | `QuickDeploy(effectiveParams.SERVICE, "prod", effectiveParams + [INSTANCE_IDS: ...])` |
-| `(Deploy Frontend)`         | `QuickDeployFrontend(effectiveParams.SERVICE, "prod", effectiveParams + [INSTANCE_IDS: ...])` |
-| post                        | `UpdateJiraStatus(params['Jira-Ticket'])` |
+| Param | Type | Notes |
+|---|---|---|
+| `IS_ONBOARDED` | choice [`No`, `Yes`] | gates show/hide of all auto-resolvable params |
+| `Jira-Ticket` | string | mandatory; pipeline errors if empty |
+| `SERVICE` | DynamicReferenceParameter | dropdown of ~135 services if onboarded=Yes; free-text input if No |
+| `INSTANCE_COUNT` | choice [1..7] | frontends must be 1 |
+| `COMMIT_ID` | ValidatingStringParameterDefinition | regex `^([0-9a-fA-F]{7,40})?$` |
+| `JFROG_BUILD` | reactive | `jf rt s` jar listing; hidden when IS_ONBOARDED=No |
+| `service_type` | hiddenChoice | `Java` / `Docker` |
+| `jar_path`, `project_name`, `IAM_ROLE`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, `HEALTH_CHECK_URL` | hiddenString | hidden when IS_ONBOARDED=Yes |
+| `APP_PORT`, `dockerfile_path` | visibleForFrontendOnly | Docker/frontend + IS_ONBOARDED=No |
+| `git_repo`, `AWS_REGION`, `AMI_ID`, `INSTANCE_CLASS`, `slack_channel`, `business`, `team_name` | hiddenString | |
+| `ACCOUNT` | hiddenChoice | `zinka` / `divum` / `finserv` / `tzf` |
+| `SERVER_CMD`, `java_version`, `build_command`, `LOG_FILE_PATTERN`, `NEWRELIC_FILE_PATH`, `NEWRELIC_JAR` | hideForFrontend | hidden for Docker/frontend + IS_ONBOARDED=Yes |
 
-Helper files: `jenkins_pipeline/vars/<helperName>.groovy`. The exact
-helper invoked from the `Infra` stage varies between
-`CreateQuickInfra(...)` and other variants — read the main pipeline
-body for the current call before drilling.
+## Script-scope state
 
-## Notes specific to this flow
+- `effectiveParams` — mutable `Map` copy of `params` (Jenkins `params` is immutable)
+- `instanceIds` — list of EC2 IDs returned by `CreateQuickInfra`
+- `ALLOW_AWS_INFRA_DISCOVERY = false` — gate; currently only `health_check_url` is auto-discovered
+- Helper `rollbackInstances(ids, region, account)` — terminates EC2s
+- Helper `keyNameForAccount(account)` — `finserv → prod-finserv-key`, `tzf → production_tzf`, default → `blackbuck_production`
 
-- Has BOTH backend and frontend tracks (`Build` + `Build Frontend`,
-  `Deploy` + `Deploy Frontend`). A failed `(Deploy Frontend)` is in
-  the frontend track; do not confuse with `(Deploy)`.
-- Uses `effectiveParams` (a merged dict) rather than `params` directly.
-  Helpers receive the merged dict — read the helper signature to see
-  which keys it expects.
-- Service parameter resolves to a "quick infra" test service, often a
-  `-devops-test` suffixed name. This flow does NOT use the green/blue
-  cutover that `main_stagger_prod_plus_one` uses; there is no
-  `Rollout` or `Destroy` stage at the main level.
+## Stages
 
-## Compliance gate behavior (Jira Details stage) — DIFFERENT from other flows
+| # | Stage marker | Helper / inline |
+|---|---|---|
+| 1 | `(Load Library)` | `buildName "${SERVICE}_${COMMIT_ID}"`; loads dynamic-branch library |
+| 2 | `(Jira Details)` | `JiraDetails(params.SERVICE, params.COMMIT_ID, params['Jira-Ticket'])` — errors if Jira-Ticket empty |
+| 3 | `(Resolve Parameters)` | large inline script: if `IS_ONBOARDED==Yes` parses libraryResource `config.json` and populates `effectiveParams`; falls back to `discoverInfraFromRuleArn` for `health_check_url` only. If `IS_ONBOARDED==No` validates broader mandatory list, derives `KEY_NAME` from ACCOUNT, sets `DISK_SIZE='50'`, derives `multi_project` from `jar_path` + `project_name`. Frontend / Docker → enforces `INSTANCE_COUNT==1`. |
+| 4 | `(Input Validation)` | inline xor: `JFROG_BUILD` vs `COMMIT_ID` — **when** `service_type in ['web','non-web','non-web-cron','non-web-consumer','Java']` |
+| 5 | `(Build)` | `QuickBuildJob(SERVICE, COMMIT_ID, effectiveParams)` — **when** Java service types + `JFROG_BUILD=='Select jar'` + `COMMIT_ID` set |
+| 6 | `(Build Frontend)` | `buildJobFrontend(SERVICE, COMMIT_ID, effectiveParams)` — **when** `service_type in ['Docker','frontend']` |
+| 7 | `(Infra)` | `instanceIds = CreateQuickInfra(SERVICE, effectiveParams)` |
+| 8 | `(Deploy)` | `QuickDeploy(SERVICE, "prod", effectiveParams + [INSTANCE_IDS: instanceIds])` — **when** Java service types |
+| 9 | `(Deploy Frontend)` | `QuickDeployFrontend(...)` — **when** Docker / frontend |
 
-`create-quick-infra` is the bootstrap job — it spins up infra for a NEW
-service that, by design, does not yet exist in
-`jenkins_pipeline/resources/config.json`. The compliance gate in
-`vars/JiraDetails.groovy` was patched in May 2026 to source the service
-identity from the **git build parameters** (`SERVICE` / `COMMIT_ID` /
-repo URL passed in by the trigger) when invoked from this job, and to
-treat `config.json` as an enrichment lookup only (for team, NewRelic
-name, Jira board, etc.).
+## Helper chain
 
-What this means for RCAs on the Jira Details stage of this flow:
+```
+QuickBuildJob(service, COMMIT_ID, params)
+  ├─ if IS_ONBOARDED=='Yes' → loads config.json libraryResource
+  ├─ precheck.executePrechecks('Build')                  ← onboarded path only
+  ├─ JAVA_HOME by params.java_version + params.ACCOUNT
+  │     (zinka / divum → amazon-corretto java21; others → openjdk)
+  └─ Notification.build
+buildJobFrontend(service, COMMIT_ID, params)
+  └─ frontend artifact build (Docker / nodejs)
+CreateQuickInfra(service, params)
+  ├─ aws ec2 run-instances (count = INSTANCE_COUNT)
+  └─ returns instance ID list
+QuickDeploy(service, "prod", params)
+  ├─ resolves JAR (params.JFROG_BUILD with 'staggered/' prefix stripped,
+  │   else env[service+":jar_identifier"])
+  ├─ S3 bucket by params.ACCOUNT (finserv → finserv-deployment, tzf →
+  │   tzf-deployments, default → blackbuck-deployments)
+  ├─ prepareLocalFiles() — writes deploy scripts
+  └─ parallel SSM deploy to each instance in params.INSTANCE_IDS
+QuickDeployFrontend(service, "prod", params)
+  └─ frontend deploy variant
+rollbackInstances(ids, region, account)  ← script-scope, defined in pipeline
+  └─ aws ec2 terminate-instances (called from post.failure with input prompt)
+```
 
-- A `Compliance: SERVICE '<svc>' not found in config.json` failure on
-  `create-quick-infra` is **not** a "missing config entry" — it is a
-  gate-logic regression. The current intended behavior is to fall
-  back to the build-param value. See
-  `docops/runbooks/compliance.md` Mode 6 for the drill plan.
+## Post
 
-- Do NOT recommend editing `config.json` to add the new service for
-  this job. That re-couples the gate to a file the patch specifically
-  decoupled it from, and masks the regression.
+| Result | Action |
+|---|---|
+| `always` | `NOT_BUILT` → `triggerRcaWebhook()`; then `deleteDir()` |
+| `success` | `UpdateJiraStatus(params['Jira-Ticket'])` |
+| `unstable` | `triggerRcaWebhook()` |
+| `failure` | `triggerRcaWebhook()` → Slack RCA via `Notification.rcaAlert` → interactive `input message: 'Pipeline failed. Destroy provisioned infra?'` → `rollbackInstances(instanceIds, ...)`. **NO VictorOps page.** |
+| `aborted` | `input` prompt → `rollbackInstances(...)` |
 
-- For OTHER flows (`main_stagger_prod_plus_one`, deploy jobs, canary
-  jobs), a missing `config.json` entry IS a legitimate failure and
-  the registration fix is correct — that flow's compliance gate
-  *does* require `config.json` membership. The build-param fallback
-  is specific to the quick-infra bootstrap case.
+## Stage → likely failure modes
 
-When the LLM is unsure whether the gate code at HEAD still has the
-build-param fallback, it should:
-1. `repo_recent_commits("jenkins_pipeline", 10)` — find the May-2026
-   patch on `vars/JiraDetails.groovy`.
-2. `repo_read_file("jenkins_pipeline", "vars/JiraDetails.groovy", ...)`
-   at the service-lookup lines — verify the quick-infra branch still
-   reads from build params.
+| Stage marker | Error class | Drill |
+|---|---|---|
+| `(Load Library)` | scm, dependency | library branch / ref not resolvable |
+| `(Jira Details)` | **compliance Mode 6** (GATE BUG, NOT registration) | See `docops/runbooks/compliance.md` Mode 6. This job is the bootstrap path; missing `config.json` entry is the design (the service is new). The gate was patched to source SERVICE from build params — a failure here means the patch regressed. Do NOT recommend `vim config.json`. |
+| `(Resolve Parameters)` | config_validation, parse_error | jq parse fail; mandatory params missing |
+| `(Input Validation)` | (pipeline-level) | JFROG_BUILD vs COMMIT_ID xor violated |
+| `(Build)` | scm, dependency, java_runtime | git fetch / maven dep / JAR build error |
+| `(Build Frontend)` | dependency, java_runtime | npm / Docker build error |
+| `(Infra)` | aws_limit, config_validation | `RunInstances` quota; AMI / subnet / SG NotFound |
+| `(Deploy)` | ssm, java_runtime, health_check | SSM exec fail; app launch crash |
+| `(Deploy Frontend)` | ssm, dependency | frontend artifact deploy fail |
 
-If the fallback is missing, the patch was reverted or never reached
-this branch — fix the gate code, do not work around in `config.json`.
+## Gotchas (operator-relevant)
 
-## Drill procedure
-1. Read main pipeline body to confirm exact helper for the failed stage.
-2. Read `vars/<helperName>.groovy`.
-3. Drill inner calls or `libraryResource`-loaded scripts.
-4. Stop at the line matching the fatal error in log.
-
-## Resources used
-- Shell scripts: `jenkins_pipeline/resources/scripts/`
-- Service config: `jenkins_pipeline/resources/config.json`
-- Templates: `jenkins_pipeline/resources/`
-- Terraform: `InfraComposer` repo for infra stages.
+- **Bootstrap job** — used to spin up infra for a NEW service that does NOT yet exist in `config.json`.
+- The compliance gate in `vars/JiraDetails.groovy` was patched in May 2026 to source `SERVICE` from git build params for this job; `config.json` is enrichment only. A `Compliance: SERVICE '<svc>' not found in config.json` failure on this job is a **gate-logic regression**, NOT a missing-entry bug. See `docops/runbooks/compliance.md` Mode 6.
+- No Prod+1, no canary, no Rollout stage. Single-shot provisioning + deploy.
+- Frontend / Docker services bypass `QuickBuildJob` + `QuickDeploy`; use `buildJobFrontend` + `QuickDeployFrontend`.
+- `discoverInfraFromRuleArn` is gated behind `ALLOW_AWS_INFRA_DISCOVERY=false`; today only `health_check_url` is auto-discovered.
+- Rollback path has an interactive `input` prompt before destroy — pipeline can hang waiting for operator approval.

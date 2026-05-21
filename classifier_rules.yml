@@ -92,15 +92,41 @@ rules:
       - 'Unexpected token'
     description: "jq/JSON parse failure in config.json — check config.json for malformed numeric fields"
 
+  # config_validation MUST come before health_check — the 1.3 Validate
+  # Config Resources sub-stage of pre_deployment runs AWS describe-* on
+  # AMI / subnet / SG / key-pair / IAM-profile and emits a "Config
+  # resource validation failed" error when a config.json id no longer
+  # exists in AWS. Pre-deployment failures here are NOT the same as
+  # the later Health Validation stage; the fix is to update config.json
+  # (or create the missing AWS resource), not anything ALB-related.
+  # Build 61 of HotFix-NonCanary was wrongly classified as health_check
+  # before this class existed.
+  - class: config_validation
+    patterns:
+      - 'Config resource validation failed'
+      - "Key pair '[^']+' not found in AWS"
+      - "Subnet '[^']+' not found"
+      - "AMI '[^']+' not found"
+      - "Security group .* not found"
+      - "IAM profile .* not found"
+    description: "Stage 1.3 Validate Config Resources detected drift between config.json and AWS — AMI/subnet/SG/key-pair/IAM-profile no longer exists. Fix = update config.json to a real id, or create the missing AWS resource."
+
   # health_check MUST come before java_runtime — ALB target group probe
   # failures are pipeline-level failures specific to deploy/rollout, while
   # java_runtime is a generic catch-all that can fire on stray references.
+  # NOTE — the loose `health.*fail` regex was dropped (May 2026). It
+  # was matching "Health Validation skipped due to earlier failure(s)"
+  # lines that appear in EVERY post-failure log (Jenkins emits "Stage
+  # 'X' skipped due to earlier failure(s)" for every downstream stage
+  # of a failed build). That made every config_validation / parse_error
+  # / scm failure in a build that had a "Health Validation" stage
+  # downstream get misrouted to health_check. The remaining patterns
+  # are specific to actual TG-poll failures.
   - class: health_check
     patterns:
       - 'Health Status failed to move to healthy'
       - 'iterations:\s*unhealthy'
       - 'Error in Deploy_i-'
-      - 'health.*fail'
       - 'healthz.*[45][0-9][0-9]'
       - 'curl.*Connection refused'
       - 'supervisorctl.*FATAL'

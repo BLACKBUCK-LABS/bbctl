@@ -805,14 +805,45 @@ async def run_agent(
             "needs_deeper": True,
         }
 
-    # Phase-10: NO post-processing of LLM output. We do NOT drop fake
-    # entries, do NOT substitute hallucinated values, do NOT rewrite
-    # snippets. The only server-side transformation on evidence is the
-    # SNIPPET-FILL step below, which is a SCHEMA contract — when LLM
-    # emits {source: '<repo>/<file>', line_start, line_end} we read
-    # the file from disk and inject the verbatim text as `snippet`.
-    # LLM cannot lie about content it never wrote.
+    # Phase-10 (revised May 2026): annotate-only stayed too lenient.
+    # Build 15 Stagger Scaling case had evidence citing
+    # `vars/discoverBlueTargetGroup.groovy` — a file that doesn't exist;
+    # snippet-fill set `_error: file read failed` but the entry stayed in
+    # the final JSON, polluting evidence and burying the one real
+    # citation. New policy: SNIPPET-FILL still runs as a schema contract,
+    # then HARD-DROP entries that are objectively invalid:
+    #   (a) evidence with `_error` field after snippet-fill — file/range
+    #       was unreadable, the citation is broken regardless of intent
+    #   (b) repo-source entry whose `<repo>/<path>` is NOT in `read_files`
+    #       — LLM cited a file it never opened via repo_read_file (and
+    #       therefore cannot have verified)
+    #   (c) repo-source entry whose snippet contains quoted-string
+    #       literals that do NOT appear in the actual file content
+    # Each drop emits a failure_signal so the audit log + dashboard see
+    # it. We do NOT substitute, we do NOT rewrite — broken entries are
+    # removed, leaving the LLM's real, verifiable citations in place.
     rca["evidence"] = _fill_repo_snippets(rca.get("evidence", []))
+    # (a) drop _error entries from snippet-fill
+    _before = len(rca["evidence"])
+    rca["evidence"] = [e for e in rca["evidence"]
+                       if not (isinstance(e, dict) and e.get("_error"))]
+    _err_drops = _before - len(rca["evidence"])
+    if _err_drops:
+        _failure_signals.append("hallucinated_file_evidence")
+        _log(f"  evidence: dropped {_err_drops} entry(ies) with _error field "
+             f"(unreadable file/range — LLM cited fictional path)")
+    # (b) drop repo-source entries citing files never opened via repo_read_file
+    _before = len(rca["evidence"])
+    rca["evidence"] = _filter_fake_repo_evidence(rca["evidence"], read_files)
+    if len(rca["evidence"]) < _before:
+        _failure_signals.append("hallucinated_file_evidence")
+    # (c) drop entries with snippets that don't match file content
+    rca["evidence"], _snip_drops = _filter_hallucinated_snippets(
+        rca["evidence"], read_files
+    )
+    if _snip_drops:
+        _failure_signals.append("hallucinated_snippet")
+    # (d) drop runbook citations for runbooks never fetched
     rca["evidence"], _rb_drops = _drop_unfetched_runbook_evidence(
         rca["evidence"], read_runbooks
     )

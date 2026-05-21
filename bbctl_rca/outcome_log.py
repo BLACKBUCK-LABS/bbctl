@@ -27,6 +27,15 @@ Failure-signal events that agent.py appends as they happen:
   runbook_evidence_dropped    — ≥1 evidence entry cited docs/runbooks/<X>.md but
                                 read_runbook(X) was never fetched (returned not-found);
                                 fabricated runbook snippet dropped server-side
+  hallucinated_file_evidence  — ≥1 evidence entry cited a repo file that either
+                                (a) snippet-fill could not read (file/range missing)
+                                or (b) the LLM never opened via repo_read_file in
+                                this run. Entry dropped from evidence[]. Hard gate
+                                added May 2026 after Build 15 Stagger Scaling case
+                                where LLM invented `vars/discoverBlueTargetGroup.groovy`.
+  hallucinated_snippet        — ≥1 evidence entry's snippet contained quoted-string
+                                literals NOT present in the actual file content.
+                                Entry dropped from evidence[].
 
 Queryable via bbctl_rca/cli_outcomes.py.
 

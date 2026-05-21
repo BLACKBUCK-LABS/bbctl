@@ -29,6 +29,7 @@ QA-Automation is intentionally omitted — not in production use.
 | **stagger-nonweb** | `stagger-nonweb.groovy` | [`job_flows/stagger_nonweb.md`](job_flows/stagger_nonweb.md) | Non-web (consumers / crons / kafka); time-based stagger; no on-call paging |
 | **stagger-prod-plus-one-frontend** | `stagger-prod-plus-one-frontend.groovy` | [`job_flows/stagger_prod_plus_one_frontend.md`](job_flows/stagger_prod_plus_one_frontend.md) | Frontend deploy; DIFFERENT shared library (`staggered_plugins_fe@stagger-fe-temp`) |
 | **stagger-onboarding** | `config/OnBoardingJenkinFile` | [`job_flows/stagger_onboarding.md`](job_flows/stagger_onboarding.md) | Pure-bash onboarding; config.json append + InfraComposer scaffolding |
+| **stagger-scaling** | `scaling.groovy` | [`job_flows/stagger_scaling.md`](job_flows/stagger_scaling.md) | Scale-out (additive): adds N new EC2s to existing BLUE TG; no replace, no canary, no cutover. Library on `feature/scale-job` branch. |
 
 Shared library:
 - 5 main pipelines: `staggered_plugins@master` or `staggered_plugins@release/REQ-463-staggerprodplusupdate-v2`.
@@ -47,6 +48,7 @@ Shared library:
 | **stagger-nonweb** | `buildJob` | — | `createGreenInfra` | `deploy` → `nonWebDeploy` | `rollout` → `nonwebRollout` | `destroyBlueInfra` | `rollbackMain("non_web_rollback")` |
 | **stagger-prod-plus-one-frontend** | `buildJob` (FE lib) | `prodPlusOneFrontend` | `createGreenInfra` (FE lib) | `deploy(..., COMMIT_ID)` (FE lib) | `rollout` (FE lib) | `destroyBlueInfra` (FE lib) | `frontendRollback(SERVICE, "prod", COMMIT_ID)` |
 | **stagger-onboarding** | bash: jq validation → config.json append → InfraComposer scaffolding → git push → python enrichment | — | — | — | — | — | `set -e` exit (no Jenkins `post`; manual rollback) |
+| **stagger-scaling** | `buildJob` (conditional) | — | `instance_provisioning` (additive — joins existing BLUE_TG) | `artifact_deployment` + `health_validation` | — | — (no cutover, old EC2s stay) | `hotfix_rollback` |
 
 ---
 
@@ -67,7 +69,8 @@ the per-pipeline doc for the variant.
 | `(Resolve Parameters)` | config_validation, parse_error | `create-quick-infra` only; jq parse fail or missing mandatory params |
 | `(Input Validation)` | (pipeline-level) | JFROG_BUILD vs COMMIT_ID xor violated |
 | `(Build)` / `(Build Artifact)` / `(Build Frontend)` | scm, dependency, java_runtime | git fetch / maven dep / JAR build error / frontend npm fail |
-| `(Pre-Deployment)` → sub-stage `1.3 Validate Config Resources` | **config_validation** (NOT health_check) | `hotfix-noncanary` only. AWS describe-* for AMI / subnet / SG / key-pair / IAM-profile returns NotFound. Drill `vars/pre_deployment.groovy`. Fix = update `config.json` to a real resource ID, OR create the missing AWS resource. **Do NOT recommend "recreate target group" — that path is unrelated.** |
+| `(Pre-Deployment)` → sub-stage `1.3 Validate Config Resources` | **config_validation** (NOT health_check) | `hotfix-noncanary` and `stagger-scaling`. AWS describe-* for AMI / subnet / SG / key-pair / IAM-profile returns NotFound. Drill `vars/pre_deployment.groovy`. Fix = update `config.json` to a real resource ID, OR create the missing AWS resource. **Do NOT recommend "recreate target group" — that path is unrelated.** |
+| `(Pre-Deployment)` → sub-stage `1.4 Discover BLUE Target Group` | **java_runtime** (CPS serialization) OR `aws_describe` | `stagger-scaling` only. Reads `rule_arn` from config.json and runs `aws elbv2 describe-rules` to resolve BLUE_TG_ARN. Build 15 case: slave bounce mid-`sh` → Jenkins tried to checkpoint pipeline state → `JsonSlurperClassic` retained in `pre_deployment` scope was NOT Serializable → `Caused: java.io.NotSerializableException`. **This is a pipeline-code bug, NOT an AWS / profile / region issue.** Don't be misled by slave-bouncing chatter. Fix is to refactor `vars/pre_deployment.groovy` to discard the `JsonSlurperClassic` instance after extracting primitive map values. If the failure IS actually `aws elbv2 describe-rules` NotFound on the rule_arn, that's a stale value in config.json. |
 | `(Instance Provisioning)` | aws_limit, config_validation | `hotfix-noncanary` only. `RunInstances` quota; AMI / subnet / SG NotFound |
 | `(Artifact Deployment)` | scm, ssm, network | `hotfix-noncanary` only. JFrog 401/404; SSM SendCommand fail; S3 upload denial |
 | `(Health Validation)` | health_check | `hotfix-noncanary` only. TG never healthy; service crash; healthz 4xx/5xx |

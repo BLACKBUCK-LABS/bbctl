@@ -1,6 +1,20 @@
 # bbctl-rca — Jenkins Pipeline Auto-RCA
 
-Automated Root Cause Analysis service for Jenkins `stagger-prod-plus-one` pipeline failures. On every failed build, Jenkins POSTs a signed webhook to this service; the service fetches the console log via Jenkins REST API, classifies the failure, enriches with context (Jira / GitHub / NewRelic / runbook docs / repo source), calls an LLM, and returns structured RCA JSON that's printed back into the Jenkins console.
+Automated Root Cause Analysis service for Jenkins `stagger-prod-plus-one` + sibling pipelines. On every failed build, Jenkins POSTs a signed webhook to this service; the service fetches the console log via Jenkins REST API, classifies the failure, enriches with context (Jira / GitHub / NewRelic / runbook docs / repo source + RAG semantic memory of past RCAs), calls an LLM, runs LangGraph ULTIMATUM gates + validator hard gates, and returns structured RCA JSON that's printed back into the Jenkins console.
+
+**This doc is operational.** For the design-side picture (RAG +
+LangGraph internals, why graphs not nested ifs, cost model) read
+[`RAG_and_LangGraph.md`](RAG_and_LangGraph.md). For the
+end-to-end request flow with parallel-fetch + gate-routing
+diagrams read [`workflow.md`](workflow.md).
+
+**Current status (May 2026):**
+- Production branch: `feature/bbctl-rca-agent-RAG-LANG`
+- 17 classifier classes routed through agent + LangGraph gates
+- 4 layers of validator hardening (schema / runbook / framing / compliance hallucination)
+- 3 layers of placeholder-cmd defense (primer pre-fetch / prompt rule / server gate)
+- Audit JSONs feed back into RAG (past-incident memory)
+- S3 doc sync DROPPED — `docops/` in this repo is canonical
 
 ---
 

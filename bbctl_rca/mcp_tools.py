@@ -163,13 +163,26 @@ def docs_list() -> list[str]:
 
 def docs_get(name: str) -> str:
     """Read doc content (legacy: returns 'doc not found: <name>' on miss).
-    Kept for llm.py pre-fetch path."""
-    path = DOCS_DIR / name
-    if not path.exists():
-        path = DOCS_DIR / f"{name}.md"
-    if not path.exists():
-        return f"doc not found: {name}"
-    return path.read_text()
+    Kept for llm.py pre-fetch path.
+
+    Search order: docops/<name>, docops/<name>.md, docops/runbooks/<name>,
+    docops/runbooks/<name>.md, docops/job_flows/<name>,
+    docops/job_flows/<name>.md. Subfolder fallback added Phase 1 so legacy
+    CLASS_DOCS mapping in llm.py can point at canonical runbook files
+    (e.g. "health_check.md") after deleting docops/HealthCheckFailure.md.
+    """
+    candidates = [
+        DOCS_DIR / name,
+        DOCS_DIR / f"{name}.md",
+        DOCS_DIR / "runbooks" / name,
+        DOCS_DIR / "runbooks" / f"{name}.md",
+        DOCS_DIR / "job_flows" / name,
+        DOCS_DIR / "job_flows" / f"{name}.md",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path.read_text()
+    return f"doc not found: {name}"
 
 
 def list_docs() -> list[dict]:

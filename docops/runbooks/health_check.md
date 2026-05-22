@@ -78,3 +78,58 @@ Verify: re-run pipeline; Deploy stage should pass health-check loop.
 - hardcode `/var/log/blackbuck/gps.log` — use `service.lookup.filebeat_log_path`
 - finalize without `vars/deployProdPlusOne.groovy` in evidence — AWS state alone is insufficient
 - finalize without the health poll script in evidence — read `resources/scripts/X` first
+
+## Likely root causes (priority order)
+
+When the drill plan returns data but the cause isn't obvious from
+`DescribeTargetHealth.Reason` alone, walk this list:
+
+1. **Service didn't start on the instance.** Crash in main(), missing
+   config, port already in use, JVM OOM at startup. Tail the service log
+   (`service.lookup.filebeat_log_path`) via
+   `bbctl shell <instance_id>` — look for stack trace at the end.
+
+2. **Port mismatch between service and target group.** Service listens
+   on port X, TG `health_check_port` (or `port`) set to Y.
+   `sudo ss -tlnp | grep -E "<service_port>|<health_check_port>"` plus
+   `DescribeTargetGroups [HealthCheckPort, Port]`.
+
+3. **Health endpoint path returns non-2xx.** Service up + listening,
+   but `<HealthCheckPath>` returns 4xx/5xx.
+   `curl -i http://localhost:<Target.Port><HealthCheckPath>` — expect
+   `HTTP/1.1 200`.
+
+4. **Security group blocks ALB → instance on the TG port.** Instance SG
+   missing ingress from ALB SG on TG port.
+   `aws ec2 describe-security-groups --group-ids <instance-sg>` —
+   confirm ingress rule from ALB SG on TG port.
+
+5. **Slow boot vs health-check threshold.** Service eventually healthy
+   but takes longer than `healthy_threshold × interval` (typically
+   2 × 30s = 60s). Compare service start timestamp in log vs deploy
+   timestamp. Fix: raise `HealthCheckIntervalSeconds` or
+   `HealthyThresholdCount`.
+
+6. **Dependency unreachable** (DB / Redis / Kafka / downstream API).
+   Health endpoint does deep check; the dep is down/blocked. Service log
+   shows connect-timeout/refused on the dep. Check dep status separately.
+
+## Non-fatal upstream noise (IGNORE in RCA)
+
+These appear in the same log but are NOT the cause:
+
+- `WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!` — pipeline has SSM
+  fallback for instance login; SSH host-key mismatch never blocks deploy.
+- `<error>Application X does not exist.</error>` from NewRelic — appName
+  not registered yet. Observability gap, not a deployment failure.
+- `Did you forget the def keyword? ... seems to be setting a field named
+  pipelineSuccess` — Jenkins script-warning, not the failure cause.
+
+## Related code
+
+- `vars/nonwebdeploy.groovy` — wraps `healthy.sh` invocation
+- `vars/deployProdPlusOne.groovy` — Prod+1 deploy variant
+- `resources/scripts/healthy.sh` / `non_web_healthy.sh` — poll loop
+  (50 iterations × interval)
+- `resources/config.json` — service registry; per-service `log_path`,
+  `service_port`, `health_check_path`, `health_check_port`

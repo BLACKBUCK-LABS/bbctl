@@ -20,7 +20,7 @@ CLASS_DOCS = {
     "canary_script_error": "StaggerProdPlusOneDeploy.md",
     "aws_limit": "AwsLimitTroubleshoot.md",
     "parse_error": "ConfigJsonParseError.md",
-    "health_check": "HealthCheckFailure.md",
+    "health_check": "health_check.md",  # resolves via docs_get fallback → docops/runbooks/health_check.md (Phase 1 dedup; HealthCheckFailure.md deleted)
     "terraform": "TerraformTroubleshoot.md",
 }
 

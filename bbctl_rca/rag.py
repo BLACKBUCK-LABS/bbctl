@@ -524,12 +524,132 @@ def _cli_reset(args: list[str]) -> int:
     print("reset: rca_chunks + caches truncated")
     return 0
 
+def _cli_diag(_args: list[str]) -> int:
+    """End-to-end health check. Prints PASS/FAIL per stage so operators
+    can spot RAG breakage in one command. Exit non-zero on any FAIL."""
+    fails = 0
+    def ok(label: str)   -> None: print(f"  \033[32m✓\033[0m {label}")
+    def bad(label: str)  -> None:
+        nonlocal fails; fails += 1
+        print(f"  \033[31m✗\033[0m {label}")
+    def info(label: str) -> None: print(f"    {label}")
+
+    print("== bbctl-rca RAG diagnostics ==\n")
+
+    # 1. Env vars
+    print("[1/6] env vars")
+    missing = [k for k in ("BBCTL_PG_PASSWORD",) if not os.environ.get(k)]
+    if missing:
+        bad(f"missing: {', '.join(missing)} — secrets.py autoload should have set these")
+    else:
+        ok("BBCTL_PG_PASSWORD set")
+    if not (os.environ.get("BBCTL_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")):
+        bad("BBCTL_LLM_API_KEY / OPENAI_API_KEY not set — embed will fail")
+    else:
+        ok("OpenAI API key set")
+
+    # 2. PG connect
+    print("\n[2/6] postgres connection")
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT version()")
+                ver = cur.fetchone()[0]
+                ok(f"connected — {ver[:60]}…")
+    except Exception as e:
+        bad(f"connect failed: {e}")
+        print("\nFAIL — stopping early (subsequent checks need PG)")
+        return 1
+
+    # 3. Chunks by source_type
+    print("\n[3/6] chunk inventory")
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT source_type, COUNT(*) FROM rca_chunks "
+                    "GROUP BY source_type ORDER BY 1"
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    bad("rca_chunks is EMPTY — run `python -m bbctl_rca.rag index-docops`")
+                else:
+                    for stype, cnt in rows:
+                        marker = ok if cnt > 0 else bad
+                        marker(f"{stype}: {cnt} chunks")
+                    have = {r[0] for r in rows}
+                    for needed in ("runbook", "job_flow", "doc"):
+                        if needed not in have:
+                            bad(f"no {needed} chunks — indexer never ran or excludes "
+                                f"{needed}/ subfolder")
+    except Exception as e:
+        bad(f"query failed: {e}")
+
+    # 4. Cache tables exist + counts
+    print("\n[4/6] cache tables")
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                for tbl in ("query_emb_cache", "retrieval_cache"):
+                    cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                    cnt = cur.fetchone()[0]
+                    ok(f"{tbl}: {cnt} rows")
+    except Exception as e:
+        bad(f"cache table check failed: {e}")
+
+    # 5. Embed → search round-trip (3 known queries)
+    print("\n[5/6] semantic search smoke test")
+    tests = [
+        ("slave-4 seems to be removed or offline", "jenkins_agent_offline"),
+        ("Gradle build daemon disappeared OOM", "build_tool_crash"),
+        ("config.json not found create-quick-infra gate", "compliance"),
+    ]
+    for query, expect_substr in tests:
+        try:
+            hits = search(query, k=3)
+            if not hits:
+                bad(f"\"{query[:40]}…\" → 0 hits")
+                continue
+            top = hits[0]
+            sid = top["source_id"]
+            score = top["score"]
+            if expect_substr in sid:
+                ok(f"\"{query[:40]}…\" → {sid} score={score:.3f}")
+            else:
+                bad(f"\"{query[:40]}…\" → {sid} score={score:.3f} "
+                    f"(expected source_id to contain '{expect_substr}')")
+                info(f"top-3 source_ids: {[h['source_id'] for h in hits]}")
+        except Exception as e:
+            bad(f"\"{query[:40]}…\" → error: {e}")
+
+    # 6. Auto-inject wiring (sanity — check the helper exists + is importable)
+    print("\n[6/6] auto-inject wiring")
+    try:
+        from .agent import _rag_inject_for_agent  # noqa: F401
+        ok("agent.py: _rag_inject_for_agent importable")
+    except Exception as e:
+        bad(f"agent.py: _rag_inject_for_agent NOT importable: {e}")
+    try:
+        from .llm import _build_tool_context  # noqa: F401
+        ok("llm.py: _build_tool_context importable (one-shot path)")
+    except Exception as e:
+        bad(f"llm.py: _build_tool_context NOT importable: {e}")
+
+    print()
+    if fails:
+        print(f"\033[31m== FAIL — {fails} check(s) broken ==\033[0m")
+        return 1
+    print("\033[32m== ALL PASS — RAG wired + serving ==\033[0m")
+    return 0
+
+
 _CLI = {
     "embed":         _cli_embed,
     "search":        _cli_search,
     "index-docops":  _cli_index_docops,
     "index-audits":  _cli_index_audits,
     "reset":         _cli_reset,
+    "diag":          _cli_diag,
 }
 
 

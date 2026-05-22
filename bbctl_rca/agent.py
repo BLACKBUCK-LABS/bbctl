@@ -1277,10 +1277,43 @@ async def run_agent(
                     new_cmds.append(_new)
                     _failure_signals.append("server_substituted_slave_id")
                 else:
-                    # Lookup failed — drop the placeholder cmd entirely
+                    # Lookup failed — drop the placeholder cmd + add a
+                    # fallback ops-action so the operator still has SOME
+                    # next-step instead of an empty suggested_commands.
                     _failure_signals.append("server_dropped_unresolvable_slave_cmd")
                     _log(f"  dropped cmd (no real_id for {slave_name}): "
                          f"{_cmd[:120]!r}")
+            # #1 fallback: if at least one cmd was dropped AND no cmds
+            # survived AND the slave couldn't be resolved → append a
+            # diagnostic ops-contact cmd so the suggested_commands
+            # array isn't empty.
+            if (not real_id and
+                    "server_dropped_unresolvable_slave_cmd" in _failure_signals
+                    and not new_cmds):
+                _cause = ""
+                if isinstance(info, dict):
+                    _cause = (
+                        info.get("offline_cause")
+                        or info.get("error")
+                        or "node not registered with Jenkins"
+                    )
+                new_cmds.append({
+                    "cmd": (
+                        f"# Contact #devops with this name. The Jenkins "
+                        f"node API returned no instance_id for "
+                        f"`{slave_name}` ({_cause}). Operator must look "
+                        f"up the EC2 instance via the AWS console (tag "
+                        f"`jenkins-node` = `{slave_name}`) or restart "
+                        f"the agent process on the slave host."
+                    ),
+                    "tier": "safe",
+                    "rationale": (
+                        f"[server fallback: jenkins_node_info({slave_name}) "
+                        f"unresolved] Slave node is gone from Jenkins; "
+                        f"agent has no path to derive its EC2 instance ID. "
+                        f"Operator-led discovery required."
+                    ),
+                })
             rca["suggested_commands"] = new_cmds
     except Exception as _e:
         _log(f"Phase-7 slave-substitution skipped: {_e}")
@@ -1890,6 +1923,14 @@ async def _build_primer(
     # but LLM said it wasn't in allowed list).
     jira_block = await _jira_prefetch_for_agent(log_window)
 
+    # Phase 7 #2 — Pre-fetch Jenkins node info when log mentions a
+    # slave label. Saves the LLM a tool call AND closes the
+    # placeholder hole: with `## jenkins.node` already in scope at
+    # iter 0, the LLM has no excuse to ship `<slave-instance-id>`.
+    # Both server gate + LLM cooperation now share the same canonical
+    # resolution path.
+    node_block = await _jenkins_node_prefetch_for_agent(log_window)
+
     if os.environ.get("BBCTL_RCA_FORCE_AGENT_MODE"):
         # MINIMAL primer — strict boot-pack only.
         parts = [
@@ -1913,6 +1954,9 @@ async def _build_primer(
         if jira_block:
             parts.append("")
             parts.append(jira_block)
+        if node_block:
+            parts.append("")
+            parts.append(node_block)
         # Phase 3 (RAG agent auto-inject) — append top-k semantic matches
         # from the docops + audit corpus.
         rag_block = _rag_inject_for_agent(log_window, error_class)
@@ -1946,12 +1990,60 @@ async def _build_primer(
     if jira_block:
         parts.append("")
         parts.append(jira_block)
+    if node_block:
+        parts.append("")
+        parts.append(node_block)
     # Phase 3 — RAG auto-inject (legacy primer mode too)
     rag_block = _rag_inject_for_agent(log_window, error_class)
     if rag_block:
         parts.append("")
         parts.append(rag_block)
     return "\n".join(parts)
+
+
+async def _jenkins_node_prefetch_for_agent(log_window: str) -> str:
+    """Pre-fetch Jenkins node info when log mentions a slave / agent
+    label (e.g. `slave-4`, `agent-prod-1`). Returns a
+    `## jenkins.node` markdown block with the API response, or "" if
+    no slave found / lookup failed.
+
+    Why pre-fetch: the LLM keeps emitting `bbctl shell
+    <slave-instance-id>` despite the prompt rule + the
+    jenkins_node_info tool being available. Pre-injecting the
+    resolved instance_id at iter 0 means the LLM has the real value
+    in context and the placeholder is genuinely without excuse.
+    Server gate (Phase 7) is the safety net; this is the primary
+    fix.
+
+    Returns "" on any failure (Jenkins env missing, API down, no
+    slave in log). Never raises.
+    """
+    if not log_window:
+        return ""
+    try:
+        import re as _re_node
+        m = _re_node.search(r"\bslave-\d+\b|\bagent-[\w-]+\b",
+                            log_window[-30000:])
+        if not m:
+            return ""
+        slave_name = m.group(0)
+        base = os.environ.get("BBCTL_JENKINS_URL", "").rstrip("/")
+        user = os.environ.get("BBCTL_JENKINS_USER", "")
+        token = os.environ.get("BBCTL_JENKINS_TOKEN", "")
+        if not (base and user and token):
+            return ""
+        info = await jenkins_api.get_node_info(slave_name, base, (user, token))
+        if not isinstance(info, dict):
+            return ""
+        return (
+            f"## jenkins.node (API-fetched ground truth — USE "
+            f"`instance_id` in any `bbctl shell` / `aws_describe` "
+            f"command, NEVER `<slave-instance-id>`)\n"
+            f"```json\n{json.dumps(info, indent=2, default=str)}\n```"
+        )
+    except Exception as _e:
+        _log(f"  jenkins-node pre-fetch skipped: {_e}")
+        return ""
 
 
 async def _jira_prefetch_for_agent(log_window: str) -> str:

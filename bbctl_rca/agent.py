@@ -1550,6 +1550,18 @@ def _build_primer(
             log_window[-30000:],  # keep END (where Error: line lives), not start
             "```",
         ]
+        # Phase 3 (RAG agent auto-inject) — append top-k semantic matches
+        # from the docops + audit corpus. Agent path was previously
+        # RAG-blind (only llm.py one-shot path had auto-inject), which
+        # meant the LLM saw the runbook only IF it remembered to call
+        # `read_runbook(class)` — and on the Build 15 Stagger Scaling
+        # case it stopped at 7 tool calls without ever reading the
+        # jenkins_agent_offline runbook, producing a generic Action
+        # block with no PRIMARY/SECONDARY framing.
+        rag_block = _rag_inject_for_agent(log_window, error_class)
+        if rag_block:
+            parts.append("")
+            parts.append(rag_block)
         return "\n".join(parts)
 
     # Legacy primer (full pre-fetched context).
@@ -1574,7 +1586,77 @@ def _build_primer(
         log_window[-30000:],  # primer cap — keep END (where Error: line lives)
         "```",
     ]
+    # Phase 3 — RAG auto-inject (legacy primer mode too)
+    rag_block = _rag_inject_for_agent(log_window, error_class)
+    if rag_block:
+        parts.append("")
+        parts.append(rag_block)
     return "\n".join(parts)
+
+
+def _rag_inject_for_agent(log_window: str, error_class: str | None) -> str:
+    """Compose a `## retrieved.rag` block for the agent primer.
+
+    Mirrors the one-shot path's logic in llm.py but with a key
+    difference: for KNOWN class, pull from `runbook` + `audit` source
+    types (NOT audit-only). One-shot returns audit-only because the
+    LLM also gets the full runbook content via the CLASS_DOCS mapping;
+    the agent path has no equivalent — it only sees the runbook if it
+    explicitly calls `read_runbook(class)` mid-loop. Auto-injecting
+    runbook chunks here gives the agent up-front grounding so the
+    drill plan + action template aren't a "maybe I should fetch it"
+    decision the LLM frequently skips.
+
+    Returns "" on any failure (RAG offline, PG down, module missing).
+    """
+    if not log_window:
+        return ""
+    try:
+        from . import rag as _rag
+        # Anchor the query on the fatal log line (R3.1 — sharper than
+        # the whole 30K-char log window).
+        import re as _re
+        anchor = _re.search(
+            r"(Error:|Exception:|FAIL:|FAILURE:|Caused by:).{0,500}",
+            log_window[-15000:],
+            _re.MULTILINE | _re.DOTALL,
+        )
+        q = anchor.group(0) if anchor else log_window[:6000]
+        if not q.strip():
+            return ""
+        known = error_class and error_class != "unknown"
+        # Agent path: include RUNBOOK in retrieval set for known class
+        # (unlike one-shot which gets runbook via CLASS_DOCS).
+        src_types = (["runbook", "audit"] if known
+                     else ["runbook", "doc", "audit"])
+        hits = _rag.search(
+            q, k=5,
+            source_types=src_types,
+            error_class=error_class if known else None,
+        )
+        if not hits:
+            return ""
+        header = (
+            "## retrieved.rag (top-k matches — CANDIDATES, verify via "
+            "read_runbook / read_doc before citing in evidence)"
+        )
+        lines = [header]
+        for h in hits:
+            meta = h.get("meta") or {}
+            klass = meta.get("error_class") or ""
+            head = (
+                f"- [{h['score']:.3f}] "
+                f"{h['source_type']}/{h['source_id']}"
+                f"{(' class=' + klass) if klass else ''}"
+            )
+            # Trim each chunk to ~1KB so 5 hits stay ~5KB total.
+            body = h["chunk_text"][:1000].replace("\n", " ")
+            lines.append(head)
+            lines.append(f"    {body}…")
+        return "\n".join(lines)
+    except Exception as _e:
+        _log(f"  rag auto-inject (agent) skipped: {_e}")
+        return ""
 
 
 def _format_resolved_values(initial_tool_ctx: str) -> str:

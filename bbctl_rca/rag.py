@@ -470,12 +470,20 @@ def index_audits(audit_dir: str | None = None) -> dict:
             data = json.loads(jf.read_text())
         except Exception:
             continue
-        if not isinstance(data, dict) or not data.get("summary"):
+        if not isinstance(data, dict):
+            continue
+        # Real RCA payload lives at `.rca` (nested by audit.record); the
+        # outer dict holds request/build metadata. Fall back to top-
+        # level for older shapes (early audits before the nesting).
+        rca = data.get("rca")
+        if not isinstance(rca, dict):
+            rca = data  # legacy / flat
+        if not rca.get("summary"):
             continue  # not RCA-shaped
         files += 1
-        rationale = data.get("root_cause") or data.get("rationale") or ""
-        summary   = data.get("summary", "")
-        cmds      = data.get("suggested_commands") or []
+        rationale = rca.get("root_cause") or rca.get("rationale") or ""
+        summary   = rca.get("summary", "")
+        cmds      = rca.get("suggested_commands") or []
         cmds_str  = "\n".join(
             f"- ({c.get('tier','?')}) {c.get('cmd','')}" for c in cmds
             if isinstance(c, dict)
@@ -487,8 +495,7 @@ def index_audits(audit_dir: str | None = None) -> dict:
             f"suggested_commands:\n{cmds_str}\n"
         )
         vec = embed(chunk, use_cache=True)
-        # build / job may live under build_meta or be top-level
-        bm = data.get("build_meta") or {}
+        # error_class / failed_stage may live in .rca OR top-level
         rows.append({
             "source_type": "audit",
             "source_id":   jf.name,
@@ -496,10 +503,12 @@ def index_audits(audit_dir: str | None = None) -> dict:
             "chunk_text":  chunk,
             "embedding":   vec,
             "meta": {
-                "error_class":  data.get("error_class"),
-                "failed_stage": data.get("failed_stage"),
-                "build":        bm.get("build") or data.get("build"),
-                "job":          bm.get("job")   or data.get("job"),
+                "error_class":  rca.get("error_class")
+                                or data.get("error_class"),
+                "failed_stage": rca.get("failed_stage"),
+                "build":        data.get("build"),
+                "job":          data.get("job"),
+                "service":      data.get("service"),
                 "indexed_at":   int(time.time()),
             },
         })

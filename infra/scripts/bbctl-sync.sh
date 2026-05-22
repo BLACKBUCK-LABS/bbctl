@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
-# Pull the latest jenkins_pipeline + InfraComposer + docops content used by
-# the bbctl-rca LLM tool-context builder. Run via cron every 2 hours.
+# Pull the latest jenkins_pipeline + InfraComposer + bbctl repo content used
+# by the bbctl-rca service. Run via cron every 2 hours.
 #
-# Repos: hard reset against origin/<branch> — never carry local edits.
-#        Auto-clones if not present yet (reads GITHUB_PAT from Secrets Manager).
-# Docs:  rsync from an S3 bucket (read-only mirror of s3_docs/docs/).
+# bbctl:           git pull on the service checkout — picks up new docops/,
+#                  prompts/, bbctl_rca/ code, runbooks, job_flows.
+# Reference repos: hard reset against origin/<branch> — never carry local
+#                  edits. Auto-clones if not present yet (reads GITHUB_PAT
+#                  from Secrets Manager).
+# Docs:            REMOVED S3 sync (May 2026). docops/ is now canonical in
+#                  the bbctl repo itself. The legacy S3 mirror at
+#                  s3://docops-doc-storage/docs/ was overlaying + deleting
+#                  Phase 1+5 work (runbooks, job_flows, MAP.md) on every
+#                  cron run. Single source of truth = git.
 #
-# Restart bbctl-rca at the end so its in-process config.json cache reloads.
+# Re-index RAG after pulling bbctl (only when docops/ actually changed —
+# checked via git diff against the prior HEAD).
+#
+# Restart bbctl-rca at the end so its in-process caches reload.
 set -uo pipefail
 
 BASE_DIR="/home/ubuntu/project/bbctl"
@@ -24,8 +34,9 @@ LOG="/var/log/bbctl-rca/sync.log"
 JP_BRANCH="${JP_BRANCH:-master}"
 IC_BRANCH="${IC_BRANCH:-main}"
 
-# S3 source for docops/ (read-only mirror)
-DOCS_S3_URI="${DOCS_S3_URI:-s3://docops-doc-storage/docs/}"
+# bbctl service repo (this checkout). Production currently runs the
+# LangGraph-gates branch (feature/bbctl-rca-agent-RAG-LANG).
+BBCTL_BRANCH="${BBCTL_BRANCH:-feature/bbctl-rca-agent-RAG-LANG}"
 
 REGION="${AWS_REGION:-ap-south-1}"
 SECRET_ID="${BBCTL_SECRET_ID:-bbctl-rca/prod}"
@@ -100,13 +111,35 @@ else
     fi
 fi
 
-# 3. docops/ from S3 (mirror — deletes anything not in S3)
-if command -v aws >/dev/null 2>&1; then
-    log "syncing docops from $DOCS_S3_URI"
-    sudo -u ubuntu aws s3 sync "$DOCS_S3_URI" "$DOCS_DIR/" --delete --quiet \
-        || log "WARN: docops S3 sync failed"
+# 3. bbctl service repo — `git pull` on the checkout running the service.
+#    Captures docops/, prompts/, bbctl_rca/ updates without needing a
+#    separate deploy step. Hard reset to origin/<branch> to mirror the
+#    same "never carry local edits" rule as the reference repos.
+#
+#    Tracks `feature/bbctl-rca-agent-RAG-LANG` (RAG + LangGraph gates).
+#    Override with `BBCTL_BRANCH=<branch>` env when rolling back.
+if [ -d "$BASE_DIR/.git" ]; then
+    # Detect whether docops/ changed in this pull — only re-index RAG
+    # when the embedded corpus actually shifted.
+    _docops_before=$(sudo -u ubuntu git -C "$BASE_DIR" rev-parse HEAD:docops 2>/dev/null || echo "none")
+
+    log "syncing bbctl (branch=$BBCTL_BRANCH)"
+    sudo -u ubuntu git -C "$BASE_DIR" fetch --quiet origin "$BBCTL_BRANCH" \
+        && sudo -u ubuntu git -C "$BASE_DIR" reset --hard "origin/$BBCTL_BRANCH" --quiet \
+        || log "WARN: bbctl sync failed"
+
+    _docops_after=$(sudo -u ubuntu git -C "$BASE_DIR" rev-parse HEAD:docops 2>/dev/null || echo "none")
+    if [ "$_docops_before" != "$_docops_after" ]; then
+        log "docops/ tree changed ($_docops_before → $_docops_after) — re-indexing RAG"
+        sudo -u ubuntu "$BASE_DIR/.venv/bin/python" -m bbctl_rca.rag index-docops \
+            2>&1 | tee -a "$LOG" \
+            || log "WARN: RAG index-docops failed"
+    else
+        log "docops/ unchanged — skipping RAG re-index"
+    fi
 else
-    log "WARN: aws CLI not found — skipping docops sync"
+    log "WARN: $BASE_DIR is not a git repo — cannot self-pull. Did the "
+    log "WARN: initial deploy clone with git, not a tarball?"
 fi
 
 log "==== sync done ===="

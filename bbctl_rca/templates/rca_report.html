@@ -48,8 +48,8 @@
   --bg-pattern: #e2e8f0;
   --bg-card: #ffffff;
   --bg-card-elev: #f3f4f9;
-  --bg-code: #0f172a;
-  --bg-code-header: #1e293b;
+  --bg-code: #f8fafc;
+  --bg-code-header: #f1f5f9;
   --fg: #0f172a;
   --fg-strong: #020617;
   --fg-muted: #64748b;
@@ -290,6 +290,38 @@ footer .author strong { color: var(--fg-strong); font-weight: 600; }
 
 /* Selection */
 ::selection { background: rgba(96, 165, 250, 0.25); color: var(--fg-strong); }
+
+/* ──────────────────────────────────────────────────────────────────
+ * Light theme — final overrides for any hardcoded dark-mode colors
+ * the per-component blocks above leak. Code + evidence + meta blocks
+ * are the main offenders; keep them GitHub-PR-style on light:
+ * light grey background + near-black text, GitHub-green code tokens.
+ * ────────────────────────────────────────────────────────────────── */
+
+/* Suggested commands — code block */
+[data-theme="light"] .cmd                  { background: var(--bg-code); border: 1px solid var(--border-strong); }
+[data-theme="light"] .cmd-head             { background: var(--bg-code-header); border-bottom: 1px solid var(--border); }
+[data-theme="light"] .cmd-rationale        { color: var(--fg-muted); }
+[data-theme="light"] .cmd-body code        { color: #166534; }   /* GitHub-style green-700 on light */
+[data-theme="light"] .copy-btn             { color: var(--fg-muted); }
+[data-theme="light"] .copy-btn:hover       { color: var(--fg-strong); background: var(--bg-card-elev); border-color: var(--border-strong); }
+[data-theme="light"] .copy-btn.copied      { color: var(--safe); border-color: rgba(5, 150, 105, 0.35); }
+[data-theme="light"] .tier-safe            { background: rgba(5, 150, 105, 0.10); color: #065f46; border-color: rgba(5, 150, 105, 0.30); }
+[data-theme="light"] .tier-restricted      { background: rgba(217, 119, 6, 0.12); color: #92400e; border-color: rgba(217, 119, 6, 0.30); }
+
+/* Evidence — snippets + badges */
+[data-theme="light"] .ev-snippet           { color: #0f172a; background: #f1f5f9; border: 1px solid var(--border); }
+[data-theme="light"] .ev-badge.ok          { background: rgba(5, 150, 105, 0.10); color: #065f46; border: 1px solid rgba(5, 150, 105, 0.30); }
+[data-theme="light"] .ev-badge.no          { background: rgba(220, 38, 38, 0.10);  color: #991b1b; border: 1px solid rgba(220, 38, 38, 0.30); }
+[data-theme="light"] .ev-badge.unk         { background: var(--bg-card-elev); color: var(--fg-muted); border: 1px solid var(--border-strong); }
+[data-theme="light"] .ev-src               { color: var(--fg-muted); }
+
+/* Metadata block */
+[data-theme="light"] dl.meta dd            { color: var(--fg); }
+[data-theme="light"] dl.meta .mono-val     { color: var(--fg); }
+
+/* Selection — adjust accent color so it works on light bg too */
+[data-theme="light"] ::selection           { background: rgba(79, 70, 229, 0.16); color: var(--fg-strong); }
 </style>
 </head>
 <body>

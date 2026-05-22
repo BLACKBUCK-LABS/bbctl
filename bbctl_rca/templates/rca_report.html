@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Jenkins RCA · {{ service }} #{{ build }}</title>
+<link rel="icon" type="image/png" href="https://rca-assistant.jinka.in/static/logo.png" />
+<link rel="apple-touch-icon" href="https://rca-assistant.jinka.in/static/logo.png" />
+<link rel="shortcut icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23000'/><text x='16' y='22' font-family='Arial,sans-serif' font-weight='800' font-size='14' fill='%23fff' text-anchor='middle' letter-spacing='-0.5'>BB</text></svg>" />
 <script>
   // Inline theme bootstrap — runs before paint to avoid flash-of-wrong-theme.
   (function () {
@@ -152,9 +155,10 @@ main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 64px; }
 }
 .hero-meta { margin-top: 6px; font-size: 13px; color: var(--fg-muted); }
 .hero-meta code {
-  background: #0f1626; padding: 2px 6px; border-radius: 4px;
-  color: #cbd5e1; font-size: 12px; border: 1px solid var(--border);
+  background: var(--bg-code); padding: 2px 6px; border-radius: 4px;
+  color: var(--fg); font-size: 12px; border: 1px solid var(--border);
 }
+[data-theme="light"] .hero-meta code { color: #f8fafc; }
 .hero-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
 @media (min-width: 768px) {
   .hero-wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
@@ -169,10 +173,10 @@ main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 64px; }
 }
 .pill-mono { font-family: ui-monospace, monospace; }
 .pill-slate {
-  background: #1f2937; color: #cbd5e1; border: 1px solid var(--border);
+  background: var(--bg-card-elev); color: var(--fg); border: 1px solid var(--border-strong);
   transition: all 0.15s;
 }
-.pill-slate:hover { background: #273449; color: var(--fg-strong); text-decoration: none; }
+.pill-slate:hover { background: var(--bg-card); color: var(--fg-strong); text-decoration: none; }
 .pill-amber  { background: rgba(251, 191, 36, 0.12); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.3); }
 .pill-link { cursor: pointer; }
 
@@ -191,13 +195,29 @@ main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 64px; }
 .pill.cls-timeout            { background: rgba(251, 191, 36, 0.15); color: #fcd34d; border: 1px solid rgba(251, 191, 36, 0.25); }
 .pill.cls-unknown            { background: #1f2937; color: #94a3b8; border: 1px solid var(--border); }
 
+/* Class-color pills — light theme overrides (deeper text colors so pills stay legible on white) */
+[data-theme="light"] .pill.cls-compliance         { background: rgba(217, 119, 6, 0.12);  color: #92400e; border: 1px solid rgba(217, 119, 6, 0.28); }
+[data-theme="light"] .pill.cls-canary_fail        { background: rgba(220, 38, 38, 0.10);  color: #991b1b; border: 1px solid rgba(220, 38, 38, 0.25); }
+[data-theme="light"] .pill.cls-canary_script_error{ background: rgba(124, 58, 237, 0.10); color: #5b21b6; border: 1px solid rgba(124, 58, 237, 0.25); }
+[data-theme="light"] .pill.cls-health_check       { background: rgba(219, 39, 119, 0.10); color: #9d174d; border: 1px solid rgba(219, 39, 119, 0.25); }
+[data-theme="light"] .pill.cls-aws_limit          { background: rgba(234, 88, 12, 0.10);  color: #9a3412; border: 1px solid rgba(234, 88, 12, 0.25); }
+[data-theme="light"] .pill.cls-parse_error        { background: rgba(202, 138, 4, 0.12);  color: #854d0e; border: 1px solid rgba(202, 138, 4, 0.28); }
+[data-theme="light"] .pill.cls-java_runtime       { background: rgba(220, 38, 38, 0.10);  color: #991b1b; border: 1px solid rgba(220, 38, 38, 0.25); }
+[data-theme="light"] .pill.cls-scm                { background: rgba(67, 56, 202, 0.10);  color: #3730a3; border: 1px solid rgba(67, 56, 202, 0.25); }
+[data-theme="light"] .pill.cls-network            { background: rgba(2, 132, 199, 0.10);  color: #075985; border: 1px solid rgba(2, 132, 199, 0.25); }
+[data-theme="light"] .pill.cls-dependency         { background: rgba(192, 38, 211, 0.10); color: #86198f; border: 1px solid rgba(192, 38, 211, 0.25); }
+[data-theme="light"] .pill.cls-ssm                { background: rgba(8, 145, 178, 0.10);  color: #155e75; border: 1px solid rgba(8, 145, 178, 0.25); }
+[data-theme="light"] .pill.cls-timeout            { background: rgba(202, 138, 4, 0.12);  color: #854d0e; border: 1px solid rgba(202, 138, 4, 0.28); }
+[data-theme="light"] .pill.cls-unknown            { background: var(--bg-card-elev); color: var(--fg-muted); border: 1px solid var(--border-strong); }
+[data-theme="light"] .pill-amber                  { background: rgba(217, 119, 6, 0.10);  color: #92400e; border: 1px solid rgba(217, 119, 6, 0.28); }
+
 /* Two-col grid for root cause + suggested fix */
 .grid-2 { display: grid; grid-template-columns: 1fr; gap: 20px; }
 @media (min-width: 900px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
 
 /* Text bodies */
-.prose { font-size: 14.5px; color: #cbd5e1; white-space: pre-wrap; word-wrap: break-word; line-height: 1.65; margin: 0; }
-.prose-lg { font-size: 15.5px; color: var(--fg); }
+.prose { font-size: 14.5px; color: var(--fg); white-space: pre-wrap; word-wrap: break-word; line-height: 1.65; margin: 0; }
+.prose-lg { font-size: 15.5px; color: var(--fg-strong); }
 
 /* Suggested fix Map list */
 dl.fix-list { margin: 0; }
@@ -205,7 +225,7 @@ dl.fix-list dt {
   font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
   color: var(--fg-muted); margin-bottom: 4px;
 }
-dl.fix-list dd { margin: 0 0 16px 0; font-size: 14px; color: #cbd5e1; white-space: pre-wrap; }
+dl.fix-list dd { margin: 0 0 16px 0; font-size: 14px; color: var(--fg); white-space: pre-wrap; }
 dl.fix-list dd:last-child { margin-bottom: 0; }
 
 /* Commands */

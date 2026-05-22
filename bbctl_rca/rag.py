@@ -533,6 +533,43 @@ _CLI = {
 }
 
 
+def _autoload_secrets_if_missing() -> None:
+    """When run interactively (e.g. `python -m bbctl_rca.rag index-docops`),
+    the operator's shell typically has no BBCTL_PG_* / BBCTL_LLM_API_KEY
+    env vars — those are loaded by `bbctl-rca-start.sh` via secrets.py
+    when systemd starts the service. Fetching them from AWS Secrets
+    Manager here saves the operator from manually sourcing secrets
+    before every CLI run. Silently no-op when already set.
+
+    Behavior:
+      - If BBCTL_PG_PASSWORD AND BBCTL_LLM_API_KEY (or OPENAI_API_KEY)
+        are already set → skip (env wins).
+      - Otherwise call `secrets.load_secrets()` and export all keys as
+        `BBCTL_<KEY_UPPER>` env vars.
+      - Any failure (no IAM role, no secret, boto3 missing) is logged
+        to stderr but does NOT raise — the existing RuntimeError at
+        `_connect` will fire with the original guidance.
+    """
+    if os.environ.get("BBCTL_PG_PASSWORD") and (
+        os.environ.get("BBCTL_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    ):
+        return
+    try:
+        from . import secrets as _secrets
+        for k, v in _secrets.load_secrets().items():
+            env_key = f"BBCTL_{k.upper()}"
+            # Don't overwrite anything the operator explicitly set.
+            if env_key not in os.environ:
+                os.environ[env_key] = str(v)
+    except Exception as _e:
+        print(
+            f"[rag] secrets autoload skipped ({_e}); "
+            f"set BBCTL_PG_PASSWORD + BBCTL_LLM_API_KEY manually if the "
+            f"next call fails",
+            file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     if not args or args[0] in ("-h", "--help"):
@@ -544,6 +581,7 @@ def main(argv: list[str] | None = None) -> int:
     if not fn:
         print(f"unknown command: {cmd}", file=sys.stderr)
         return 2
+    _autoload_secrets_if_missing()
     return fn(args)
 
 

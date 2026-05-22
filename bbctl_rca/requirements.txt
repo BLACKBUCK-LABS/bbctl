@@ -12,3 +12,9 @@ boto3>=1.34.0
 itsdangerous>=2.2.0
 psycopg[binary]>=3.2.0
 pgvector>=0.3.0
+# LangGraph for ULTIMATUM gate orchestration (Phase 6, on
+# feature/bbctl-rca-agent-RAG-LANG branch only). Optional — agent
+# loop still works without it; gates.py imports lazily and falls
+# back to the imperative gate stack when langgraph isn't installed.
+langgraph>=0.2.0
+langchain-core>=0.3.0

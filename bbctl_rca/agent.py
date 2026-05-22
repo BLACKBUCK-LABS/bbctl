@@ -1221,6 +1221,70 @@ async def run_agent(
     if len(rca.get("evidence", []) or []) < 3:
         _failure_signals.append("low_evidence_count")
 
+    # Phase 7 — Real-ID auto-substitution for slave placeholders.
+    # The prompt rule asks the LLM to call `jenkins_node_info` before
+    # emitting `<slave-instance-id>` in a cmd. When the LLM ignores
+    # the rule (observed on Build 15 retry), substitute server-side:
+    # grep `slave-\d+` from the log_window, resolve via
+    # jenkins.get_node_info, swap the placeholder in every cmd. If
+    # the lookup returns no instance_id, DROP the offending cmd
+    # entirely (server-side enforcement of "no placeholder ever
+    # ships to operator").
+    try:
+        import re as _re_phase7
+        # Find slave name in log window. Most common shapes:
+        # `slave-4 seems to be removed`, `Running on slave-4`.
+        _slave_match = _re_phase7.search(
+            r"\bslave-\d+\b|\bagent-\w+\b", log_window[-30000:] or ""
+        )
+        _has_slave_placeholder = any(
+            isinstance(c, dict)
+            and "<slave-instance-id>" in (c.get("cmd") or "")
+            for c in (rca.get("suggested_commands") or [])
+        )
+        if _slave_match and _has_slave_placeholder:
+            from . import jenkins as _jenkins_api_phase7
+            slave_name = _slave_match.group(0)
+            _log(f"Phase-7 cmd-substitution: log mentions {slave_name}, "
+                 f"final RCA has <slave-instance-id> placeholder — "
+                 f"calling jenkins_node_info to substitute")
+            try:
+                info = await _jenkins_api_phase7.get_node_info(
+                    slave_name, jenkins_url, jenkins_auth,
+                )
+            except Exception as _e:
+                info = {"error": str(_e)}
+            real_id = info.get("instance_id") if isinstance(info, dict) else None
+            new_cmds = []
+            for _c in (rca.get("suggested_commands") or []):
+                if not isinstance(_c, dict):
+                    new_cmds.append(_c)
+                    continue
+                _cmd = _c.get("cmd") or ""
+                if "<slave-instance-id>" not in _cmd:
+                    new_cmds.append(_c)
+                    continue
+                if real_id:
+                    _new = dict(_c)
+                    _new["cmd"] = _cmd.replace("<slave-instance-id>",
+                                               real_id)
+                    _existing_rationale = (_new.get("rationale") or "")
+                    _new["rationale"] = (
+                        f"[server resolved slave={slave_name} → "
+                        f"{real_id} via jenkins_node_info] "
+                        f"{_existing_rationale}"
+                    ).strip()
+                    new_cmds.append(_new)
+                    _failure_signals.append("server_substituted_slave_id")
+                else:
+                    # Lookup failed — drop the placeholder cmd entirely
+                    _failure_signals.append("server_dropped_unresolvable_slave_cmd")
+                    _log(f"  dropped cmd (no real_id for {slave_name}): "
+                         f"{_cmd[:120]!r}")
+            rca["suggested_commands"] = new_cmds
+    except Exception as _e:
+        _log(f"Phase-7 slave-substitution skipped: {_e}")
+
     # Detect hallucinated/placeholder IDs in suggested_commands +
     # auto-bump tier for state-mutating terraform commands. Phase-10
     # policy: do NOT rewrite cmd strings, but annotating rationale

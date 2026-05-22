@@ -63,6 +63,19 @@ Failure-signal events that agent.py appends as they happen:
                                 build 5225 case (MPB-1279 READY FOR RELEASE,
                                 Gradle daemon crashed in Build stage, classifier
                                 misrouted to compliance due to info banners).
+  server_substituted_slave_id — Phase 7 auto-substitution: log mentioned
+                                slave-N AND a suggested_command had
+                                `<slave-instance-id>` placeholder; server
+                                called jenkins_node_info(slave) + substituted
+                                the real instance_id into every offending cmd.
+                                Rationale field annotated with what was
+                                substituted so the operator sees provenance.
+  server_dropped_unresolvable_slave_cmd — Same path but
+                                jenkins_node_info returned no instance_id
+                                (Jenkins node API down OR slave not registered
+                                anymore). The placeholder cmd was DROPPED from
+                                suggested_commands entirely — better to ship
+                                fewer commands than ship an unusable one.
 
 Queryable via bbctl_rca/cli_outcomes.py.
 

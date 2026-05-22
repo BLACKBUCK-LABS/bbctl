@@ -119,19 +119,43 @@ Never emit `<arn>`, `<alb_arn>`, `<tg_arn>`, `<listener_arn>`,
 placeholder in the `cmd` field. Operators paste these commands
 directly — placeholders are unusable.
 
-### Real-ID derivation tools (use these BEFORE emitting a `<placeholder>`)
+### Real-ID derivation tools — MANDATORY use
 
-| Need                    | Tool                                       |
+**Hard rule:** if your log window or root_cause mentions any of the
+patterns below, you MUST call the listed tool BEFORE emitting your
+final JSON. The result then goes into `suggested_commands.cmd`
+verbatim, replacing the placeholder.
+
+| Trigger pattern in log / root_cause | Mandatory tool call |
 |---|---|
-| `<slave-instance-id>` for jenkins_agent_offline | `jenkins_node_info(node_name)` — returns `instance_id` for the Jenkins agent label (e.g. 'slave-4') |
-| `<HealthCheckPath>`     | `service.lookup.health_check_path` (pre-fetched in primer) OR `aws_describe(elbv2, DescribeTargetGroups, ...).TargetGroups[0].HealthCheckPath` |
-| `<port>` (instance side) | `aws_describe(elbv2, DescribeTargetHealth, ...).TargetHealthDescriptions[0].Target.Port` |
-| `<instance_id>` (deploy / health_check) | log_window verbatim OR `aws_describe(ec2, DescribeInstances, ...)` |
-| `<tg_arn>` / `<rule_arn>` | log_window verbatim OR `service.lookup.rule_arn` |
-| `<commit_sha>`          | log_window verbatim OR `github_get_commit(...)` |
+| `slave-\d+` / `agent-\w+` / "node went offline" | `jenkins_node_info(node_name="slave-4")` — returns `{instance_id, online, host, ...}`. Use `instance_id` to fill `bbctl shell <id>`. |
+| `Target.Port` or "port mismatch" or "healthcheck on port" | `aws_describe(elbv2, DescribeTargetHealth, {TargetGroupArn: <tg_arn>})` — use `TargetHealthDescriptions[0].Target.Port` for the instance-side port |
+| Mention of a HealthCheckPath / `/health` / `/admin/version` | `service.lookup.health_check_path` (already in primer) OR `aws_describe(elbv2, DescribeTargetGroups, ...).TargetGroups[0].HealthCheckPath` |
+| Mention of a target group or rule failure | `service.lookup.rule_arn` (in primer) OR log_window verbatim |
+| `Caused by:` line cites a SHA | `github_get_commit(<repo>, <sha>)` for author + files_changed |
+| Compliance / Jira ticket key in log | `jira.tickets` block in primer (already pre-fetched) — do NOT call the API again |
 
-If a placeholder is ABOUT to ship in your `cmd`, STOP — call the
-corresponding tool, substitute the real value, then re-emit. If you cannot derive the real
+**Anti-pattern to BAN:** writing `<slave-instance-id>`,
+`<HealthCheckPath>`, `<port>`, `<instance_id>`, `<your-tg-arn>`, or
+any other `<...>` placeholder in `suggested_commands.cmd`. The
+server-side validator drops every command with such a placeholder
+and emits the `hallucinated_id_in_command` failure_signal.
+
+**Concrete example — jenkins_agent_offline:**
+
+Log says `slave-4 seems to be removed or offline`. Wrong output:
+```
+{"cmd": "bbctl shell <slave-instance-id>", ...}
+```
+Correct sequence: call `jenkins_node_info(node_name="slave-4")` →
+get `{"instance_id": "i-0bae3c4ad893201ef", ...}` → emit:
+```
+{"cmd": "bbctl shell i-0bae3c4ad893201ef", ...}
+```
+If `jenkins_node_info` returns `{"error": "..."}` or
+`{"instance_id": null}`, drop the `bbctl shell` command from
+suggested_commands entirely; recommend Option 0 (re-run / contact
+devops) instead. NEVER emit a placeholder. If you cannot derive the real
 ID:
 
 1. Compose a chained command that DERIVES the ID inline:

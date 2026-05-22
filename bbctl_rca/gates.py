@@ -416,6 +416,32 @@ def _route_after_gate(state: dict) -> str:
     return "corrective_reiter" if state.get("_gate_reason") else "next"
 
 
+def _route_after_reiter(state: dict) -> str:
+    """After the corrective-reiter node runs, decide whether to loop
+    back through the gate chain (when budget remains AND the retry
+    succeeded in updating the rca) or terminate the graph.
+
+    Without this conditional edge the graph hits a tight loop when a
+    gate keeps firing on the same condition after the retry: e.g.
+    compliance_hallucination triggers, retry runs but LLM doesn't
+    fix the claim, gate fires again, retry already exhausted budget
+    → returns {_gate_reason: None}, but the next gate check sees
+    the same RCA and re-sets _gate_reason → back to reiter → ...
+    LangGraph default recursion_limit=25 would catch this, but we
+    saw a runaway to 10007 in production logs because budget=0 makes
+    reiter a no-op that doesn't break the cycle.
+
+    Cap behavior:
+      - retry_budget == 0 → END (give up; signal stays in
+        failure_signals so the operator sees the un-fixed gate)
+      - retry_budget > 0 → loop back to check_runbook_fetched so
+        downstream gates re-validate the updated RCA
+    """
+    if state.get("retry_budget", 0) <= 0:
+        return "done"
+    return "loop_back"
+
+
 # ─── Graph construction ───────────────────────────────────────────────
 
 def build_gate_graph() -> Optional[Any]:
@@ -457,9 +483,15 @@ def build_gate_graph() -> Optional[Any]:
         {"corrective_reiter": "corrective_reiter",
          "next":              END},
     )
-    # After corrective_reiter, return to the runbook-fetched check so a
-    # re-emitted RCA still passes through the framing + compliance gates.
-    g.add_edge("corrective_reiter", "check_runbook_fetched")
+    # After corrective_reiter, conditionally route: loop back to
+    # check_runbook_fetched when retry_budget remains (so downstream
+    # gates re-validate the updated RCA), else END to avoid the tight
+    # loop seen on Stagger Prod+1 build 5225 + create-quick-infra 42
+    # when gpt-4o emits a retry that still fails the same gate.
+    g.add_conditional_edges(
+        "corrective_reiter", _route_after_reiter,
+        {"loop_back": "check_runbook_fetched", "done": END},
+    )
 
     return g.compile()
 

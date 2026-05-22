@@ -931,7 +931,16 @@ async def run_agent(
             "tool_call_count": 0,
         }
         try:
-            _state_out = _gate_graph.invoke(_state_in)
+            # recursion_limit=25 caps total node visits. With 4 gate
+            # nodes + 1 reiter + conditional edges, a healthy run uses
+            # ≤ 10 visits. Setting low prevents the 10007 runaway seen
+            # on the create-quick-infra 42 case when the LLM kept
+            # producing retries that re-tripped the same gate. The
+            # _route_after_reiter edge already breaks the loop when
+            # retry_budget=0; this cap is belt-and-suspenders.
+            _state_out = _gate_graph.invoke(
+                _state_in, config={"recursion_limit": 25},
+            )
             rca               = _state_out.get("rca", rca)
             messages[:]       = _state_out.get("messages", messages)
             read_runbooks    |= set(_state_out.get("read_runbooks") or set())

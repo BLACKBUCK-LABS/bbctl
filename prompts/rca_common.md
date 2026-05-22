@@ -63,6 +63,24 @@ Override-now signals (apply WHEN the log shows them):
   bottom is a SECONDARY symptom (Jenkins workflow plugin checkpoint
   during the bounce found a non-Serializable retained object →
   pipeline aborted). Build 15 Stagger Scaling case.
+- Log contains `Gradle build daemon disappeared` OR `The message
+  received from the daemon indicates that the daemon has disappeared`
+  OR `Maven daemon was killed` → emit `error_class:
+  "build_tool_crash"`. Fix is build-tooling config (raise daemon
+  `-Xmx` heap), NOT pipeline code and NOT app code. Stagger Prod+1
+  build 5225 case (indent-microservice v7.83). Compile warnings
+  (`@Builder will ignore the initializing expression`) preceding the
+  failure are NOT the cause — they're javac advice.
+- **Positive-banner classifier traps.** The classifier returns its
+  first regex match. Several pipelines emit `=== Compliance: <action>
+  ===` info banners on EVERY build (resolving SHA, checking
+  onboarding, fetching ticket, all-passed). If the fatal log line is
+  NOT an actual compliance failure (`ERROR: Compliance:` / `has no
+  Signed Off` / `does not match` / `status not acceptable` / `clone-
+  of-clone chain` / `merged PR title does not contain`), the
+  classifier hint of `compliance` is WRONG — emit the class that
+  matches the fatal line (most commonly `build_tool_crash`,
+  `dependency`, or `unknown`).
 
 **REPEATED INFRASTRUCTURE-NOISE LINES = PRIMARY CAUSE CANDIDATE.**
 When the log shows REPEATED infrastructure-noise lines (`slave-X seems

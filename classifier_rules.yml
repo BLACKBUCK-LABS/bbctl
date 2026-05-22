@@ -3,13 +3,46 @@ rules:
   # before generic language-level errors (java.lang.*, Exception) which can
   # appear incidentally (NewRelic NRQL refs, etc.).
 
+  # compliance — MUST match only on FAILURE lines, not info chatter.
+  # JiraDetails.groovy emits `=== Compliance: <action> ===` for every
+  # passing build (resolving SHA, checking onboarding, fetching ticket,
+  # all-passed banner). Old loose patterns (`Compliance:`,
+  # `Signed Off commit id`) matched these positive lines and routed
+  # successful Jira-Details + failed Build stage as "compliance failed"
+  # (Stagger Prod+1 build 5225 regression: Gradle daemon crashed in
+  # Build, classifier returned compliance, LLM hallucinated "status
+  # READY FOR RELEASE not in [READY FOR RELEASE, HOT FIX]").
+  # New patterns require explicit FAILURE marker (ERROR:/error
+  # function/has no/does not match/not acceptable).
   - class: compliance
     patterns:
-      - 'Signed Off commit id'
-      - 'Compliance:'
-      - 'COMMIT_ID.*does not match'
-      - 'sign.?off.*missing'
-    description: "Compliance check failure — Jira sign-off / commit ID mismatch"
+      - 'ERROR: Compliance:'
+      - "Compliance: Jira ticket .* has no Signed Off"
+      - 'Compliance: .* does not match'
+      - "Compliance: .* status '[^']+' is not acceptable"
+      - 'Compliance: .* clone-of-clone chain detected'
+      - 'Compliance: .* merged PR title does not contain'
+      - 'Parent ticket has no Signed Off commit id'
+      - "sign.?off.*missing"
+    description: "Compliance check failure — Jira sign-off / status / PR title / clone chain. Patterns require explicit FAILURE marker; passing builds emit `=== Compliance: <action> ===` info banners that must NOT trip this class."
+
+  # build_tool_crash — Gradle/Maven build daemon disappeared mid-task.
+  # Symptoms in the log are clear (daemon log dump + "daemon has
+  # disappeared" + "Build failed with an exception"). Primary cause is
+  # almost always JVM OOM (daemonOpts -Xmx512m default is tiny for
+  # large Spring modules), occasionally OS kill (oom-killer) or
+  # build-agent disk-full. Distinct from `dependency` (artifact
+  # resolution) and `java_runtime` (app-code exception) — fix is
+  # build-tooling config, not pipeline groovy + not app code.
+  # Stagger Prod+1 build 5225 case (indent-microservice v7.83).
+  - class: build_tool_crash
+    patterns:
+      - 'Gradle build daemon disappeared'
+      - 'The message received from the daemon indicates that the daemon has disappeared'
+      - 'Daemon vm is shutting down'
+      - 'Maven daemon was killed'
+      - 'mvnd.*daemon.*disappeared'
+    description: "Gradle/Maven build daemon crashed mid-task (usually JVM OOM on daemon heap; check daemonOpts -Xmx). Fix is build-tooling config, not pipeline or app code."
 
   - class: canary_script_error
     patterns:

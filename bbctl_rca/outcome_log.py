@@ -51,6 +51,18 @@ Failure-signal events that agent.py appends as they happen:
                                 case); signal records the gate trigger
                                 regardless of whether the retry produced a
                                 conforming RCA.
+  compliance_status_hallucination — Final RCA claimed class=compliance and
+                                Action/root_cause asserted the Jira ticket status
+                                is rejected ("not in allowed list" / "is not
+                                acceptable" / "must be one of"), BUT the
+                                pre-fetched `jira.tickets` block in the primer
+                                shows the actual status IS one of the allowed
+                                values (READY FOR RELEASE / HOT FIX). ULTIMATUM
+                                gate fired with explicit "re-read pre-fetched
+                                state + re-classify" instruction. Stagger Prod+1
+                                build 5225 case (MPB-1279 READY FOR RELEASE,
+                                Gradle daemon crashed in Build stage, classifier
+                                misrouted to compliance due to info banners).
 
 Queryable via bbctl_rca/cli_outcomes.py.
 

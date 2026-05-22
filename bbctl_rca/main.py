@@ -472,6 +472,13 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         # it can only paraphrase the stack trace without locating the bug
         # in the source. ~3-4 tool calls typical, $0.10-0.15 added cost.
         "java_runtime",
+        # build_tool_crash: Gradle/Maven daemon crashed mid-task. Agent
+        # path reads the build.gradle / pom.xml of the failing service
+        # (via repo_read_file) to identify the heap config + dependency
+        # graph that should be tuned. Runbook gives the daemon-heap recipe
+        # the LLM needs to surface as suggested_commands. Build 5225
+        # Stagger Prod+1 case (indent-microservice).
+        "build_tool_crash",
     }
 
     # Phase 3: opt-in to all-classes-agent-mode via env var. When set,

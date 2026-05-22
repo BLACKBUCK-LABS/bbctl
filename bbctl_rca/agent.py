@@ -21,6 +21,7 @@ from . import jenkins as jenkins_api
 from . import agent_dispatch
 from . import outcome_log
 from . import tool_schemas
+from . import jira as jira_api
 
 
 # Phase 3 caps — see docs/rca/agent_mode_migration_plan.md.
@@ -284,8 +285,8 @@ async def run_agent(
     client = OpenAI(api_key=api_key)
 
     system = _load_prompt("rca_agent_system.md")
-    primer = _build_primer(job, build, service, error_class, build_meta,
-                           log_window, initial_tool_ctx)
+    primer = await _build_primer(job, build, service, error_class, build_meta,
+                                 log_window, initial_tool_ctx)
     # Concatenate primer into the system message so OpenAI's automatic prompt
     # caching can reuse the prefix across iterations (cached tokens billed at
     # ~50% rate). The user message stays short — just kicks off the trace.
@@ -916,10 +917,75 @@ async def run_agent(
         "stale_tf_state",
         "aws_limit",
         "config_validation",
+        "build_tool_crash",
     }
     _final_class = rca.get("error_class") or error_class
     _ultimatum_reason = None
-    if _final_class in _MANDATORY_RUNBOOK_CLASSES and _final_class not in read_runbooks:
+    # Compliance hallucination check (added 2026-05-22 after Stagger
+    # Prod+1 build 5225 regression). When class=compliance, the LLM
+    # must ground its claim in the pre-fetched `jira.tickets` state.
+    # Detect the most common hallucination: claiming a status is NOT
+    # in the allowed list when the pre-fetched ticket status IS in the
+    # allowed list. Heuristic: if root_cause or Action mentions both
+    # the ticket key AND a phrase like "status ... not in" / "not in
+    # the allowed list" / "is not acceptable" / "must be one of" AND
+    # the pre-fetched ticket has a status that's in {READY FOR
+    # RELEASE, HOT FIX}, force a retry with the pre-fetched state
+    # surfaced explicitly.
+    if _final_class == "compliance" and _ultimatum_reason is None:
+        _sf = rca.get("suggested_fix") or {}
+        _root = (rca.get("root_cause") or "")
+        _action_text = (_sf.get("Action") or "") if isinstance(_sf, dict) else (
+            _sf if isinstance(_sf, str) else "")
+        _combined = (_root + "\n" + _action_text).lower()
+        _suspect_phrases = [
+            "not in the allowed list",
+            "not in allowed list",
+            "is not acceptable",
+            "is not in", "not in [",
+            "must be one of",
+        ]
+        _has_suspect = any(p in _combined for p in _suspect_phrases)
+        # Check primer for a jira.tickets block with a status that's a
+        # known-good "READY FOR RELEASE" or "HOT FIX" value. The primer
+        # was concatenated into the system message at iter 0; grep the
+        # message history rather than re-fetching.
+        _jira_ok_status = False
+        for _m in messages:
+            if not isinstance(_m, dict):
+                continue
+            _content = _m.get("content") or ""
+            if not isinstance(_content, str):
+                continue
+            if "jira.tickets" in _content and (
+                '"READY FOR RELEASE"' in _content or
+                '"HOT FIX"' in _content or
+                "'READY FOR RELEASE'" in _content or
+                "'HOT FIX'" in _content
+            ):
+                _jira_ok_status = True
+                break
+        if _has_suspect and _jira_ok_status:
+            _failure_signals.append("compliance_status_hallucination")
+            _ultimatum_reason = (
+                "Your Action / root_cause says the Jira ticket status "
+                "is NOT in the allowed list — but the pre-fetched "
+                "`jira.tickets` block in the primer shows the ticket "
+                "status IS one of {READY FOR RELEASE, HOT FIX} (which "
+                "ARE the allowed values per the compliance runbook "
+                "Mode 3). Re-read the `## jira.tickets` JSON block in "
+                "the system message, find the actual `status` field "
+                "value, and re-emit the RCA. The classifier hint was "
+                "`compliance` because the log contains `Compliance:` "
+                "info banners — those are POSITIVE status messages "
+                "(passing builds emit them), NOT failure signals. "
+                "Look at the BOTTOM of the log for the actual fatal "
+                "line and re-classify. Most common true cause when "
+                "compliance passed: `build_tool_crash` (Gradle daemon "
+                "disappeared), `dependency`, `java_runtime`, or "
+                "`unknown`."
+            )
+    if _ultimatum_reason is None and _final_class in _MANDATORY_RUNBOOK_CLASSES and _final_class not in read_runbooks:
         _ultimatum_reason = (
             f"You did not read the runbook for `{_final_class}`. "
             f"Call `read_runbook('{_final_class}')` now, then re-emit "
@@ -1659,7 +1725,7 @@ def _elide_old_tool_results(messages: list, *, current_iter: int, keep_recent: i
                 m["content"] = "[elided to save tokens — see earlier reasoning]"
 
 
-def _build_primer(
+async def _build_primer(
     job: str, build: int, service: str, error_class: str,
     build_meta: dict, log_window: str, initial_tool_ctx: str,
 ) -> str:
@@ -1668,15 +1734,28 @@ def _build_primer(
     Two modes:
 
     Option C (BBCTL_RCA_FORCE_AGENT_MODE=1) — MINIMAL primer:
-      Only the 3 boot-pack blocks. No pre-fetched jira / github / runbook.
-      LLM MUST use tools to fetch everything else. error_class hint and
-      detected_failed_stage are dropped so the LLM classifies + identifies
-      the failed stage from the log markers itself.
+      Boot-pack blocks + (since 2026-05-22) jira.tickets pre-fetch when
+      ticket keys are present in log. LLM MUST use tools to fetch
+      everything else. error_class hint and detected_failed_stage are
+      dropped so the LLM classifies + identifies the failed stage from
+      the log markers itself.
 
     Legacy mode (default) — full primer with resolved values + pre-fetched
     blocks. Kept until the Option C path is verified end-to-end and the
     BBCTL_RCA_FORCE_AGENT_MODE default flips to on.
+
+    Async since Jira pre-fetch (and any future API enrichment) requires
+    awaiting the underlying HTTP calls.
     """
+    # Pre-fetch Jira tickets ANY time keys appear in log. Closes the
+    # "compliance hallucination" hole: LLM was emitting `status X not
+    # in [X, Y]` without checking the real ticket. With jira.tickets
+    # pre-injected, LLM sees the canonical status field + can't claim
+    # the ticket is misconfigured when it isn't.
+    # Stagger Prod+1 build 5225 case (MPB-1279 was in READY FOR RELEASE
+    # but LLM said it wasn't in allowed list).
+    jira_block = await _jira_prefetch_for_agent(log_window)
+
     if os.environ.get("BBCTL_RCA_FORCE_AGENT_MODE"):
         # MINIMAL primer — strict boot-pack only.
         parts = [
@@ -1697,14 +1776,11 @@ def _build_primer(
             log_window[-30000:],  # keep END (where Error: line lives), not start
             "```",
         ]
+        if jira_block:
+            parts.append("")
+            parts.append(jira_block)
         # Phase 3 (RAG agent auto-inject) — append top-k semantic matches
-        # from the docops + audit corpus. Agent path was previously
-        # RAG-blind (only llm.py one-shot path had auto-inject), which
-        # meant the LLM saw the runbook only IF it remembered to call
-        # `read_runbook(class)` — and on the Build 15 Stagger Scaling
-        # case it stopped at 7 tool calls without ever reading the
-        # jenkins_agent_offline runbook, producing a generic Action
-        # block with no PRIMARY/SECONDARY framing.
+        # from the docops + audit corpus.
         rag_block = _rag_inject_for_agent(log_window, error_class)
         if rag_block:
             parts.append("")
@@ -1733,12 +1809,56 @@ def _build_primer(
         log_window[-30000:],  # primer cap — keep END (where Error: line lives)
         "```",
     ]
+    if jira_block:
+        parts.append("")
+        parts.append(jira_block)
     # Phase 3 — RAG auto-inject (legacy primer mode too)
     rag_block = _rag_inject_for_agent(log_window, error_class)
     if rag_block:
         parts.append("")
         parts.append(rag_block)
     return "\n".join(parts)
+
+
+async def _jira_prefetch_for_agent(log_window: str) -> str:
+    """Pre-fetch Jira ticket(s) for any Jira keys (e.g. MPB-1279,
+    FMSCAT-5887) appearing in the log. Returns a `## jira.tickets`
+    markdown block with the API response, or "" when no keys or fetch
+    fails.
+
+    Why pre-fetch (not let the LLM call jira_get_ticket itself):
+      - The LLM has been observed to skip the call AND hallucinate
+        the ticket state. Stagger Prod+1 build 5225 case: LLM claimed
+        MPB-1279 was in a wrong status without fetching, even though
+        the log explicitly showed `Jira status: READY FOR RELEASE`
+        and the runbook accepts that status.
+      - Pre-injecting canonical fields (status, sign-off SHA, assignee,
+        fix versions) makes the LLM's "status check failed" claim
+        verifiable against pre-fetched state. Any claim contradicting
+        the pre-fetched data is a clear hallucination signal.
+
+    Returns "" on any failure (no keys, Jira unreachable, no API
+    credentials). Never raises.
+    """
+    if not log_window:
+        return ""
+    try:
+        keys = jira_api.extract_tickets(log_window)
+        if not keys:
+            return ""
+        tickets = await jira_api.fetch_all(keys)
+        if not tickets:
+            return ""
+        return (
+            "## jira.tickets (API-fetched ground truth — REJECT any "
+            "claim that contradicts these field values)\n"
+            "```json\n"
+            f"{json.dumps(tickets, indent=2, default=str)}\n"
+            "```"
+        )
+    except Exception as _e:
+        _log(f"  jira pre-fetch (agent) skipped: {_e}")
+        return ""
 
 
 def _rag_inject_for_agent(log_window: str, error_class: str | None) -> str:

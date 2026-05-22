@@ -43,6 +43,14 @@ Failure-signal events that agent.py appends as they happen:
                                 degraded emission regardless of retry outcome.
                                 Observed when LLM emits a single suggested_command
                                 object as the entire final response.
+  ultimatum_gate_triggered    — Phase 4 gate fired. Either the runbook for a
+                                MANDATORY_RUNBOOK_CLASSES class was never fetched,
+                                OR the class is jenkins_agent_offline and the
+                                Action block lacks PRIMARY/SECONDARY split. One
+                                tool+finalize retry pair fired (~$0.10 worst
+                                case); signal records the gate trigger
+                                regardless of whether the retry produced a
+                                conforming RCA.
 
 Queryable via bbctl_rca/cli_outcomes.py.
 

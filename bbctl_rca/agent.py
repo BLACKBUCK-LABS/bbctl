@@ -891,6 +891,153 @@ async def run_agent(
     if "suggested_commands" not in rca:
         rca["suggested_commands"] = []
 
+    # Phase 4 — ULTIMATUM gate.
+    # For classes where the runbook drill plan + action template are
+    # non-negotiable for a correct RCA (slave-bounce primary/secondary
+    # split, compliance modes, terraform import recipe, etc.), require
+    # the LLM to have ACTUALLY read the runbook. If the runbook was
+    # never fetched via `read_runbook(class)`, do one re-iter that
+    # forces the fetch + a JSON update.
+    #
+    # Specific check for jenkins_agent_offline: even if the runbook
+    # WAS read, the Action block must contain PRIMARY + SECONDARY
+    # framing (slave-bounce is primary; NotSerializableException at
+    # the bottom is secondary). Without that split the operator
+    # restarts the slave + ignores the code symptom, or refactors the
+    # code + ignores the slave — either path leaves the next bounce
+    # broken.
+    _MANDATORY_RUNBOOK_CLASSES = {
+        "jenkins_agent_offline",
+        "canary_fail",
+        "canary_script_error",
+        "health_check",
+        "compliance",
+        "terraform",
+        "stale_tf_state",
+        "aws_limit",
+        "config_validation",
+    }
+    _final_class = rca.get("error_class") or error_class
+    _ultimatum_reason = None
+    if _final_class in _MANDATORY_RUNBOOK_CLASSES and _final_class not in read_runbooks:
+        _ultimatum_reason = (
+            f"You did not read the runbook for `{_final_class}`. "
+            f"Call `read_runbook('{_final_class}')` now, then re-emit "
+            f"the FULL RCA JSON applying its drill plan + action "
+            f"template. The runbook is the authoritative recipe for "
+            f"this class — without it your Action block is missing "
+            f"the structure operators depend on."
+        )
+    elif _final_class == "jenkins_agent_offline":
+        _action = ""
+        _sf = rca.get("suggested_fix") or {}
+        if isinstance(_sf, dict):
+            _action = (_sf.get("Action") or "")
+        elif isinstance(_sf, str):
+            _action = _sf
+        _action_upper = _action.upper()
+        if "PRIMARY" not in _action_upper or "SECONDARY" not in _action_upper:
+            _ultimatum_reason = (
+                "Class is `jenkins_agent_offline` but your Action "
+                "block does not split into PRIMARY (agent health: "
+                "investigate the slave that bounced, restart agent, "
+                "check infra) and SECONDARY (pipeline-code hardening: "
+                "refactor the helper to drop non-Serializable retained "
+                "objects). Both are required by the runbook template "
+                "— a code-only fix won't prevent the next bounce, and "
+                "an infra-only fix won't prevent the next "
+                "NotSerializableException. Re-emit the FULL RCA JSON "
+                "with both PRIMARY and SECONDARY sections in Action."
+            )
+    if _ultimatum_reason is not None:
+        _failure_signals.append("ultimatum_gate_triggered")
+        _log(f"ultimatum gate: {_ultimatum_reason[:200]}")
+        messages.append({"role": "user", "content": _ultimatum_reason})
+        # Allow ONE tool call iteration first (so LLM can fetch the
+        # runbook), then force-final. Keep cost bounded.
+        _retry_kwargs = {
+            "model": model, "messages": messages,
+            "tools": TOOLS, "tool_choice": "auto",
+            "temperature": 0.1,
+        }
+        _trace("ULTIMATUM GATE — FETCH",
+               _fmt_request_payload(messages, _retry_kwargs))
+        try:
+            retry = client.chat.completions.create(**_retry_kwargs)
+            total_in += retry.usage.prompt_tokens
+            total_out += retry.usage.completion_tokens
+            _retry_msg = retry.choices[0].message
+            # If LLM called a tool (likely read_runbook), execute it
+            # and feed the result back, then ask for the final JSON.
+            if _retry_msg.tool_calls:
+                messages.append({
+                    "role": "assistant",
+                    "content": _retry_msg.content,
+                    "tool_calls": [
+                        {"id": tc.id, "type": "function",
+                         "function": {"name": tc.function.name,
+                                      "arguments": tc.function.arguments}}
+                        for tc in _retry_msg.tool_calls
+                    ],
+                })
+                for tc in _retry_msg.tool_calls:
+                    tool_call_count += 1
+                    try:
+                        _args = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        _args = {}
+                    _result = await _dispatch_tool(tc.function.name, _args, ctx)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": _result,
+                    })
+                    # Update read_runbooks set if this was a successful fetch
+                    if tc.function.name == "read_runbook":
+                        _rb_name = _args.get("name")
+                        if _rb_name and "not found" not in _result:
+                            read_runbooks.add(_rb_name)
+            # Now force-final the JSON
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Now emit the FULL updated RCA JSON applying the "
+                    "runbook's drill plan + action template. Required "
+                    "keys: summary, failed_stage, error_class, "
+                    "root_cause, evidence, suggested_fix "
+                    "(Finding/Action/Verify), suggested_commands. "
+                    "Return ONLY the JSON object."
+                ),
+            })
+            _final_kwargs = {
+                "model": model, "messages": messages,
+                "response_format": {"type": "json_object"},
+                "temperature": 0.1,
+            }
+            _trace("ULTIMATUM GATE — FINALIZE",
+                   _fmt_request_payload(messages, _final_kwargs))
+            final2 = client.chat.completions.create(**_final_kwargs)
+            total_in += final2.usage.prompt_tokens
+            total_out += final2.usage.completion_tokens
+            _final2_text = final2.choices[0].message.content
+            _trace("ULTIMATUM GATE — FINALIZE RESPONSE",
+                   f"prompt_tokens={final2.usage.prompt_tokens} "
+                   f"completion_tokens={final2.usage.completion_tokens}\n"
+                   f"content={(_final2_text or '')[:1500]}")
+            _rca_final2 = _parse_final_json(_final2_text)
+            if _rca_final2 is not None:
+                # Backfill required keys again in case the retry was
+                # incomplete.
+                for _k, _v in _defaults.items():
+                    if _k not in _rca_final2:
+                        _rca_final2[_k] = _v
+                if "suggested_commands" not in _rca_final2:
+                    _rca_final2["suggested_commands"] = []
+                rca = _rca_final2
+                final_text = _final2_text
+        except Exception as _e:
+            _log(f"ultimatum gate retry failed: {_e}")
+
     # Phase-10 (revised May 2026): annotate-only stayed too lenient.
     # Build 15 Stagger Scaling case had evidence citing
     # `vars/discoverBlueTargetGroup.groovy` — a file that doesn't exist;

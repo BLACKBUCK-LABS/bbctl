@@ -18,3 +18,7 @@ pgvector>=0.3.0
 # back to the imperative gate stack when langgraph isn't installed.
 langgraph>=0.2.0
 langchain-core>=0.3.0
+# Phase 8 — PG checkpointer for resumable RCAs. Optional; falls back
+# to MemorySaver when not installed. Enable via env
+# BBCTL_RCA_GRAPH_CHECKPOINT=1 once the package is on the host.
+langgraph-checkpoint-postgres>=2.0.0

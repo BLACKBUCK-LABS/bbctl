@@ -893,20 +893,66 @@ async def run_agent(
         rca["suggested_commands"] = []
 
     # Phase 4 — ULTIMATUM gate.
-    # For classes where the runbook drill plan + action template are
-    # non-negotiable for a correct RCA (slave-bounce primary/secondary
-    # split, compliance modes, terraform import recipe, etc.), require
-    # the LLM to have ACTUALLY read the runbook. If the runbook was
-    # never fetched via `read_runbook(class)`, do one re-iter that
-    # forces the fetch + a JSON update.
-    #
-    # Specific check for jenkins_agent_offline: even if the runbook
-    # WAS read, the Action block must contain PRIMARY + SECONDARY
-    # framing (slave-bounce is primary; NotSerializableException at
-    # the bottom is secondary). Without that split the operator
-    # restarts the slave + ignores the code symptom, or refactors the
-    # code + ignores the slave — either path leaves the next bounce
-    # broken.
+    # Phase 6 (RAG-LANG branch) — when langgraph is available, delegate
+    # to the StateGraph in `gates.py`. Same gates, same retry behavior,
+    # but routing is declarative (easier to add gate #N+1). When
+    # langgraph is NOT installed, fall through to the imperative stack
+    # below — identical to the RAG-branch behavior.
+    try:
+        from . import gates as _gates
+        _gate_graph = _gates.build_gate_graph()
+    except Exception as _e:
+        _gate_graph = None
+        _log(f"gates.py import skipped: {_e}")
+
+    _skip_imperative_gates = False
+    if _gate_graph is not None:
+        # Async dispatcher wrapper — gates._corrective_reiter calls
+        # this for any tool the LLM emits during the gate-triggered
+        # retry. Bound to the current request's `ctx` so dispatcher
+        # state (read_files, runbook reads) flows through.
+        async def _gate_dispatch(name: str, args: dict) -> str:
+            return await _dispatch_tool(name, args, ctx)
+
+        _state_in = {
+            "rca":             rca,
+            "error_class":     error_class,
+            "read_runbooks":   set(read_runbooks),
+            "messages":        messages,
+            "client":          client,
+            "model":           model,
+            "tools":           TOOLS,
+            "tool_dispatch":   _gate_dispatch,
+            "build_meta":      build_meta,
+            "failure_signals": list(_failure_signals),
+            "retry_budget":    1,
+            "tokens_in":       0,
+            "tokens_out":      0,
+            "tool_call_count": 0,
+        }
+        try:
+            _state_out = _gate_graph.invoke(_state_in)
+            rca               = _state_out.get("rca", rca)
+            messages[:]       = _state_out.get("messages", messages)
+            read_runbooks    |= set(_state_out.get("read_runbooks") or set())
+            total_in         += _state_out.get("tokens_in", 0)
+            total_out        += _state_out.get("tokens_out", 0)
+            tool_call_count  += _state_out.get("tool_call_count", 0)
+            for _s in (_state_out.get("failure_signals") or []):
+                if _s not in _failure_signals:
+                    _failure_signals.append(_s)
+            _skip_imperative_gates = True
+            _log(f"gates(LangGraph): ran OK, "
+                 f"final_class={rca.get('error_class')}")
+        except Exception as _e:
+            _log(f"gates(LangGraph) invocation failed, fall through to "
+                 f"imperative stack: {_e}")
+            _skip_imperative_gates = False
+    # Phase 4 — END (LangGraph). When _skip_imperative_gates is False,
+    # the original imperative stack below runs unchanged (RAG-branch
+    # parity). When True, _final_class is forced to a sentinel so no
+    # imperative check matches and no second retry fires.
+
     _MANDATORY_RUNBOOK_CLASSES = {
         "jenkins_agent_offline",
         "canary_fail",
@@ -919,7 +965,12 @@ async def run_agent(
         "config_validation",
         "build_tool_crash",
     }
-    _final_class = rca.get("error_class") or error_class
+    # Phase 6 — when the LangGraph gates already ran, force-skip the
+    # imperative checks (sentinel class never matches any gate).
+    _final_class = (
+        None if _skip_imperative_gates
+        else (rca.get("error_class") or error_class)
+    )
     _ultimatum_reason = None
     # Compliance hallucination check (added 2026-05-22 after Stagger
     # Prod+1 build 5225 regression). When class=compliance, the LLM

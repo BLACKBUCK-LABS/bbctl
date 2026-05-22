@@ -89,20 +89,25 @@ if _HAS_LANGGRAPH:
     class UltimatumState(TypedDict, total=False):  # type: ignore[misc]
         """State threaded through the gate graph.
 
-        rca              — the parsed RCA dict (mutated in-place by nodes)
+        rca              — parsed RCA dict (mutated in-place by nodes)
         error_class      — classifier-emitted class (string)
         read_runbooks    — set of runbook names fetched during the loop
-        messages         — the OpenAI message history (mutated when gates
+        messages         — OpenAI message history (mutated when gates
                            append correction messages + retry result)
         client           — OpenAI client for retry calls
         model            — model id (e.g. "gpt-4o")
+        tools            — function-calling tools list so the
+                           corrective-reiter iter can let the LLM call
+                           read_runbook etc. before finalizing
+        tool_dispatch    — async callable (name, args) → result_str.
+                           Owned by agent.py; passed in so gates.py
+                           stays independent of dispatcher internals.
         build_meta       — for failed_stage default backfill
         failure_signals  — accumulated signals to log
-        retry_budget     — remaining number of gate-triggered retries
-                           (cost cap — currently each retry pair is one
-                           tool iter + one finalize → ~$0.10)
-        tokens_in        — accumulated input tokens for cost tracking
+        retry_budget     — remaining gate-triggered retries (cost cap)
+        tokens_in        — accumulated input tokens
         tokens_out       — accumulated output tokens
+        tool_call_count  — running counter (incremented on each dispatch)
         """
         rca:             dict
         error_class:     str
@@ -110,11 +115,14 @@ if _HAS_LANGGRAPH:
         messages:        list
         client:          Any
         model:           str
+        tools:           list
+        tool_dispatch:   Any
         build_meta:      dict
         failure_signals: list
         retry_budget:    int
         tokens_in:       int
         tokens_out:      int
+        tool_call_count: int
 
 
 # ─── Node implementations ─────────────────────────────────────────────
@@ -280,39 +288,99 @@ def _check_compliance_hallucination(state: dict) -> dict:
 def _corrective_reiter(state: dict) -> dict:
     """Shared correction node — fires the gate-triggered retry pair.
 
-    Appends `_gate_reason` to the message history, runs one tool-using
-    iter (so the LLM can fetch a runbook if needed), then forces a
-    final-JSON emission. Updates state["rca"] with the new RCA when
-    parseable, else leaves the old RCA in place (with the failure
-    signal already appended by the upstream check node).
+    Appends `_gate_reason` to the message history, runs ONE tool-using
+    iter (LLM may call read_runbook etc.), dispatches any tool calls
+    via `state["tool_dispatch"]`, feeds results back, then forces a
+    final-JSON emission. Updates state["rca"] with the parsed retry
+    output; leaves the old RCA in place on any error.
 
-    Honors `retry_budget` — when 0, skips the retry to bound cost.
+    Honors `retry_budget` — skips when 0 to bound cost (~$0.10/pair).
     """
+    import asyncio  # local import (node may run in a fresh thread)
     reason = state.get("_gate_reason")
     budget = state.get("retry_budget", 0)
     if not reason or budget <= 0:
-        return {}
-    messages = state.get("messages") or []
+        return {"_gate_reason": None}
+    messages = (state.get("messages") or [])[:]
     client = state.get("client")
     model = state.get("model")
+    tools = state.get("tools") or []
+    dispatch = state.get("tool_dispatch")
     if client is None or model is None:
-        return {}
+        return {"_gate_reason": None}
 
     messages.append({"role": "user", "content": reason})
-    out: dict[str, Any] = {"retry_budget": budget - 1,
-                           "_gate_reason": None}
+    out: dict[str, Any] = {
+        "retry_budget":    budget - 1,
+        "_gate_reason":    None,
+        "tokens_in":       state.get("tokens_in", 0),
+        "tokens_out":      state.get("tokens_out", 0),
+        "tool_call_count": state.get("tool_call_count", 0),
+        "read_runbooks":   set(state.get("read_runbooks") or set()),
+    }
     try:
-        # Tool iter (LLM may call read_runbook etc.)
-        retry = client.chat.completions.create(
-            model=model, messages=messages,
-            temperature=0.1,
-        )
-        out["tokens_in"]  = state.get("tokens_in", 0)  + retry.usage.prompt_tokens
-        out["tokens_out"] = state.get("tokens_out", 0) + retry.usage.completion_tokens
+        # Tool iter (LLM may call read_runbook etc.). Only pass tools
+        # when both tools + dispatcher are available — otherwise just
+        # ask for content.
+        kwargs: dict[str, Any] = {
+            "model": model, "messages": messages, "temperature": 0.1,
+        }
+        if tools and dispatch is not None:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        retry = client.chat.completions.create(**kwargs)
+        out["tokens_in"]  += retry.usage.prompt_tokens
+        out["tokens_out"] += retry.usage.completion_tokens
         retry_msg = retry.choices[0].message
-        if retry_msg.content:
+
+        if retry_msg.tool_calls and dispatch is not None:
+            messages.append({
+                "role":     "assistant",
+                "content":  retry_msg.content,
+                "tool_calls": [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name,
+                                  "arguments": tc.function.arguments}}
+                    for tc in retry_msg.tool_calls
+                ],
+            })
+            for tc in retry_msg.tool_calls:
+                out["tool_call_count"] += 1
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                # Dispatcher may be sync or async; await coroutines.
+                result = dispatch(tc.function.name, args)
+                if asyncio.iscoroutine(result):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        # We're inside an event loop already — schedule
+                        # nested via run_until_complete on a new loop
+                        # would deadlock. Use asyncio.run on a fresh
+                        # task in this case is also unsafe. Best path:
+                        # run synchronously via asyncio.run in a worker
+                        # only when no loop. Otherwise expect the
+                        # caller to have provided a sync wrapper.
+                        result = asyncio.run_coroutine_threadsafe(
+                            result, loop).result(timeout=60)
+                    except RuntimeError:
+                        # No running loop — drive directly
+                        result = asyncio.run(result)
+                messages.append({
+                    "role":         "tool",
+                    "tool_call_id": tc.id,
+                    "content":      result if isinstance(result, str)
+                                    else json.dumps(result, default=str),
+                })
+                if tc.function.name == "read_runbook":
+                    rb = args.get("name")
+                    if rb and isinstance(result, str) and "not found" not in result:
+                        out["read_runbooks"].add(rb)
+        elif retry_msg.content:
             messages.append({"role": "assistant",
                              "content": retry_msg.content})
+
         # Force-final
         messages.append({"role": "user", "content": (
             "Now emit the FULL updated RCA JSON applying the runbook's "
@@ -326,10 +394,9 @@ def _corrective_reiter(state: dict) -> dict:
             response_format={"type": "json_object"},
             temperature=0.1,
         )
-        out["tokens_in"]  = out.get("tokens_in",  state.get("tokens_in",  0)) + final.usage.prompt_tokens
-        out["tokens_out"] = out.get("tokens_out", state.get("tokens_out", 0)) + final.usage.completion_tokens
+        out["tokens_in"]  += final.usage.prompt_tokens
+        out["tokens_out"] += final.usage.completion_tokens
         text = final.choices[0].message.content or ""
-        # Reuse agent.py's tolerant parser (lazy import to avoid cycle)
         from .agent import _parse_final_json
         new = _parse_final_json(text)
         if isinstance(new, dict):

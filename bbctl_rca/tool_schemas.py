@@ -659,6 +659,106 @@ TOOLS: list[dict] = [
     # For health_check / java_runtime instance-level failures the LLM
     # tells the operator to use `bbctl shell <instance_id>` themselves.
 
+    # ─── JENKINS MCP PLUGIN (4) ───────────────────────────────────────
+    # https://plugins.jenkins.io/mcp-server/ — server-side Jenkins data
+    # exposed via MCP protocol. Auth reuses the existing
+    # BBCTL_JENKINS_USER + BBCTL_JENKINS_TOKEN (Basic). Stateless
+    # transport `/mcp-server/stateless`. These tools cover capabilities
+    # NOT in `bbctl_rca/jenkins.py` REST helpers — server-side log
+    # grep, JUnit results, SCM change sets, cross-pipeline scm lookup.
+    {
+        "type": "function",
+        "function": {
+            "name": "jenkins_mcp_search_log",
+            "description": (
+                "Server-side grep over a build's console log via the "
+                "Jenkins MCP plugin. CHEAPER than pulling the full log "
+                "into your context for one-off pattern checks. Use when "
+                "you need to confirm a specific phrase appears (or "
+                "doesn't) in the build log without consuming the whole "
+                "30K-char log window."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job":   {"type": "string",
+                              "description": "Jenkins job name (e.g. 'Stagger Prod Plus One')."},
+                    "build": {"type": "integer",
+                              "description": "Build number."},
+                    "regex": {"type": "string",
+                              "description": "Regex / phrase to search for."},
+                    "lines_after": {"type": "integer", "default": 0,
+                                    "description": "Lines of context after each match. 0 = matches only."},
+                },
+                "required": ["job", "build", "regex"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "jenkins_mcp_get_test_results",
+            "description": (
+                "JUnit test results for the build — failing test "
+                "names, stack traces, durations. NEW capability not in "
+                "the REST helper. Use for any build where a test "
+                "failure is suspected in the failure chain (Gradle "
+                "build + tests, integration tests, etc.)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job":   {"type": "string"},
+                    "build": {"type": "integer"},
+                },
+                "required": ["job", "build"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "jenkins_mcp_get_changesets",
+            "description": (
+                "SCM change sets for the build (commits since prior "
+                "build of the same job). Use as a quicker alternative "
+                "to `github_get_commit` when you need the list of what "
+                "changed without GitHub PAT setup. Returns commit SHA, "
+                "author, message, affected paths."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job":   {"type": "string"},
+                    "build": {"type": "integer"},
+                },
+                "required": ["job", "build"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "jenkins_mcp_find_jobs_with_scm",
+            "description": (
+                "Find every Jenkins job whose pipeline source is the "
+                "given SCM URL. Use for cross-pipeline impact analysis "
+                "— e.g. 'a helper in jenkins_pipeline changed; which "
+                "jobs may be affected?'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scm_url": {
+                        "type": "string",
+                        "description": "Full SCM URL (e.g. 'git@github.com:BLACKBUCK-LABS/jenkins_pipeline.git').",
+                    },
+                },
+                "required": ["scm_url"],
+            },
+        },
+    },
+
     # ─── SANITY (1) ───────────────────────────────────────────────────
     {
         "type": "function",

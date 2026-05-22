@@ -16,6 +16,47 @@ dispatcher awaits coroutines.
 """
 from . import aws_tools, github, jira, mcp_tools
 
+# Jenkins MCP plugin client — wraps `mcp-server` plugin
+# (https://plugins.jenkins.io/mcp-server/) for capabilities not in the
+# REST helpers. Imported lazily — agent loop still starts when the
+# plugin isn't installed or env vars are missing.
+try:
+    from . import jenkins_mcp as _jenkins_mcp
+except Exception:
+    _jenkins_mcp = None
+
+
+def _jmcp_unavailable() -> str:
+    return ("jenkins_mcp unavailable: import failed OR "
+            "BBCTL_JENKINS_URL / BBCTL_JENKINS_USER / "
+            "BBCTL_JENKINS_TOKEN env vars missing. Use the REST-based "
+            "tools instead.")
+
+
+async def _jmcp_search_log(job: str, build: int, regex: str,
+                           lines_after: int = 0) -> str:
+    if _jenkins_mcp is None:
+        return _jmcp_unavailable()
+    return await _jenkins_mcp.search_build_log(job, build, regex, lines_after)
+
+
+async def _jmcp_get_test_results(job: str, build: int) -> str:
+    if _jenkins_mcp is None:
+        return _jmcp_unavailable()
+    return await _jenkins_mcp.get_test_results(job, build)
+
+
+async def _jmcp_get_changesets(job: str, build: int) -> str:
+    if _jenkins_mcp is None:
+        return _jmcp_unavailable()
+    return await _jenkins_mcp.get_changesets(job, build)
+
+
+async def _jmcp_find_jobs_with_scm(scm_url: str) -> str:
+    if _jenkins_mcp is None:
+        return _jmcp_unavailable()
+    return await _jenkins_mcp.find_jobs_with_scm(scm_url)
+
 # rag is imported lazily inside the dispatch wrapper so the agent loop
 # can still start when Postgres / pgvector aren't installed. R1 is
 # dormant infra; this lets non-RAG environments run unchanged.
@@ -107,6 +148,16 @@ TOOL_DISPATCH: dict[str, callable] = {
     # gracefully when PG is offline so the agent loop still works on
     # non-RAG hosts. See bbctl/docs/rca/RAGflow.md for design.
     "rag_search":                   _rag_search_wrapper,
+
+    # ── Jenkins MCP plugin (https://plugins.jenkins.io/mcp-server/) ──
+    # Server-side log grep, JUnit results, change sets, cross-pipeline
+    # scm lookup. Auth reuses existing BBCTL_JENKINS_USER + _TOKEN.
+    # Each wrapper degrades to a clear "unavailable" string when env
+    # vars are missing or plugin isn't installed.
+    "jenkins_mcp_search_log":        _jmcp_search_log,
+    "jenkins_mcp_get_test_results":  _jmcp_get_test_results,
+    "jenkins_mcp_get_changesets":    _jmcp_get_changesets,
+    "jenkins_mcp_find_jobs_with_scm": _jmcp_find_jobs_with_scm,
 
     # ── Sanity (Phase 6) ──
     # "code_review":                  claude_review.code_review,

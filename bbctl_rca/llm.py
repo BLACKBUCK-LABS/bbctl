@@ -57,8 +57,19 @@ RCA_SCHEMA = {
 
 
 def _load_prompt(name: str) -> str:
-    p = Path(__file__).parent.parent / "prompts" / name
-    return p.read_text() if p.exists() else ""
+    """Read a prompt file. When loading `rca_system.md` or
+    `rca_agent_system.md`, prepend `rca_common.md` (Phase 2 dedup —
+    shared rules live in common, path-specific in body)."""
+    base = Path(__file__).parent.parent / "prompts"
+    p = base / name
+    if not p.exists():
+        return ""
+    body = p.read_text()
+    if name in ("rca_system.md", "rca_agent_system.md"):
+        common = base / "rca_common.md"
+        if common.exists():
+            return common.read_text() + "\n\n---\n\n" + body
+    return body
 
 
 async def _build_tool_context(service: str, error_class: str, log_window: str, build_meta: dict | None = None) -> str:

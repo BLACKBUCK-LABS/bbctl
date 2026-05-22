@@ -158,7 +158,11 @@ main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 64px; }
   background: var(--bg-code); padding: 2px 6px; border-radius: 4px;
   color: var(--fg); font-size: 12px; border: 1px solid var(--border);
 }
-[data-theme="light"] .hero-meta code { color: #f8fafc; }
+[data-theme="light"] .hero-meta code {
+  background: var(--bg-card-elev);
+  color: var(--fg-strong);
+  border: 1px solid var(--border-strong);
+}
 .hero-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
 @media (min-width: 768px) {
   .hero-wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; }

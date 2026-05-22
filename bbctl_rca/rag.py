@@ -514,14 +514,32 @@ def _cli_search(args: list[str]) -> int:
     return 0
 
 def _cli_reset(args: list[str]) -> int:
+    """Empty rca_chunks + caches. Uses DELETE (not TRUNCATE) because
+    the bbctl_rca DB role has table-row priv but not sequence-owner
+    priv. Sequence IDs continue from where they were; gaps don't
+    matter for vector lookups. Skip the cache tables if they don't
+    exist (older deployments)."""
     if "--yes" not in args:
-        print("refusing: pass --yes to TRUNCATE rca_chunks", file=sys.stderr)
+        print("refusing: pass --yes to wipe rca_chunks + caches",
+              file=sys.stderr)
         return 2
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE rca_chunks, query_emb_cache, retrieval_cache RESTART IDENTITY")
+            cur.execute("DELETE FROM rca_chunks")
+            n_chunks = cur.rowcount
+            try:
+                cur.execute("DELETE FROM query_emb_cache")
+                n_qec = cur.rowcount
+            except Exception:
+                n_qec = 0
+            try:
+                cur.execute("DELETE FROM retrieval_cache")
+                n_rc = cur.rowcount
+            except Exception:
+                n_rc = 0
             conn.commit()
-    print("reset: rca_chunks + caches truncated")
+    print(f"reset: rca_chunks={n_chunks} query_emb_cache={n_qec} "
+          f"retrieval_cache={n_rc} rows deleted")
     return 0
 
 def _cli_diag(_args: list[str]) -> int:

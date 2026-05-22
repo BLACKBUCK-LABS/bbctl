@@ -83,18 +83,6 @@ WEBHOOK_SECRET = os.environ.get("BBCTL_WEBHOOK_SECRET", "")
 LLM_API_KEY = os.environ.get("BBCTL_LLM_API_KEY", "")
 LLM_PROVIDER = os.environ.get("BBCTL_LLM_PROVIDER", "gemini")
 
-# Module-level export of the AGENT_CLASSES set. Defined here (not just
-# inside `_run_rca`) so `bbctl_rca.full_graph` can route classify-output
-# → agent vs one-shot without re-importing _run_rca. Single source of
-# truth; the local reference inside _run_rca aliases this constant.
-AGENT_CLASSES_PATH = {
-    "canary_fail", "canary_script_error", "compliance",
-    "health_check", "parse_error", "scm",
-    "terraform", "stale_tf_state", "aws_limit",
-    "config_validation", "jenkins_agent_offline", "java_runtime",
-    "build_tool_crash", "timeout", "network", "dependency", "ssm",
-}
-
 JENKINS_AUTH = (JENKINS_USER, JENKINS_TOKEN)
 
 
@@ -123,37 +111,6 @@ async def rca_webhook(
 
     payload = WebhookPayload(**json.loads(body))
     return await _run_rca(payload.job, payload.build, payload.service, deep=False)
-
-
-@router.post("/v1/rca/stream")
-async def rca_stream(req: "RCARequest"):
-    """SSE-stream node-by-node events for an RCA run. Routes through the
-    LangGraph orchestrator unconditionally (the stream view only makes
-    sense with the graph). Live progress to the UI replaces curl-hangs.
-
-    Event stream format (text/event-stream):
-        event: node_start
-        data: {"node": "fetch_log"}
-
-        event: node_end
-        data: {"node": "fetch_log", "elapsed_ms": 482}
-
-        event: final
-        data: { ...rca... }
-    """
-    from fastapi.responses import StreamingResponse
-    from .full_graph import astream_rca_via_graph
-
-    async def _gen():
-        async for ev in astream_rca_via_graph(
-            job=req.job, build=int(req.build),
-            service=req.service or req.job.lower(),
-            deep=bool(req.deep),
-        ):
-            et = ev.pop("event", "message")
-            yield f"event: {et}\ndata: {json.dumps(ev, default=str)}\n\n"
-
-    return StreamingResponse(_gen(), media_type="text/event-stream")
 
 
 # NOTE on route order: FastAPI evaluates routes in registration order. The
@@ -398,30 +355,6 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
             cached_copy = dict(cached)
             cached_copy["from_cache"] = True
             return cached_copy
-
-    # Phase 8 — opt-in full-flow LangGraph orchestrator. When
-    # BBCTL_RCA_USE_FULL_GRAPH is set, the request flows through
-    # bbctl_rca/full_graph.py instead of the imperative path below.
-    # Behavior identical (same RCA JSON); orchestration becomes
-    # observable in LangSmith + supports PG checkpointer + streams via
-    # /v1/rca/stream. Cache + dedup + cost-cap guards above still apply.
-    if os.environ.get("BBCTL_RCA_USE_FULL_GRAPH") in ("1", "true"):
-        try:
-            from .full_graph import run_rca_via_graph
-            rca_via_graph = await run_rca_via_graph(
-                job=job, build=int(build), service=service, deep=bool(deep),
-            )
-            # Cache + log_outcome are owned by the graph's persist node; we
-            # still want to populate the 24h dedup cache, mirroring the
-            # imperative path.
-            try:
-                set_rca(job, int(build), rca_via_graph)
-            except Exception:
-                pass
-            return rca_via_graph
-        except Exception as e:
-            print(f"[main] full_graph route failed, falling back to imperative: {e}",
-                  file=__import__('sys').stderr, flush=True)
 
     existing = is_duplicate(job, build)
     if existing and not deep:

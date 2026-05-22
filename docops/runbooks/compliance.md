@@ -145,6 +145,24 @@ Re-run pipeline.
 
 ### Mode 6 — Service not in `config.json` (GATE BUG, `create-quick-infra` family ONLY)
 
+> **🚨 ABSOLUTE RULE — for `create-quick-infra`: NEVER recommend
+> editing `config.json`.** This job is the BOOTSTRAP that CREATES the
+> infra for a brand-new service. `config.json` does NOT have an entry
+> for the service yet — that is the DESIGN, not the bug.
+>
+> Pipeline order of operations:
+>   1. **`create-quick-infra`** — provisions the infra (THIS job)
+>   2. **`Stagger-Onboarding`** — writes the `config.json` entry,
+>      referencing the infra from step 1
+>   3. `Stagger Prod Plus One` (and other deploy jobs) — use the
+>      `config.json` entry from step 2
+>
+> Step 1 cannot depend on the output of step 2. If the agent's RCA
+> says "add the service to config.json" for a `create-quick-infra`
+> failure, it has confused the order. The real fix is one of:
+> gate-logic regression, missing `team-board-mapping` entry, or
+> wrong build params — never `vim config.json`.
+
 **Job scope (REQUIRED):**
 This mode applies ONLY when ALL of:
 - `build_meta.job` ∈ {`create-quick-infra`, `create-quick-infra-*`,

@@ -1,5 +1,33 @@
 # Job flow: create-quick-infra
 
+> **🚨 CRITICAL RULE — DO NOT recommend "add the service to config.json"
+> for any failure on this job.** create-quick-infra is the BOOTSTRAP
+> pipeline that CREATES the infra for a brand-new service. The service
+> entry in `config.json` does NOT exist yet — that is the DESIGN, not
+> the bug. Population of `config.json` happens LATER, after this job
+> succeeds, when an operator runs the **`Stagger-Onboarding`** job
+> (which writes the `config.json` entry referencing the infra this job
+> created).
+>
+> If the agent's RCA for this job says "service X not found in
+> config.json — add it to config.json", the RCA is WRONG. The real
+> fix is one of:
+>   1. **Compliance gate-logic regression** — the build-param fallback
+>      in `vars/JiraDetails.groovy` was reverted/broken. Read recent
+>      `jenkins_pipeline/` commits + fix the gate (see
+>      `docops/runbooks/compliance.md` Mode 6).
+>   2. **Service not onboarded to `team-board-mapping`** — the routing
+>      check at `JiraDetails.groovy:46` returned no match. Register the
+>      service in `team-board-mapping` first (Jira/GitHub PR depending
+>      on repo conventions), then re-run.
+>   3. **Jira ticket / build-param values** wrong — `Jira-Ticket`
+>      empty, `SERVICE` typo, etc. Fix the param + re-trigger.
+>
+> Order of operations: `create-quick-infra` → `Stagger-Onboarding`
+> → `Stagger Prod Plus One`. `config.json` enrichment lives between
+> step 1 and step 3, owned by step 2. Step 1 cannot depend on the
+> output of step 2.
+
 ## Identity
 
 - **Script path:** `jenkins_pipeline/Jenkinsfile_create_quick_infra`

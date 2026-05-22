@@ -82,6 +82,21 @@ Override-now signals (apply WHEN the log shows them):
   matches the fatal line (most commonly `build_tool_crash`,
   `dependency`, or `unknown`).
 
+**🚨 create-quick-infra job — config.json IS NOT THE FIX.** When
+`build_meta.job` matches `create-quick-infra` (or `*quick-infra*`
+variants) AND the failure says `SERVICE '<x>' not found in
+config.json`, DO NOT recommend "add the service to config.json".
+create-quick-infra is the BOOTSTRAP pipeline that CREATES the infra
+for a brand-new service; the `config.json` entry is written LATER by
+the `Stagger-Onboarding` job. The error is a compliance gate-logic
+regression (the build-param fallback in `vars/JiraDetails.groovy` was
+reverted/broken) OR the service isn't onboarded to
+`team-board-mapping` yet. Read the runbook Mode 6 + the
+`create_quick_infra` flow doc — both have the explicit anti-pattern
+warning. Pipeline order: `create-quick-infra` → `Stagger-Onboarding`
+(writes config.json) → `Stagger Prod Plus One` (uses config.json).
+Step 1 cannot depend on step 2's output.
+
 **REPEATED INFRASTRUCTURE-NOISE LINES = PRIMARY CAUSE CANDIDATE.**
 When the log shows REPEATED infrastructure-noise lines (`slave-X seems
 to be removed or offline`, `connection lost`, `node disconnected`,

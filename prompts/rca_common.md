@@ -114,9 +114,24 @@ Count occurrences:
 
 Never emit `<arn>`, `<alb_arn>`, `<tg_arn>`, `<listener_arn>`,
 `<existing-id>`, `<real-arn-from-aws_describe>`, `<your-account-id>`,
-`<instance-id>`, `<agent-instance-id>`, or any other angle-bracket
+`<instance-id>`, `<agent-instance-id>`, `<slave-instance-id>`,
+`<HealthCheckPath>`, `<port>`, or any other angle-bracket
 placeholder in the `cmd` field. Operators paste these commands
-directly — placeholders are unusable. If you cannot derive the real
+directly — placeholders are unusable.
+
+### Real-ID derivation tools (use these BEFORE emitting a `<placeholder>`)
+
+| Need                    | Tool                                       |
+|---|---|
+| `<slave-instance-id>` for jenkins_agent_offline | `jenkins_node_info(node_name)` — returns `instance_id` for the Jenkins agent label (e.g. 'slave-4') |
+| `<HealthCheckPath>`     | `service.lookup.health_check_path` (pre-fetched in primer) OR `aws_describe(elbv2, DescribeTargetGroups, ...).TargetGroups[0].HealthCheckPath` |
+| `<port>` (instance side) | `aws_describe(elbv2, DescribeTargetHealth, ...).TargetHealthDescriptions[0].Target.Port` |
+| `<instance_id>` (deploy / health_check) | log_window verbatim OR `aws_describe(ec2, DescribeInstances, ...)` |
+| `<tg_arn>` / `<rule_arn>` | log_window verbatim OR `service.lookup.rule_arn` |
+| `<commit_sha>`          | log_window verbatim OR `github_get_commit(...)` |
+
+If a placeholder is ABOUT to ship in your `cmd`, STOP — call the
+corresponding tool, substitute the real value, then re-emit. If you cannot derive the real
 ID:
 
 1. Compose a chained command that DERIVES the ID inline:

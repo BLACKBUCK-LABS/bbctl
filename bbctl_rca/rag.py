@@ -421,26 +421,64 @@ def index_docops() -> dict:
 
 
 def index_audits(audit_dir: str | None = None) -> dict:
-    """Walk audit/*.json and embed each RCA's rationale + suggested_commands."""
-    d = Path(audit_dir or os.environ.get("BBCTL_RCA_AUDIT_DIR", "/var/log/bbctl-rca/audit"))
+    """Walk audit JSONs and embed each RCA's rationale + suggested_commands.
+
+    Audit files are written by `bbctl_rca/audit.py:record` to
+    `BBCTL_AUDIT_DIR` (default `/var/log/bbctl-rca/`). Filenames are
+    UUIDs (request_id). Only files matching the UUID pattern AND
+    containing a `summary` field are treated as RCA records — skips
+    incidental JSONs (e.g. config snapshots, error stubs).
+
+    Skips records older than `BBCTL_RAG_AUDIT_MAX_DAYS` (default 60)
+    so the corpus doesn't bloat with stale embeddings of failures
+    whose runbooks have since changed. Override via env.
+
+    Returns: {"files": N_scanned, "written": N_upserted,
+              "skipped_unchanged": N_no_change, "skipped_stale": N_old}
+    """
+    # Default matches where audit.py:record actually writes; legacy
+    # path with `audit/` subdir still honored via env override.
+    d = Path(
+        audit_dir
+        or os.environ.get("BBCTL_RCA_AUDIT_DIR")
+        or os.environ.get("BBCTL_AUDIT_DIR", "/var/log/bbctl-rca")
+    )
     if not d.is_dir():
-        return {"error": f"audit dir not found: {d}", "files": 0, "written": 0}
+        return {"error": f"audit dir not found: {d}",
+                "files": 0, "written": 0}
+
+    max_days = int(os.environ.get("BBCTL_RAG_AUDIT_MAX_DAYS", "60"))
+    cutoff_ts = time.time() - max_days * 86400
+
+    import re as _re
+    uuid_re = _re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$"
+    )
+
     files = 0
     written = 0
+    skipped_stale = 0
     rows: list[dict] = []
     for jf in sorted(d.glob("*.json")):
+        if not uuid_re.match(jf.name):
+            continue  # not an RCA record
         try:
+            st = jf.stat()
+            if st.st_mtime < cutoff_ts:
+                skipped_stale += 1
+                continue
             data = json.loads(jf.read_text())
         except Exception:
             continue
+        if not isinstance(data, dict) or not data.get("summary"):
+            continue  # not RCA-shaped
         files += 1
-        # Compose a chunk text per audit: rationale + cmds. Searchable both
-        # by failure narrative and by what-fix-worked semantics.
         rationale = data.get("root_cause") or data.get("rationale") or ""
         summary   = data.get("summary", "")
         cmds      = data.get("suggested_commands") or []
         cmds_str  = "\n".join(
             f"- ({c.get('tier','?')}) {c.get('cmd','')}" for c in cmds
+            if isinstance(c, dict)
         )
         chunk = (
             f"# RCA {jf.stem}\n"
@@ -449,6 +487,8 @@ def index_audits(audit_dir: str | None = None) -> dict:
             f"suggested_commands:\n{cmds_str}\n"
         )
         vec = embed(chunk, use_cache=True)
+        # build / job may live under build_meta or be top-level
+        bm = data.get("build_meta") or {}
         rows.append({
             "source_type": "audit",
             "source_id":   jf.name,
@@ -458,17 +498,22 @@ def index_audits(audit_dir: str | None = None) -> dict:
             "meta": {
                 "error_class":  data.get("error_class"),
                 "failed_stage": data.get("failed_stage"),
-                "build":        data.get("build_meta", {}).get("build"),
-                "job":          data.get("build_meta", {}).get("job"),
+                "build":        bm.get("build") or data.get("build"),
+                "job":          bm.get("job")   or data.get("job"),
                 "indexed_at":   int(time.time()),
             },
         })
         if len(rows) >= 50:
-            written += upsert(rows)
+            n = upsert(rows)
+            written += n
             rows.clear()
     if rows:
         written += upsert(rows)
-    return {"files": files, "written": written}
+    return {
+        "files":         files,
+        "written":       written,
+        "skipped_stale": skipped_stale,
+    }
 
 
 def index_log_window(job: str, build: int, log_window: str, error_class: str | None = None) -> dict:

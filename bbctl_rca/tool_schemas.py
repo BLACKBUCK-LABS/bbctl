@@ -659,6 +659,43 @@ TOOLS: list[dict] = [
     # For health_check / java_runtime instance-level failures the LLM
     # tells the operator to use `bbctl shell <instance_id>` themselves.
 
+    # ─── JENKINS NODE / SLAVE RESOLUTION (1) ──────────────────────────
+    # Maps Jenkins agent labels (e.g. 'slave-4') to underlying EC2
+    # instance IDs + online state. Kills the `<slave-instance-id>`
+    # placeholder pattern in jenkins_agent_offline RCAs — call this
+    # whenever the log mentions a slave name and you need its real
+    # instance ID for a bbctl shell / aws_describe.
+    {
+        "type": "function",
+        "function": {
+            "name": "jenkins_node_info",
+            "description": (
+                "Resolve a Jenkins node label (e.g. 'slave-4') to its "
+                "real EC2 instance ID, online state, and offline cause. "
+                "Use whenever the log mentions a slave name and your "
+                "RCA needs the instance ID for `bbctl shell <id>` or "
+                "`aws_describe(ec2, DescribeInstances, ...)`. REPLACES "
+                "manual `<slave-instance-id>` placeholders in "
+                "suggested_commands."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_name": {
+                        "type": "string",
+                        "description": (
+                            "Jenkins node name from the log — verbatim. "
+                            "Examples: 'slave-4', 'jenkins-agent-prod-1', "
+                            "'built-in'. Do NOT add 'http://' or any URL "
+                            "prefix; just the bare label."
+                        ),
+                    },
+                },
+                "required": ["node_name"],
+            },
+        },
+    },
+
     # ─── JENKINS MCP PLUGIN (4) ───────────────────────────────────────
     # https://plugins.jenkins.io/mcp-server/ — server-side Jenkins data
     # exposed via MCP protocol. Auth reuses the existing

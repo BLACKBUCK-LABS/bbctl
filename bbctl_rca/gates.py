@@ -75,6 +75,15 @@ MANDATORY_RUNBOOK_CLASSES = {
     "aws_limit",
     "config_validation",
     "build_tool_crash",
+    # Phase-7: runbooks added for these classes; enforce parity with
+    # the rest of the mandatory set.
+    "scm",
+    "parse_error",
+    "java_runtime",
+    "timeout",
+    "network",
+    "dependency",
+    "ssm",
 }
 
 _RCA_REQUIRED_KEYS = (

@@ -14,7 +14,29 @@ agent.py's dispatcher reads TOOL_DISPATCH to resolve LLM-requested
 tool names → Python callables. Each value is sync or async; the
 dispatcher awaits coroutines.
 """
-from . import aws_tools, github, jira, mcp_tools
+import os
+
+from . import aws_tools, github, jenkins as jenkins_api, jira, mcp_tools
+
+
+async def _jenkins_node_info(node_name: str) -> str:
+    """Adapter — calls jenkins.get_node_info using the env-resolved
+    base URL + Basic auth. Returns JSON string of node state so the
+    LLM can use the result verbatim in evidence + suggested_commands.
+    """
+    base = os.environ.get("BBCTL_JENKINS_URL", "").rstrip("/")
+    user = os.environ.get("BBCTL_JENKINS_USER", "")
+    token = os.environ.get("BBCTL_JENKINS_TOKEN", "")
+    if not (base and user and token):
+        return ("jenkins_node_info unavailable: BBCTL_JENKINS_URL / "
+                "BBCTL_JENKINS_USER / BBCTL_JENKINS_TOKEN missing")
+    try:
+        info = await jenkins_api.get_node_info(node_name, base, (user, token))
+        import json as _json
+        return _json.dumps(info, default=str)
+    except Exception as e:
+        return f"jenkins_node_info error: {e}"
+
 
 # Jenkins MCP plugin client — wraps `mcp-server` plugin
 # (https://plugins.jenkins.io/mcp-server/) for capabilities not in the
@@ -158,6 +180,12 @@ TOOL_DISPATCH: dict[str, callable] = {
     "jenkins_mcp_get_test_results":  _jmcp_get_test_results,
     "jenkins_mcp_get_changesets":    _jmcp_get_changesets,
     "jenkins_mcp_find_jobs_with_scm": _jmcp_find_jobs_with_scm,
+
+    # ── Jenkins node → EC2 instance-ID resolver (Phase 7) ──
+    # Kills the `<slave-instance-id>` placeholder pattern in
+    # jenkins_agent_offline RCAs. LLM calls this when log mentions
+    # a slave name; gets back instance_id + online state.
+    "jenkins_node_info":            _jenkins_node_info,
 
     # ── Sanity (Phase 6) ──
     # "code_review":                  claude_review.code_review,

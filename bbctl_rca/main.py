@@ -479,6 +479,26 @@ async def _run_rca(job: str, build: int, service: str, deep: bool = False) -> di
         # the LLM needs to surface as suggested_commands. Build 5225
         # Stagger Prod+1 case (indent-microservice).
         "build_tool_crash",
+        # Phase-7 (May 2026): runbooks now exist for these classes —
+        # promote them out of the one-shot fallback path so the agent
+        # can drill the failing call site + apply the per-class
+        # Action template.
+        # timeout: pipeline wrapper hit budget. Agent reads the
+        # timeout(time:) helper code, identifies which operation, then
+        # decides transient-vs-persistent. One-shot was guessing.
+        "timeout",
+        # network: TCP failure (refused / timed out / unknown host).
+        # Agent can repo_search the failing URL, identify caller, +
+        # check AWS SG / route table state via aws_describe.
+        "network",
+        # dependency: Gradle/Maven/npm/pip 404 on an artifact. Agent
+        # reads the service repo's build.gradle / pom.xml to identify
+        # the bumped version + recent commit that caused the miss.
+        "dependency",
+        # ssm: SendCommand round-trip failed. Agent checks SSM agent
+        # state via aws_describe + identifies whether it's an SSM
+        # issue or a re-classifiable shell-script-exit-code issue.
+        "ssm",
     }
 
     # Phase 3: opt-in to all-classes-agent-mode via env var. When set,

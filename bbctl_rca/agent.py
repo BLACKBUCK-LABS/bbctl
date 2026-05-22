@@ -973,6 +973,16 @@ async def run_agent(
         "aws_limit",
         "config_validation",
         "build_tool_crash",
+        # Added Phase-7 (May 2026): runbooks now exist for these
+        # classes; enforce the same "must read the runbook before
+        # finalizing" gate so the Action template is applied.
+        "scm",
+        "parse_error",
+        "java_runtime",
+        "timeout",
+        "network",
+        "dependency",
+        "ssm",
     }
     # Phase 6 — when the LangGraph gates already ran, force-skip the
     # imperative checks (sentinel class never matches any gate).

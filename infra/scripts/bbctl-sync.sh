@@ -142,4 +142,18 @@ else
     log "WARN: initial deploy clone with git, not a tarball?"
 fi
 
+# 4. Index past RCA audits — past-incident semantic memory.
+#    audit.py writes one JSON per RCA to /var/log/bbctl-rca/. The
+#    RAG indexer reads these as `source_type=audit` chunks so future
+#    RCAs can surface "we saw this exact failure 3 weeks ago, here's
+#    what fixed it" via rag_search(source_types=["audit"]).
+#    Content-hash dedup means already-indexed audits are no-op.
+#    Stale records (>60 days) are skipped via BBCTL_RAG_AUDIT_MAX_DAYS.
+#    Cost: ~$0.001 per new audit (text-embedding-3-small, ~500 tokens
+#    per chunk).
+log "indexing recent RCA audits"
+sudo -u ubuntu "$BASE_DIR/.venv/bin/python" -m bbctl_rca.rag index-audits \
+    2>&1 | tee -a "$LOG" \
+    || log "WARN: RAG index-audits failed"
+
 log "==== sync done ===="

@@ -13,15 +13,27 @@ from . import canary_analyzer
 
 # Class-specific runbook docs (in /opt/bbctl-rca/docops/). If file present,
 # loaded into prompt when error_class matches. Keep doc short — it's prompted.
+# All entries point at canonical runbook filenames; `mcp_tools.docs_get` has
+# a subfolder fallback (added Phase 1) that resolves these to
+# `docops/runbooks/<name>.md`. Previous mapping used legacy S3-mirror names
+# (`JiraDetailsCompliance.md`, `StaggerProdPlusOneDeploy.md`, etc.) that did
+# NOT exist under `docops/` — 6 of 9 entries silently returned "doc not
+# found" and the one-shot path ran blind for those classes. Switching to
+# runbook names brings one-shot into sync with the agent path, which has
+# always used `read_runbook(<class>)` against `docops/runbooks/`.
 CLASS_DOCS = {
-    "compliance": "JiraDetailsCompliance.md",
-    "scm": "SCMTroubleshoot.md",
-    "canary_fail": "StaggerProdPlusOneDeploy.md",
-    "canary_script_error": "StaggerProdPlusOneDeploy.md",
-    "aws_limit": "AwsLimitTroubleshoot.md",
-    "parse_error": "ConfigJsonParseError.md",
-    "health_check": "health_check.md",  # resolves via docs_get fallback → docops/runbooks/health_check.md (Phase 1 dedup; HealthCheckFailure.md deleted)
-    "terraform": "TerraformTroubleshoot.md",
+    "compliance":           "compliance.md",
+    "scm":                  "scm.md",
+    "canary_fail":          "canary_fail.md",
+    "canary_script_error":  "canary_script_error.md",
+    "aws_limit":            "aws_limit.md",
+    "parse_error":          "parse_error.md",
+    "health_check":         "health_check.md",
+    "terraform":            "terraform.md",
+    "stale_tf_state":       "stale_tf_state.md",
+    "config_validation":    "config_validation.md",
+    "jenkins_agent_offline": "jenkins_agent_offline.md",
+    "java_runtime":         "java_runtime.md",
 }
 
 # Regex to extract TG ARN + instance + region from the `healthy.sh` invocation

@@ -24,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var ptyMode bool
 var shellAccount string
 
 var shellCmd = &cobra.Command{
@@ -35,6 +36,7 @@ var shellCmd = &cobra.Command{
 
 func init() {
 	shellCmd.Flags().StringVarP(&shellAccount, "account", "a", "", "AWS account name or ID (overrides default_account_id in config)")
+	shellCmd.Flags().BoolVar(&ptyMode, "pty", false, "Use PTY shell mode (real interactive terminal)")
 	rootCmd.AddCommand(shellCmd)
 }
 
@@ -92,6 +94,9 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("AWS account ID is required: pass --account 123456789012 or set default_account_id in ~/.bbctl/config.yaml")
 	}
 
+	if ptyMode {
+		return runPTYShell(cfg, token, instanceID, accountID)
+	}
 	return runShellDirect(instanceID, accountID, cfg, configDir, token, "")
 }
 

@@ -148,7 +148,13 @@ func runPTYShell(cfg *config.Config, token, instanceID, accountID string) error 
 		for {
 			var frame shellFrame
 			if err := conn.ReadJSON(&frame); err != nil {
-				errCh <- err
+				if websocket.IsCloseError(err,
+					websocket.CloseNormalClosure,
+					websocket.CloseGoingAway) {
+					errCh <- nil
+				} else {
+					errCh <- err
+				}
 				return
 			}
 			switch frame.Type {

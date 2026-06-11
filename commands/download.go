@@ -42,7 +42,7 @@ func runDownload(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	token, err := config.LoadToken(configDir)
+	token, err := config.LoadAccessToken(configDir)
 	if err != nil {
 		return err
 	}

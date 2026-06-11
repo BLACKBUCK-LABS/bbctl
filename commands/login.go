@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -49,17 +50,30 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	idToken, refreshToken, err := runLoopbackFlow(ctx, cfg)
+	idToken, googleAccessToken, refreshToken, err := runLoopbackFlow(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	if err := config.SaveToken(configDir, idToken, refreshToken); err != nil {
 		return fmt.Errorf("save token: %w", err)
 	}
+	// Save Google access token for bbctl.blackbuck.com calls.
+	if err := config.SaveAccessToken(configDir, googleAccessToken); err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not save google access token: %v\n", err)
+	}
+
+	// Exchange Google access token for a Blackbuck session JWT (used by the relay).
+	bbToken, err := loginToBB(ctx, cfg, googleAccessToken)
+	if err != nil {
+		return fmt.Errorf("blackbuck login: %w", err)
+	}
+	if err := config.SaveRelayToken(configDir, bbToken); err != nil {
+		return fmt.Errorf("save relay token: %w", err)
+	}
 
 	// Sync account aliases from backend — non-fatal if the call fails.
 	{
-		c := client.New(cfg.BackendURL, idToken, "bbctl/"+Version)
+		c := client.New(cfg.BackendURL, googleAccessToken, "bbctl/"+Version)
 		if accounts, aErr := c.ListAccounts(context.Background()); aErr == nil {
 			aliases := make(map[string]string, len(accounts))
 			for _, acc := range accounts {
@@ -91,10 +105,10 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runLoopbackFlow(ctx context.Context, cfg *config.Config) (idToken, refreshToken string, err error) {
+func runLoopbackFlow(ctx context.Context, cfg *config.Config) (idToken, accessToken, refreshToken string, err error) {
 	ln, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
-		return "", "", fmt.Errorf("start local callback server: %w", err)
+		return "", "", "", fmt.Errorf("start local callback server: %w", err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://localhost:%d", port)
@@ -141,13 +155,13 @@ func runLoopbackFlow(ctx context.Context, cfg *config.Config) (idToken, refreshT
 	case code := <-codeCh:
 		return exchangeCode(ctx, cfg, code, redirectURI)
 	case err := <-errCh:
-		return "", "", err
+		return "", "", "", err
 	case <-ctx.Done():
-		return "", "", errors.New("login timed out after 2 minutes — please try again")
+		return "", "", "", errors.New("login timed out after 2 minutes — please try again")
 	}
 }
 
-func exchangeCode(ctx context.Context, cfg *config.Config, code, redirectURI string) (idToken, refreshToken string, err error) {
+func exchangeCode(ctx context.Context, cfg *config.Config, code, redirectURI string) (idToken, accessToken, refreshToken string, err error) {
 	data := url.Values{
 		"grant_type":   {"authorization_code"},
 		"code":         {code},
@@ -161,33 +175,77 @@ func exchangeCode(ctx context.Context, cfg *config.Config, code, redirectURI str
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.OIDCTokenEndpoint,
 		strings.NewReader(data.Encode()))
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("token exchange: %w", err)
+		return "", "", "", fmt.Errorf("token exchange: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	var tok struct {
 		IDToken      string `json:"id_token"`
+		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
 		Error        string `json:"error"`
 		Desc         string `json:"error_description"`
 	}
 	if err := json.Unmarshal(body, &tok); err != nil {
-		return "", "", fmt.Errorf("token exchange: parse response: %w", err)
+		return "", "", "", fmt.Errorf("token exchange: parse response: %w", err)
 	}
 	if tok.Error != "" {
-		return "", "", fmt.Errorf("token exchange failed: %s — %s", tok.Error, tok.Desc)
+		return "", "", "", fmt.Errorf("token exchange failed: %s — %s", tok.Error, tok.Desc)
 	}
 	if tok.IDToken == "" {
-		return "", "", fmt.Errorf("token exchange: no id_token in response: %s", string(body))
+		return "", "", "", fmt.Errorf("token exchange: no id_token in response: %s", string(body))
 	}
-	return tok.IDToken, tok.RefreshToken, nil
+	return tok.IDToken, tok.AccessToken, tok.RefreshToken, nil
+}
+
+// loginToBB exchanges a Google access token for a Blackbuck session token.
+func loginToBB(ctx context.Context, cfg *config.Config, googleAccessToken string) (string, error) {
+	if cfg.BBAuthURL == "" {
+		return "", errors.New("bb_auth_url not set in ~/.bbctl/config.yaml")
+	}
+	payload, _ := json.Marshal(map[string]interface{}{
+		"login_type":  "GOOGLE",
+		"tenant":      "EMPLOYEE",
+		"client_name": "BBCTL",
+		"create_user": false,
+		"token":       googleAccessToken,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		cfg.BBAuthURL+"/authentication/v1/login", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("x-aaa-enabled", "true")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		ErrorMessage *string `json:"error_message"`
+		AccessToken  string  `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("parse response: %w", err)
+	}
+	if result.ErrorMessage != nil && *result.ErrorMessage != "" {
+		return "", errors.New(*result.ErrorMessage)
+	}
+	if result.AccessToken == "" {
+		return "", errors.New("no access_token in response")
+	}
+	return result.AccessToken, nil
 }
 
 // emailFromIDToken extracts the email claim from the JWT payload without

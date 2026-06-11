@@ -29,6 +29,8 @@ const defaultOIDCClientSecret = "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"
 // Config holds all user-facing configuration.
 type Config struct {
 	BackendURL         string `yaml:"backend_url"`
+	BBAuthURL          string `yaml:"bb_auth_url"`         // Blackbuck IAM/auth service base URL
+	RelayURL           string `yaml:"relay_url"`            // Relay server for agent-flow PTY sessions
 	AuthMode           string `yaml:"auth_mode"`           // jwt | sigv4
 	OIDCIssuer         string `yaml:"oidc_issuer"`
 	OIDCClientID       string `yaml:"oidc_client_id"`
@@ -57,6 +59,8 @@ func LoadOrDefault(configDir string) (*Config, error) {
 		AuthMode:           "jwt",
 		DefaultTimeoutSecs: 30,
 		BackendURL:         "https://bbctl.blackbuck.com",
+		BBAuthURL:          "https://eks-api-gateway.blackbuck.com",
+		RelayURL:           "https://preamble-doze-treason.ngrok-free.dev",
 		OIDCIssuer:         "https://accounts.google.com",
 		OIDCClientID:       "396628175360-g90ptoadcl2coqrtk09oa2625a0k4ppf.apps.googleusercontent.com",
 		OIDCAuthEndpoint:   "https://accounts.google.com/o/oauth2/v2/auth",

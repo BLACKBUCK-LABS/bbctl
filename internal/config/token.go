@@ -57,6 +57,49 @@ func DeleteToken(configDir string) error {
 	return err
 }
 
+// SaveAccessToken writes the Google OAuth2 access token (ya29.*) to configDir/access_token.
+// This token is used for calls to bbctl.blackbuck.com which validates via Google tokeninfo.
+func SaveAccessToken(configDir, accessToken string) error {
+	if accessToken == "" {
+		return nil
+	}
+	return os.WriteFile(filepath.Join(configDir, "access_token"), []byte(accessToken), 0600)
+}
+
+// LoadAccessToken reads the Google OAuth2 access token from configDir/access_token.
+// Falls back to the ID token if the file does not exist (backwards compat).
+func LoadAccessToken(configDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(configDir, "access_token"))
+	if err == nil {
+		if t := strings.TrimSpace(string(data)); t != "" {
+			return t, nil
+		}
+	}
+	return LoadToken(configDir)
+}
+
+// SaveRelayToken writes the Blackbuck session JWT to configDir/relay_token.
+// This token is used for relay server authentication (Authorization: Token <jwt>).
+func SaveRelayToken(configDir, relayToken string) error {
+	if relayToken == "" {
+		return nil
+	}
+	return os.WriteFile(filepath.Join(configDir, "relay_token"), []byte(relayToken), 0600)
+}
+
+// LoadRelayToken reads the Blackbuck session JWT from configDir/relay_token.
+// Returns ErrNotLoggedIn if absent — caller should prompt bbctl login.
+func LoadRelayToken(configDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(configDir, "relay_token"))
+	if os.IsNotExist(err) {
+		return "", ErrNotLoggedIn
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 // IsTokenExpired returns true if the stored JWT is missing, unparseable,
 // or within 60 seconds of expiry.
 func IsTokenExpired(configDir string) bool {
@@ -114,6 +157,7 @@ func RefreshToken(configDir string, cfg *Config) (string, error) {
 
 	var result struct {
 		IDToken      string `json:"id_token"`
+		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -129,6 +173,12 @@ func RefreshToken(configDir string, cfg *Config) (string, error) {
 	}
 	if err := SaveToken(configDir, result.IDToken, newRefresh); err != nil {
 		return "", fmt.Errorf("save refreshed token: %w", err)
+	}
+	if result.AccessToken != "" {
+		if err := SaveAccessToken(configDir, result.AccessToken); err != nil {
+			return "", fmt.Errorf("save refreshed access token: %w", err)
+		}
+		return result.AccessToken, nil
 	}
 	return result.IDToken, nil
 }

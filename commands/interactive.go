@@ -51,7 +51,8 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 		return fmt.Errorf("backend_url not set in ~/.bbctl/config.yaml")
 	}
 
-	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+	apiToken, _ := config.LoadAccessToken(cfgDir)
+	c := client.New(cfg.BackendURL, apiToken, "bbctl/"+Version)
 
 	instances, err := ec2picker.LoadAll(cmd.Context(), c, cfg, cfgDir, forceRefresh)
 	if err != nil {
@@ -65,7 +66,8 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 			if err != nil {
 				return fmt.Errorf("login failed: %w", err)
 			}
-			c = client.New(cfg.BackendURL, token, "bbctl/"+Version)
+			apiToken, _ = config.LoadAccessToken(cfgDir)
+			c = client.New(cfg.BackendURL, apiToken, "bbctl/"+Version)
 			fmt.Print("Loading instances...")
 			instances, err = ec2picker.LoadAll(cmd.Context(), c, cfg, cfgDir, forceRefresh)
 			if err != nil {

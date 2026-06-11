@@ -29,7 +29,7 @@ func runMCPToken(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	token, err := config.LoadToken(cfgDir)
+	token, err := config.LoadAccessToken(cfgDir)
 	if err != nil || token == "" {
 		return fmt.Errorf("not logged in — run: bbctl login")
 	}

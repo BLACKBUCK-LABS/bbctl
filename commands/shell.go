@@ -25,6 +25,7 @@ import (
 )
 
 var ptyMode bool
+var relayMode bool
 var shellAccount string
 
 var shellCmd = &cobra.Command{
@@ -37,6 +38,7 @@ var shellCmd = &cobra.Command{
 func init() {
 	shellCmd.Flags().StringVarP(&shellAccount, "account", "a", "", "AWS account name or ID (overrides default_account_id in config)")
 	shellCmd.Flags().BoolVar(&ptyMode, "pty", false, "Use PTY shell mode (real interactive terminal)")
+	shellCmd.Flags().BoolVar(&relayMode, "relay", false, "Use relay-based PTY shell mode (agent-flow protocol)")
 	rootCmd.AddCommand(shellCmd)
 }
 
@@ -45,7 +47,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	token, err := config.LoadToken(configDir)
+	token, err := config.LoadAccessToken(configDir)
 	if err != nil {
 		return err
 	}
@@ -94,6 +96,13 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("AWS account ID is required: pass --account 123456789012 or set default_account_id in ~/.bbctl/config.yaml")
 	}
 
+	if relayMode {
+		relayToken, err := config.LoadRelayToken(configDir)
+		if err != nil {
+			return fmt.Errorf("no relay token — run: bbctl login")
+		}
+		return runRelayShell(cfg, relayToken, instanceID)
+	}
 	if ptyMode {
 		return runPTYShell(cfg, token, instanceID, accountID)
 	}

@@ -338,7 +338,7 @@ func receiveDBResponse(wsConn *websocket.Conn) (string, error) {
 	json.Unmarshal(msg, &base) //nolint:errcheck
 
 	switch base.Type {
-	case "result":
+	case "resultset":
 		var rs dbResultSet
 		json.Unmarshal(msg, &rs) //nolint:errcheck
 		fmt.Print(renderTable(rs.Columns, rs.Rows, rs.DurationMs))
@@ -390,6 +390,8 @@ func (s *scanState) feed(line string) int {
 // flush returns the accumulated SQL and resets all state.
 func (s *scanState) flush() string {
 	sql := strings.TrimSpace(s.buf.String())
+	sql = strings.TrimRight(sql, ";")
+	sql = strings.TrimSpace(sql)
 	s.buf.Reset()
 	s.inSingle = false
 	s.inDouble = false

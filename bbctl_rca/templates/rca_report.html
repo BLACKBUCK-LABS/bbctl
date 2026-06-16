@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jenkins RCA · {{ service }} #{{ build }}</title>
+<link rel="icon" type="image/svg+xml" href="/rca/static/favicon.svg" />
+<link rel="alternate icon" type="image/svg+xml" href="/static/favicon.svg" />
+<link rel="apple-touch-icon" href="/rca/static/favicon.svg" />
+<script>
+  // Inline theme bootstrap — runs before paint to avoid flash-of-wrong-theme.
+  (function () {
+    try {
+      var t = localStorage.getItem('jenkins-rca-theme');
+      if (t !== 'light' && t !== 'dark') {
+        t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+<style>
+:root {
+  --bg: #0a0f1c;
+  --bg-pattern: #1e293b;
+  --bg-card: #131a2b;
+  --bg-card-elev: #1a2236;
+  --bg-code: #060912;
+  --bg-code-header: #0f1626;
+  --fg: #e2e8f0;
+  --fg-strong: #f8fafc;
+  --fg-muted: #94a3b8;
+  --fg-faint: #64748b;
+  --border: #1f2937;
+  --border-soft: #1a2236;
+  --border-strong: #334155;
+  --accent: #60a5fa;
+  --accent-hover: #93c5fd;
+  --safe: #34d399;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --shadow: 0 1px 2px 0 rgb(0 0 0 / 0.4), 0 4px 12px -2px rgb(0 0 0 / 0.3);
+  --radius: 10px;
+}
+
+[data-theme="light"] {
+  --bg: #f7f8fc;
+  --bg-pattern: #e2e8f0;
+  --bg-card: #ffffff;
+  --bg-card-elev: #f3f4f9;
+  --bg-code: #f8fafc;
+  --bg-code-header: #f1f5f9;
+  --fg: #0f172a;
+  --fg-strong: #020617;
+  --fg-muted: #64748b;
+  --fg-faint: #94a3b8;
+  --border: rgba(15, 23, 42, 0.10);
+  --border-soft: rgba(15, 23, 42, 0.05);
+  --border-strong: rgba(15, 23, 42, 0.18);
+  --accent: #4f46e5;
+  --accent-hover: #6366f1;
+  --safe: #059669;
+  --warn: #d97706;
+  --danger: #dc2626;
+  --shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.06), 0 8px 24px -8px rgba(15, 23, 42, 0.10);
+}
+
+/* Theme toggle button */
+.theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-card-elev);
+  color: var(--fg);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.theme-toggle:hover { background: var(--bg-card); border-color: var(--accent); }
+.theme-toggle svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+[data-theme="dark"] .theme-toggle .icon-sun { display: inline-block; }
+[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+[data-theme="light"] .theme-toggle .icon-sun { display: none; }
+[data-theme="light"] .theme-toggle .icon-moon { display: inline-block; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  background-image: radial-gradient(var(--bg-pattern) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-attachment: fixed;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+/* Sticky header bar */
+.topbar {
+  position: sticky; top: 0; z-index: 10;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+}
+.topbar-inner {
+  max-width: 1080px; margin: 0 auto; padding: 0 24px;
+  height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; font-weight: 600; letter-spacing: -0.01em; color: var(--fg-strong); }
+.brand img.logo { height: 24px; width: auto; }
+.brand-fallback { font-weight: 800; letter-spacing: 1.5px; color: #ff7676; font-size: 14px; }
+.brand-title { font-weight: 700; color: var(--fg-strong); }
+.brand-soft { color: var(--fg-muted); font-weight: 400; }
+.brand-sep { color: var(--border-strong); }
+.brand-build { font-family: ui-monospace, monospace; font-size: 13px; color: var(--fg-muted); }
+.brand-build:hover { color: var(--accent); }
+.anchors { display: flex; gap: 18px; }
+.anchors a { color: var(--fg-muted); font-size: 13px; }
+.anchors a:hover { color: var(--accent); text-decoration: none; }
+@media (max-width: 768px) { .anchors { display: none; } }
+
+/* Main */
+main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 64px; }
+
+/* Card */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  margin-bottom: 20px;
+}
+.card-head {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border-soft);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.card-title {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--fg-muted); margin: 0;
+}
+.card-meta { font-size: 12px; color: var(--fg-faint); }
+.card-body { padding: 18px 20px; }
+
+/* Hero */
+.hero { padding: 22px 24px; background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-elev) 100%); }
+.hero-top { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.hero h1 {
+  margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.015em; color: var(--fg-strong);
+}
+.hero-meta { margin-top: 6px; font-size: 13px; color: var(--fg-muted); }
+.hero-meta code {
+  background: var(--bg-code); padding: 2px 6px; border-radius: 4px;
+  color: var(--fg); font-size: 12px; border: 1px solid var(--border);
+}
+[data-theme="light"] .hero-meta code {
+  background: var(--bg-card-elev);
+  color: var(--fg-strong);
+  border: 1px solid var(--border-strong);
+}
+.hero-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+@media (min-width: 768px) {
+  .hero-wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .hero-actions { margin-top: 0; }
+}
+
+/* Pills */
+.pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 6px;
+  font-size: 12px; font-weight: 500; line-height: 1.4;
+}
+.pill-mono { font-family: ui-monospace, monospace; }
+.pill-slate {
+  background: var(--bg-card-elev); color: var(--fg); border: 1px solid var(--border-strong);
+  transition: all 0.15s;
+}
+.pill-slate:hover { background: var(--bg-card); color: var(--fg-strong); text-decoration: none; }
+.pill-amber  { background: rgba(251, 191, 36, 0.12); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.3); }
+.pill-link { cursor: pointer; }
+
+/* Class-color pills — dark theme variants */
+.pill.cls-compliance         { background: rgba(251, 191, 36, 0.15); color: #fcd34d; border: 1px solid rgba(251, 191, 36, 0.25); }
+.pill.cls-canary_fail        { background: rgba(248, 113, 113, 0.15); color: #fca5a5; border: 1px solid rgba(248, 113, 113, 0.25); }
+.pill.cls-canary_script_error{ background: rgba(167, 139, 250, 0.15); color: #c4b5fd; border: 1px solid rgba(167, 139, 250, 0.25); }
+.pill.cls-health_check       { background: rgba(244, 114, 182, 0.15); color: #f9a8d4; border: 1px solid rgba(244, 114, 182, 0.25); }
+.pill.cls-aws_limit          { background: rgba(251, 146, 60, 0.15); color: #fdba74; border: 1px solid rgba(251, 146, 60, 0.25); }
+.pill.cls-parse_error        { background: rgba(250, 204, 21, 0.15); color: #fde047; border: 1px solid rgba(250, 204, 21, 0.25); }
+.pill.cls-java_runtime       { background: rgba(248, 113, 113, 0.15); color: #fca5a5; border: 1px solid rgba(248, 113, 113, 0.25); }
+.pill.cls-scm                { background: rgba(129, 140, 248, 0.15); color: #a5b4fc; border: 1px solid rgba(129, 140, 248, 0.25); }
+.pill.cls-network            { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.25); }
+.pill.cls-dependency         { background: rgba(232, 121, 249, 0.15); color: #f0abfc; border: 1px solid rgba(232, 121, 249, 0.25); }
+.pill.cls-ssm                { background: rgba(34, 211, 238, 0.15); color: #67e8f9; border: 1px solid rgba(34, 211, 238, 0.25); }
+.pill.cls-timeout            { background: rgba(251, 191, 36, 0.15); color: #fcd34d; border: 1px solid rgba(251, 191, 36, 0.25); }
+.pill.cls-unknown            { background: #1f2937; color: #94a3b8; border: 1px solid var(--border); }
+
+/* Class-color pills — light theme overrides (deeper text colors so pills stay legible on white) */
+[data-theme="light"] .pill.cls-compliance         { background: rgba(217, 119, 6, 0.12);  color: #92400e; border: 1px solid rgba(217, 119, 6, 0.28); }
+[data-theme="light"] .pill.cls-canary_fail        { background: rgba(220, 38, 38, 0.10);  color: #991b1b; border: 1px solid rgba(220, 38, 38, 0.25); }
+[data-theme="light"] .pill.cls-canary_script_error{ background: rgba(124, 58, 237, 0.10); color: #5b21b6; border: 1px solid rgba(124, 58, 237, 0.25); }
+[data-theme="light"] .pill.cls-health_check       { background: rgba(219, 39, 119, 0.10); color: #9d174d; border: 1px solid rgba(219, 39, 119, 0.25); }
+[data-theme="light"] .pill.cls-aws_limit          { background: rgba(234, 88, 12, 0.10);  color: #9a3412; border: 1px solid rgba(234, 88, 12, 0.25); }
+[data-theme="light"] .pill.cls-parse_error        { background: rgba(202, 138, 4, 0.12);  color: #854d0e; border: 1px solid rgba(202, 138, 4, 0.28); }
+[data-theme="light"] .pill.cls-java_runtime       { background: rgba(220, 38, 38, 0.10);  color: #991b1b; border: 1px solid rgba(220, 38, 38, 0.25); }
+[data-theme="light"] .pill.cls-scm                { background: rgba(67, 56, 202, 0.10);  color: #3730a3; border: 1px solid rgba(67, 56, 202, 0.25); }
+[data-theme="light"] .pill.cls-network            { background: rgba(2, 132, 199, 0.10);  color: #075985; border: 1px solid rgba(2, 132, 199, 0.25); }
+[data-theme="light"] .pill.cls-dependency         { background: rgba(192, 38, 211, 0.10); color: #86198f; border: 1px solid rgba(192, 38, 211, 0.25); }
+[data-theme="light"] .pill.cls-ssm                { background: rgba(8, 145, 178, 0.10);  color: #155e75; border: 1px solid rgba(8, 145, 178, 0.25); }
+[data-theme="light"] .pill.cls-timeout            { background: rgba(202, 138, 4, 0.12);  color: #854d0e; border: 1px solid rgba(202, 138, 4, 0.28); }
+[data-theme="light"] .pill.cls-unknown            { background: var(--bg-card-elev); color: var(--fg-muted); border: 1px solid var(--border-strong); }
+[data-theme="light"] .pill-amber                  { background: rgba(217, 119, 6, 0.10);  color: #92400e; border: 1px solid rgba(217, 119, 6, 0.28); }
+
+/* Two-col grid for root cause + suggested fix */
+.grid-2 { display: grid; grid-template-columns: 1fr; gap: 20px; }
+@media (min-width: 900px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
+
+/* Text bodies */
+.prose { font-size: 14.5px; color: var(--fg); white-space: pre-wrap; word-wrap: break-word; line-height: 1.65; margin: 0; }
+.prose-lg { font-size: 15.5px; color: var(--fg-strong); }
+
+/* Suggested fix Map list */
+dl.fix-list { margin: 0; }
+dl.fix-list dt {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--fg-muted); margin-bottom: 4px;
+}
+dl.fix-list dd { margin: 0 0 16px 0; font-size: 14px; color: var(--fg); white-space: pre-wrap; }
+dl.fix-list dd:last-child { margin-bottom: 0; }
+
+/* Commands */
+.cmd { background: var(--bg-code); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 12px; }
+.cmd:last-child { margin-bottom: 0; }
+.cmd-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; background: var(--bg-code-header);
+  border-bottom: 1px solid var(--border);
+}
+.cmd-head-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cmd-rationale { font-size: 12px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tier-safe { background: rgba(52, 211, 153, 0.15); color: #6ee7b7; font-family: ui-monospace, monospace; font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(52, 211, 153, 0.25); }
+.tier-restricted { background: rgba(251, 191, 36, 0.15); color: #fcd34d; font-family: ui-monospace, monospace; font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(251, 191, 36, 0.25); }
+.cmd-body { padding: 10px 12px; }
+.cmd-body pre { margin: 0; }
+.cmd-body code { color: #86efac; font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; }
+.copy-btn {
+  background: transparent; border: 1px solid transparent; padding: 4px 10px;
+  color: #94a3b8; font-size: 11px; font-weight: 500;
+  cursor: pointer; border-radius: 4px; transition: all 0.15s;
+}
+.copy-btn:hover { color: var(--fg-strong); background: rgba(255,255,255,0.05); border-color: var(--border-strong); }
+.copy-btn.copied { color: var(--safe); border-color: rgba(52, 211, 153, 0.3); }
+
+/* Evidence */
+.ev-list { list-style: none; margin: 0; padding: 0; }
+.ev-item { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border-soft); }
+.ev-item:first-child { padding-top: 0; }
+.ev-item:last-child { padding-bottom: 0; border-bottom: none; }
+.ev-badge {
+  flex-shrink: 0;
+  width: 22px; height: 22px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700;
+}
+.ev-badge.ok { background: rgba(52, 211, 153, 0.15); color: var(--safe); border: 1px solid rgba(52, 211, 153, 0.3); }
+.ev-badge.no { background: rgba(248, 113, 113, 0.15); color: var(--danger); border: 1px solid rgba(248, 113, 113, 0.3); }
+.ev-badge.unk { background: #1f2937; color: var(--fg-muted); border: 1px solid var(--border); }
+.ev-src { font-family: ui-monospace, monospace; font-size: 11px; color: var(--fg-muted); margin-bottom: 2px; }
+.ev-snippet { font-size: 12.5px; color: #cbd5e1; white-space: pre; overflow-x: auto; font-family: 'SFMono-Regular', Consolas, monospace; background: #0d1117; border-radius: 4px; padding: 8px 10px; margin-top: 4px; display: block; max-height: 300px; overflow-y: auto; }
+
+/* Metadata */
+dl.meta { display: grid; grid-template-columns: 1fr; gap: 14px 32px; margin: 0; }
+@media (min-width: 640px) { dl.meta { grid-template-columns: 1fr 1fr; } }
+dl.meta .kv { display: flex; flex-direction: column; gap: 2px; }
+dl.meta dt {
+  font-family: ui-monospace, monospace; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-muted);
+}
+dl.meta dd { margin: 0; font-size: 13.5px; color: #cbd5e1; }
+dl.meta .full { grid-column: 1 / -1; }
+dl.meta .mono-val { font-family: ui-monospace, monospace; font-size: 12.5px; word-break: break-all; color: #cbd5e1; }
+
+/* Footer */
+footer {
+  margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--fg-faint); display: flex; flex-direction: column; gap: 4px;
+}
+footer .author { color: var(--fg-muted); }
+footer .author strong { color: var(--fg-strong); font-weight: 600; }
+
+/* Selection */
+::selection { background: rgba(96, 165, 250, 0.25); color: var(--fg-strong); }
+
+/* ──────────────────────────────────────────────────────────────────
+ * Light theme — final overrides for any hardcoded dark-mode colors
+ * the per-component blocks above leak. Code + evidence + meta blocks
+ * are the main offenders; keep them GitHub-PR-style on light:
+ * light grey background + near-black text, GitHub-green code tokens.
+ * ────────────────────────────────────────────────────────────────── */
+
+/* Suggested commands — code block */
+[data-theme="light"] .cmd                  { background: var(--bg-code); border: 1px solid var(--border-strong); }
+[data-theme="light"] .cmd-head             { background: var(--bg-code-header); border-bottom: 1px solid var(--border); }
+[data-theme="light"] .cmd-rationale        { color: var(--fg-muted); }
+[data-theme="light"] .cmd-body code        { color: #166534; }   /* GitHub-style green-700 on light */
+[data-theme="light"] .copy-btn             { color: var(--fg-muted); }
+[data-theme="light"] .copy-btn:hover       { color: var(--fg-strong); background: var(--bg-card-elev); border-color: var(--border-strong); }
+[data-theme="light"] .copy-btn.copied      { color: var(--safe); border-color: rgba(5, 150, 105, 0.35); }
+[data-theme="light"] .tier-safe            { background: rgba(5, 150, 105, 0.10); color: #065f46; border-color: rgba(5, 150, 105, 0.30); }
+[data-theme="light"] .tier-restricted      { background: rgba(217, 119, 6, 0.12); color: #92400e; border-color: rgba(217, 119, 6, 0.30); }
+
+/* Evidence — snippets + badges */
+[data-theme="light"] .ev-snippet           { color: #0f172a; background: #f1f5f9; border: 1px solid var(--border); }
+[data-theme="light"] .ev-badge.ok          { background: rgba(5, 150, 105, 0.10); color: #065f46; border: 1px solid rgba(5, 150, 105, 0.30); }
+[data-theme="light"] .ev-badge.no          { background: rgba(220, 38, 38, 0.10);  color: #991b1b; border: 1px solid rgba(220, 38, 38, 0.30); }
+[data-theme="light"] .ev-badge.unk         { background: var(--bg-card-elev); color: var(--fg-muted); border: 1px solid var(--border-strong); }
+[data-theme="light"] .ev-src               { color: var(--fg-muted); }
+
+/* Metadata block */
+[data-theme="light"] dl.meta dd            { color: var(--fg); }
+[data-theme="light"] dl.meta .mono-val     { color: var(--fg); }
+
+/* Selection — adjust accent color so it works on light bg too */
+[data-theme="light"] ::selection           { background: rgba(79, 70, 229, 0.16); color: var(--fg-strong); }
+</style>
+</head>
+<body>
+
+<!-- Sticky header -->
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <a href="/rca/v1/dashboard" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit;">
+        <img class="logo" src="https://rca-assistant.jinka.in/static/logo.png" alt="BlackBuck"
+             onerror="this.style.display='none'; document.getElementById('rca-brand-fallback').style.display='inline';">
+        <span id="rca-brand-fallback" class="brand-fallback" style="display:none;">BLACKBUCK</span>
+        <span class="brand-title">Jenkins RCA</span>
+      </a>
+      <span class="brand-sep">·</span>
+      <a class="brand-build" href="/rca/v1/dashboard/{{ job }}">{{ job }}</a>
+      <span class="brand-sep">·</span>
+      <a class="brand-build" href="{{ build_url }}">#{{ build }}</a>
+    </div>
+    <nav class="anchors" style="display:flex;align-items:center;gap:18px;">
+      <a href="/rca/v1/dashboard">All RCAs</a>
+      <a href="#summary">Summary</a>
+      <a href="#root-cause">Root cause</a>
+      <a href="#fix">Fix</a>
+      {% if suggested_commands %}<a href="#commands">Commands</a>{% endif %}
+      {% if evidence %}<a href="#evidence">Evidence</a>{% endif %}
+      <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme" title="Toggle light / dark theme">
+        <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <!-- Hero -->
+  <section class="card hero">
+    <div class="hero-wrap">
+      <div>
+        <div class="hero-top">
+          <span class="pill cls-{{ error_class }}">{{ error_class }}</span>
+          <span class="pill pill-slate">{{ failed_stage }}</span>
+          {% if needs_deeper %}<span class="pill pill-amber">needs deeper analysis</span>{% endif %}
+        </div>
+        <h1>Root-cause analysis</h1>
+        <div class="hero-meta">
+          Service <code>{{ service }}</code> · Generated {{ recorded_at }}
+        </div>
+      </div>
+      <div class="hero-actions">
+        <a class="pill pill-slate pill-link" href="{{ build_url }}">Jenkins build →</a>
+        <a class="pill pill-slate pill-link" href="{{ build_url }}console">Console log →</a>
+        {% if jira_url %}<a class="pill pill-slate pill-link" href="{{ jira_url }}" target="_blank" rel="noopener">Jira ticket {{ jira_key }} →</a>{% endif %}
+        <a class="pill pill-slate pill-link" href="/rca/v1/report/{{ request_id }}.json">Raw JSON →</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Summary -->
+  <section id="summary" class="card">
+    <div class="card-head"><h2 class="card-title">Summary</h2></div>
+    <div class="card-body">
+      <p class="prose prose-lg">{{ summary }}</p>
+    </div>
+  </section>
+
+  <!-- Root cause + Suggested fix -->
+  <div class="grid-2">
+    <section id="root-cause" class="card" style="margin-bottom:0">
+      <div class="card-head"><h2 class="card-title">Root cause</h2></div>
+      <div class="card-body">
+        <p class="prose">{{ root_cause }}</p>
+      </div>
+    </section>
+
+    <section id="fix" class="card" style="margin-bottom:0">
+      <div class="card-head"><h2 class="card-title">Suggested fix</h2></div>
+      <div class="card-body">
+        {% if fix_is_map %}
+          <dl class="fix-list">
+            {% for key, value in fix_items %}
+              <dt>{{ key }}</dt>
+              <dd>{{ value }}</dd>
+            {% endfor %}
+          </dl>
+        {% else %}
+          <p class="prose">{{ suggested_fix }}</p>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+
+  <div style="height:20px"></div>
+
+  <!-- Commands -->
+  {% if suggested_commands %}
+  <section id="commands" class="card">
+    <div class="card-head">
+      <h2 class="card-title">Suggested commands</h2>
+      <span class="card-meta">{{ suggested_commands|length }} suggestion(s)</span>
+    </div>
+    <div class="card-body">
+      {% for c in suggested_commands %}
+      <div class="cmd">
+        <div class="cmd-head">
+          <div class="cmd-head-left">
+            <span class="{{ 'tier-safe' if c.tier == 'safe' else 'tier-restricted' }}">{{ c.tier }}</span>
+            <span class="cmd-rationale">{{ c.rationale }}</span>
+          </div>
+          <button class="copy-btn" onclick="copyCmd('cmd-{{ loop.index }}', this)">Copy</button>
+        </div>
+        <div class="cmd-body">
+          <pre><code id="cmd-{{ loop.index }}">{{ c.cmd }}</code></pre>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- Evidence -->
+  {% if evidence %}
+  <section id="evidence" class="card">
+    <div class="card-head">
+      <h2 class="card-title">Evidence</h2>
+      <span class="card-meta">{{ evidence|length }} item(s)</span>
+    </div>
+    <div class="card-body">
+      <ul class="ev-list">
+        {% for e in evidence %}
+        <li class="ev-item">
+          <span class="ev-badge {{ 'ok' if e.verified == True else ('no' if e.verified == False else 'unk') }}">
+            {{ '✓' if e.verified == True else ('✗' if e.verified == False else '?') }}
+          </span>
+          <div style="flex:1; min-width:0">
+            <div class="ev-src">{{ e.source }}</div>
+            {% if e.snippet %}<code class="ev-snippet">{{ e.snippet }}</code>{% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+  {% endif %}
+
+  <footer>
+    <div>BB-AI · powered by bbctl-rca · audit record stored on bbctl-ec2</div>
+    <div class="author">Built by Hariharan G, DevOps</div>
+  </footer>
+</main>
+
+<script>
+function copyCmd(id, btn) {
+  const text = document.getElementById(id).innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.classList.add('copied');
+    const orig = btn.textContent;
+    btn.textContent = 'Copied ✓';
+    setTimeout(() => { btn.classList.remove('copied'); btn.textContent = orig; }, 1500);
+  });
+}
+</script>
+<script src="/rca/static/theme.js"></script>
+</body>
+</html>

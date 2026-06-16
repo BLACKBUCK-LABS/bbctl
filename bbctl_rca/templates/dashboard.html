@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jenkins RCA — Recent Pipeline Failures</title>
+<link rel="icon" type="image/svg+xml" href="/rca/static/favicon.svg" />
+<link rel="alternate icon" type="image/svg+xml" href="/static/favicon.svg" />
+<link rel="apple-touch-icon" href="/rca/static/favicon.svg" />
+<script>
+  // Inline theme bootstrap — runs before paint to avoid flash-of-wrong-theme.
+  (function () {
+    try {
+      var t = localStorage.getItem('jenkins-rca-theme');
+      if (t !== 'light' && t !== 'dark') {
+        t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+<link rel="stylesheet" href="/rca/static/theme.css">
+</head>
+<body>
+<header class="topbar">
+  <a href="/rca/v1/dashboard" class="brand">
+    <img class="logo" src="https://rca-assistant.jinka.in/static/logo.png" alt="BlackBuck"
+         onerror="this.style.display='none'; document.getElementById('brand-fallback').style.display='inline';">
+    <span id="brand-fallback" class="brand-fallback" style="display:none;">BLACKBUCK</span>
+    <span class="brand-title">Jenkins RCA</span>
+  </a>
+  <div class="topbar-right">
+    {% if user and user.email and user.email != "anon@local" %}
+    <div class="user-pill">
+      <span class="email">{{ user.email }}</span>
+      <a href="/rca/v1/auth/logout">Sign out</a>
+    </div>
+    {% endif %}
+    <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme" title="Toggle light / dark theme">
+      <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <h1>Recent pipeline failures</h1>
+    <div class="stats">
+      <div><b>{{ pipelines|length }}</b> pipeline{{ '' if pipelines|length == 1 else 's' }}</div>
+      <div><b>{{ total_rcas }}</b> RCA{{ '' if total_rcas == 1 else 's' }} in last {{ days }} day{{ '' if days == 1 else 's' }}</div>
+    </div>
+  </section>
+
+  {% if pipelines %}
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Pipeline</th>
+        <th>Failures</th>
+        <th>Latest build</th>
+        <th>When</th>
+        <th>Summary</th>
+        <th>Classes seen</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in pipelines %}
+      <tr class="row" onclick="window.location='/rca/v1/dashboard/{{ p.job|urlencode }}';">
+        <td><a class="row-link" href="/rca/v1/dashboard/{{ p.job|urlencode }}">{{ p.job }}</a></td>
+        <td class="col-count">{{ p.count }}</td>
+        <td class="col-mono">#{{ p.latest.build }}</td>
+        <td class="col-mono">{{ p.latest.recorded_at[:19].replace('T', ' ') }}</td>
+        <td class="col-summary">{{ (p.latest.summary or 'No summary')[:140] }}{% if (p.latest.summary or '')|length > 140 %}…{% endif %}</td>
+        <td class="col-pills">
+          <div class="pills">
+            {% for c in p.classes %}
+            <span class="pill {{ c }}">{{ c }}</span>
+            {% endfor %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    No RCAs recorded in the last {{ days }} day{{ '' if days == 1 else 's' }}.<br>
+    Either no pipelines failed, or the audit log directory is empty.
+  </div>
+  {% endif %}
+</main>
+
+<footer>
+  <div>Jenkins RCA · audit log at <code>/var/log/bbctl-rca/</code></div>
+  <div class="author">Built by Hariharan G, DevOps</div>
+</footer>
+
+<script src="/rca/static/theme.js"></script>
+</body>
+</html>

@@ -26,3 +26,12 @@ Thumbs.db
 
 # GoReleaser output
 dist/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/

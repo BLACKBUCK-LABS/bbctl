@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ job }} — Jenkins RCA</title>
+<link rel="icon" type="image/svg+xml" href="/rca/static/favicon.svg" />
+<link rel="alternate icon" type="image/svg+xml" href="/static/favicon.svg" />
+<link rel="apple-touch-icon" href="/rca/static/favicon.svg" />
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem('jenkins-rca-theme');
+      if (t !== 'light' && t !== 'dark') {
+        t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+<link rel="stylesheet" href="/rca/static/theme.css">
+</head>
+<body>
+<header class="topbar">
+  <a href="/rca/v1/dashboard" class="brand">
+    <img class="logo" src="https://rca-assistant.jinka.in/static/logo.png" alt="BlackBuck"
+         onerror="this.style.display='none'; document.getElementById('brand-fallback').style.display='inline';">
+    <span id="brand-fallback" class="brand-fallback" style="display:none;">BLACKBUCK</span>
+    <span class="brand-title">Jenkins RCA</span>
+  </a>
+  <div class="topbar-right">
+    {% if user and user.email and user.email != "anon@local" %}
+    <div class="user-pill">
+      <span class="email">{{ user.email }}</span>
+      <a href="/rca/v1/auth/logout">Sign out</a>
+    </div>
+    {% endif %}
+    <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme" title="Toggle light / dark theme">
+      <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <div class="breadcrumb">
+    <a href="/rca/v1/dashboard">← All pipelines</a>
+  </div>
+
+  <section class="hero">
+    <h1>{{ job }}</h1>
+    <div class="stats">
+      <div><b>{{ count }}</b> failure{{ '' if count == 1 else 's' }} in last {{ days }} day{{ '' if days == 1 else 's' }}</div>
+    </div>
+  </section>
+
+  {% if builds %}
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Build</th>
+        <th>When</th>
+        <th>Class</th>
+        <th>Failed stage</th>
+        <th>Summary</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in builds %}
+      <tr>
+        <td class="col-mono"><span class="row-link">#{{ b.build }}</span></td>
+        <td class="col-mono">{{ b.recorded_at[:19].replace('T', ' ') }}</td>
+        <td><span class="pill {{ b.error_class }}">{{ b.error_class }}</span></td>
+        <td>{{ b.failed_stage or '—' }}</td>
+        <td class="col-summary">
+          {{ b.summary or 'No summary' }}
+          {% if b.needs_deeper %}<span class="muted needs-deeper">· needs deeper</span>{% endif %}
+          {% if b.llm_error %}<span class="muted llm-error">· LLM error</span>{% endif %}
+        </td>
+        <td class="col-actions">
+          <a href="/rca/v1/report/{{ b.request_id }}" class="btn">Open RCA &rarr;</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    No RCAs for this pipeline in the last {{ days }} day{{ '' if days == 1 else 's' }}.
+  </div>
+  {% endif %}
+</main>
+
+<footer>
+  <div>Jenkins RCA</div>
+  <div class="author">Built by Hariharan G, DevOps</div>
+</footer>
+
+<script src="/rca/static/theme.js"></script>
+</body>
+</html>

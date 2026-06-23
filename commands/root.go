@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/blackbuck/bbctl/internal/config"
 	"github.com/blackbuck/bbctl/internal/shell"
 	"github.com/spf13/cobra"
 )
@@ -41,8 +42,6 @@ Use 'bbctl run <instance-id> -- <command>' for a single command.`,
 	},
 }
 
-const devBackendURL = "https://bbctl-dev.blackbuck.com"
-
 // Execute is the entry point called from main.
 // "bbctl dev <rest>" strips "dev" and forces the dev backend URL so all
 // subcommands (db, shell, run, etc.) hit bbctl-dev without any other changes.
@@ -50,7 +49,13 @@ func Execute() {
 	if len(os.Args) > 1 && os.Args[1] == "dev" {
 		os.Args = append(os.Args[:1], os.Args[2:]...)
 		if os.Getenv("BBCTL_BACKEND_URL") == "" {
-			os.Setenv("BBCTL_BACKEND_URL", devBackendURL) //nolint:errcheck
+			devURL := "https://bbctl-dev.blackbuck.com" // default
+			if configDir, err := config.DefaultConfigDir(); err == nil {
+				if cfg, err := config.LoadOrDefault(configDir); err == nil && cfg.DevBackendURL != "" {
+					devURL = cfg.DevBackendURL
+				}
+			}
+			os.Setenv("BBCTL_BACKEND_URL", devURL) //nolint:errcheck
 		}
 	}
 	if err := rootCmd.Execute(); err != nil {

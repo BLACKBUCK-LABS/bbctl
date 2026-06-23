@@ -21,6 +21,7 @@ import (
 // ─── flags ────────────────────────────────────────────────────────────────────
 
 var dbAccount string
+var dbVPC string
 
 // ─── cobra wiring ─────────────────────────────────────────────────────────────
 
@@ -48,6 +49,7 @@ Examples:
 func init() {
 	dbCmd.AddCommand(dbListCmd)
 	dbListCmd.Flags().StringVarP(&dbAccount, "account", "a", "", "AWS account name (required)")
+	dbListCmd.Flags().StringVarP(&dbVPC, "vpc", "v", "", "Filter by VPC name (e.g. vpc-mumbai-dev)")
 	dbListCmd.MarkFlagRequired("account") //nolint:errcheck
 }
 
@@ -69,19 +71,29 @@ func runDBList(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
-	resp, err := c.ListDatabases(cmd.Context(), dbAccount)
+	resp, err := c.ListDatabases(cmd.Context(), dbAccount, dbVPC)
 	if err != nil {
 		return fmt.Errorf("list databases: %w", err)
 	}
 
 	if len(resp.Databases) == 0 {
-		fmt.Printf("No databases found for account %q.\n", dbAccount)
+		if dbVPC != "" {
+			fmt.Printf("No databases found in account %q VPC %q.\n", dbAccount, dbVPC)
+		} else {
+			fmt.Printf("No databases found for account %q.\n", dbAccount)
+		}
 		return nil
 	}
 
-	fmt.Printf("Databases in %s:\n\n", resp.Account)
+	if dbVPC != "" {
+		fmt.Printf("Databases in %s (%s):\n\n", resp.Account, dbVPC)
+	} else {
+		fmt.Printf("Databases in %s:\n\n", resp.Account)
+	}
+	fmt.Printf("  %-40s  %-10s  %-12s\n", "IDENTIFIER", "ENGINE", "STATUS")
+	fmt.Printf("  %-40s  %-10s  %-12s\n", "----------", "------", "------")
 	for _, db := range resp.Databases {
-		fmt.Printf("  %s\n", db)
+		fmt.Printf("  %-40s  %-10s  %-12s\n", db.Identifier, db.Engine, db.Status)
 	}
 	fmt.Printf("\nConnect: bbctl db connect <identifier> -a %s\n", dbAccount)
 	return nil

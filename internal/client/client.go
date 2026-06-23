@@ -198,15 +198,29 @@ func (c *Client) ListAccounts(ctx context.Context) ([]AccountInfo, error) {
 	return resp.Accounts, nil
 }
 
-// DBListResponse is the response from GET /v1/db/list.
-type DBListResponse struct {
-	Account   string   `json:"account"`
-	Databases []string `json:"databases"`
+// DBInstance describes a single RDS instance returned by /v1/db/list.
+type DBInstance struct {
+	Identifier string `json:"identifier"`
+	Endpoint   string `json:"endpoint"`
+	Port       int32  `json:"port"`
+	Engine     string `json:"engine"`
+	Status     string `json:"status"`
+	VpcID      string `json:"vpc_id"`
 }
 
-// ListDatabases calls GET /v1/db/list?account=<account>.
-func (c *Client) ListDatabases(ctx context.Context, account string) (*DBListResponse, error) {
+// DBListResponse is the response from GET /v1/db/list.
+type DBListResponse struct {
+	Account   string       `json:"account"`
+	VPC       string       `json:"vpc"`
+	Databases []DBInstance `json:"databases"`
+}
+
+// ListDatabases calls GET /v1/db/list?account=<account>[&vpc=<name>].
+func (c *Client) ListDatabases(ctx context.Context, account, vpc string) (*DBListResponse, error) {
 	path := "/v1/db/list?account=" + account
+	if vpc != "" {
+		path += "&vpc=" + vpc
+	}
 	var resp DBListResponse
 	if err := c.getJSON(ctx, path, &resp); err != nil {
 		return nil, err

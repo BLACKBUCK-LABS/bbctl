@@ -198,6 +198,22 @@ func (c *Client) ListAccounts(ctx context.Context) ([]AccountInfo, error) {
 	return resp.Accounts, nil
 }
 
+// DBListResponse is the response from GET /v1/db/list.
+type DBListResponse struct {
+	Account   string   `json:"account"`
+	Databases []string `json:"databases"`
+}
+
+// ListDatabases calls GET /v1/db/list?account=<account>.
+func (c *Client) ListDatabases(ctx context.Context, account string) (*DBListResponse, error) {
+	path := "/v1/db/list?account=" + account
+	var resp DBListResponse
+	if err := c.getJSON(ctx, path, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // APIError represents a non-2xx response from the backend.
 type APIError struct {
 	HTTPStatus int

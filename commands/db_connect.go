@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,19 +11,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
 	"github.com/chzyer/readline"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 // ─── flags ────────────────────────────────────────────────────────────────────
 
 var dbAccount string
-var dbHost    string
-var dbUser    string
-var dbPort    int
 
 // ─── cobra wiring ─────────────────────────────────────────────────────────────
 
@@ -37,38 +33,85 @@ func init() {
 	rootCmd.AddCommand(dbCmd)
 }
 
+var dbListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List available databases for an account",
+	Long: `List all RDS identifiers available for an account.
+Identifiers are fetched from AWS Secrets Manager (bbctl/rds/<account>/).
+
+Examples:
+  bbctl db list -a zinka`,
+	Args: cobra.NoArgs,
+	RunE: runDBList,
+}
+
+func init() {
+	dbCmd.AddCommand(dbListCmd)
+	dbListCmd.Flags().StringVarP(&dbAccount, "account", "a", "", "AWS account name (required)")
+	dbListCmd.MarkFlagRequired("account") //nolint:errcheck
+}
+
+func runDBList(cmd *cobra.Command, args []string) error {
+	configDir, err := config.DefaultConfigDir()
+	if err != nil {
+		return fmt.Errorf("config dir: %w", err)
+	}
+	token, err := config.LoadToken(configDir)
+	if err != nil {
+		return fmt.Errorf("not authenticated. Run: bbctl login")
+	}
+	cfg, err := config.LoadOrDefault(configDir)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if cfg.BackendURL == "" {
+		return fmt.Errorf("backend_url not set in ~/.bbctl/config.yaml")
+	}
+
+	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+	resp, err := c.ListDatabases(cmd.Context(), dbAccount)
+	if err != nil {
+		return fmt.Errorf("list databases: %w", err)
+	}
+
+	if len(resp.Databases) == 0 {
+		fmt.Printf("No databases found for account %q.\n", dbAccount)
+		return nil
+	}
+
+	fmt.Printf("Databases in %s:\n\n", resp.Account)
+	for _, db := range resp.Databases {
+		fmt.Printf("  %s\n", db)
+	}
+	fmt.Printf("\nConnect: bbctl db connect <identifier> -a %s\n", dbAccount)
+	return nil
+}
+
 var dbConnectCmd = &cobra.Command{
-	Use:   "connect [alias]",
+	Use:   "connect <identifier>",
 	Short: "Open a governed MySQL REPL",
 	Long: `Connect to a governed RDS instance via the bbctl backend.
+Credentials are fetched from AWS Secrets Manager — no password prompt.
 All queries are classified and audited. Restricted queries (DELETE, DROP, etc.)
 require Jira ticket approval before execution.
 
 Examples:
-  bbctl db connect prod-karma-mysql -a zinka
-  bbctl db connect -a zinka --host rds.internal --user admin`,
-	Args: cobra.MaximumNArgs(1),
+  bbctl db connect preprod-core-mysql -a zinka`,
+	Args: cobra.ExactArgs(1),
 	RunE: runDBConnect,
 }
 
 func init() {
 	dbCmd.AddCommand(dbConnectCmd)
-	dbConnectCmd.Flags().StringVarP(&dbAccount, "account", "a", "", "AWS account name")
-	dbConnectCmd.Flags().StringVar(&dbHost, "host", "", "RDS host (overrides alias)")
-	dbConnectCmd.Flags().StringVar(&dbUser, "user", "", "Database username (skip prompt)")
-	dbConnectCmd.Flags().IntVar(&dbPort, "port", 3306, "RDS port")
+	dbConnectCmd.Flags().StringVarP(&dbAccount, "account", "a", "", "AWS account name or ID")
 }
 
 // ─── protocol types (mirror backend JSON) ────────────────────────────────────
 
 type dbConnectMsg struct {
-	Type     string `json:"type"`
-	Alias    string `json:"alias,omitempty"`
-	Account  string `json:"account,omitempty"`
-	Host     string `json:"host,omitempty"`
-	Port     int    `json:"port,omitempty"`
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Type       string `json:"type"`
+	Identifier string `json:"identifier"`
+	Account    string `json:"account"`
 }
 
 type dbQueryMsg struct {
@@ -123,12 +166,9 @@ type dbErrorMsg struct {
 // ─── runDBConnect ─────────────────────────────────────────────────────────────
 
 func runDBConnect(cmd *cobra.Command, args []string) error {
-	var alias string
-	if len(args) == 1 {
-		alias = args[0]
-	}
-	if alias == "" && dbHost == "" {
-		return fmt.Errorf("provide an alias argument or --host")
+	identifier := args[0]
+	if dbAccount == "" {
+		return fmt.Errorf("account required: pass -a <account>")
 	}
 
 	configDir, err := config.DefaultConfigDir()
@@ -147,22 +187,6 @@ func runDBConnect(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("backend_url not set in ~/.bbctl/config.yaml")
 	}
 
-	// Credentials.
-	username := dbUser
-	if username == "" {
-		fmt.Print("Database username: ")
-		reader := bufio.NewReader(os.Stdin)
-		username, _ = reader.ReadString('\n')
-		username = strings.TrimSpace(username)
-	}
-	fmt.Print("Database password: ")
-	passBytes, err := term.ReadPassword(int(syscall.Stdin))
-	fmt.Println()
-	if err != nil {
-		return fmt.Errorf("read password: %w", err)
-	}
-	password := string(passBytes)
-
 	// Dial WebSocket.
 	wsURL := strings.Replace(cfg.BackendURL, "https://", "wss://", 1)
 	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
@@ -179,23 +203,19 @@ func runDBConnect(cmd *cobra.Command, args []string) error {
 	}
 	defer wsConn.Close() //nolint:errcheck
 
-	// Send connect message.
+	// Send connect message — backend fetches credentials from Secrets Manager.
 	connectMsg := dbConnectMsg{
-		Type:     "connect",
-		Alias:    alias,
-		Account:  dbAccount,
-		Host:     dbHost,
-		Port:     dbPort,
-		Username: username,
-		Password: password,
+		Type:       "connect",
+		Identifier: identifier,
+		Account:    dbAccount,
 	}
 	raw, _ := json.Marshal(connectMsg)
 	if err := wsConn.WriteMessage(websocket.TextMessage, raw); err != nil {
 		return fmt.Errorf("send connect: %w", err)
 	}
 
-	// Wait for "connected" or "error".
-	wsConn.SetReadDeadline(time.Now().Add(15 * time.Second)) //nolint:errcheck
+	// Wait for "connected" or "error" (allow extra time for Secrets Manager fetch).
+	wsConn.SetReadDeadline(time.Now().Add(20 * time.Second)) //nolint:errcheck
 	_, msg, err := wsConn.ReadMessage()
 	wsConn.SetReadDeadline(time.Time{}) //nolint:errcheck
 	if err != nil {

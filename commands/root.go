@@ -41,8 +41,18 @@ Use 'bbctl run <instance-id> -- <command>' for a single command.`,
 	},
 }
 
+const devBackendURL = "https://bbctl-dev.blackbuck.com"
+
 // Execute is the entry point called from main.
+// "bbctl dev <rest>" strips "dev" and forces the dev backend URL so all
+// subcommands (db, shell, run, etc.) hit bbctl-dev without any other changes.
 func Execute() {
+	if len(os.Args) > 1 && os.Args[1] == "dev" {
+		os.Args = append(os.Args[:1], os.Args[2:]...)
+		if os.Getenv("BBCTL_BACKEND_URL") == "" {
+			os.Setenv("BBCTL_BACKEND_URL", devBackendURL) //nolint:errcheck
+		}
+	}
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

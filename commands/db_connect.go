@@ -322,6 +322,13 @@ func runREPL(wsConn *websocket.Conn) error {
 			continue
 		}
 
+		// Handle client-side exit commands before feeding to the SQL scanner.
+		trimmed := strings.ToLower(strings.TrimRight(strings.TrimSpace(line), ";"))
+		if trimmed == "exit" || trimmed == "quit" || trimmed == `\q` {
+			fmt.Println("Bye")
+			return nil
+		}
+
 		if scanner.feed(line) < 0 {
 			continue
 		}

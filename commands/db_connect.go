@@ -199,7 +199,12 @@ func runDBConnect(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("backend_url not set in ~/.bbctl/config.yaml")
 	}
 
-	// Dial WebSocket.
+	return startDBConnect(identifier, dbAccount, cfg, token)
+}
+
+// startDBConnect dials the backend WebSocket and starts a governed MySQL REPL.
+// Called by both the cobra subcommand and the interactive picker.
+func startDBConnect(identifier, account string, cfg *config.Config, token string) error {
 	wsURL := strings.Replace(cfg.BackendURL, "https://", "wss://", 1)
 	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
 	u, err := url.Parse(wsURL + "/v1/db/query")
@@ -215,18 +220,11 @@ func runDBConnect(cmd *cobra.Command, args []string) error {
 	}
 	defer wsConn.Close() //nolint:errcheck
 
-	// Send connect message — backend fetches credentials from Secrets Manager.
-	connectMsg := dbConnectMsg{
-		Type:       "connect",
-		Identifier: identifier,
-		Account:    dbAccount,
-	}
-	raw, _ := json.Marshal(connectMsg)
+	raw, _ := json.Marshal(dbConnectMsg{Type: "connect", Identifier: identifier, Account: account})
 	if err := wsConn.WriteMessage(websocket.TextMessage, raw); err != nil {
 		return fmt.Errorf("send connect: %w", err)
 	}
 
-	// Wait for "connected" or "error" (allow extra time for Secrets Manager fetch).
 	wsConn.SetReadDeadline(time.Now().Add(20 * time.Second)) //nolint:errcheck
 	_, msg, err := wsConn.ReadMessage()
 	wsConn.SetReadDeadline(time.Time{}) //nolint:errcheck
@@ -250,7 +248,6 @@ func runDBConnect(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Session: %s\n", connected.SessionID)
 	fmt.Printf("Type SQL terminated with ; — Ctrl+C or Ctrl+D to exit.\n\n")
 
-	// SIGTERM: clean exit (readline handles SIGINT/Ctrl+C).
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM)
 	go func() {

@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -34,6 +36,26 @@ var actions = []action{
 	{Key: "details", Icon: "ℹ ", Label: "Instance details", Preview: "Display detailed information about the instance"},
 }
 
+type resourceOption struct {
+	Key   string
+	Label string
+	Desc  string
+}
+
+var resourceOptions = []resourceOption{
+	{Key: "ec2", Label: "EC2  Instances", Desc: "Open shell · run commands · upload/download files on EC2 instances"},
+	{Key: "rds", Label: "RDS  Databases", Desc: "Connect to a governed MySQL REPL on RDS instances"},
+}
+
+type rdsItem struct {
+	Identifier   string
+	Endpoint     string
+	Port         int32
+	Engine       string
+	Status       string
+	AccountLabel string // lowercase, matches Secrets Manager path and backend lookup
+}
+
 func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 	cfgDir, err := config.DefaultConfigDir()
 	if err != nil {
@@ -53,6 +75,53 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
 
+	fmt.Print("\033[2J\033[H") // clear screen
+	shell.PrintWelcome(shell.WelcomeInfo{
+		Email:   emailFromToken(token),
+		Version: Version,
+	})
+
+	resKey, err := pickResourceType()
+	if err != nil {
+		return err
+	}
+	if resKey == "" {
+		fmt.Println("Cancelled.")
+		return nil
+	}
+
+	switch resKey {
+	case "ec2":
+		return runInteractiveEC2(cmd, c, cfg, cfgDir, token, forceRefresh)
+	case "rds":
+		return runInteractiveRDS(cmd.Context(), c, cfg, token)
+	}
+	return nil
+}
+
+func pickResourceType() (string, error) {
+	idx, err := fuzzyfinder.Find(
+		resourceOptions,
+		func(i int) string { return resourceOptions[i].Label },
+		fuzzyfinder.WithHeader("Select resource type  ·  ESC to cancel"),
+		fuzzyfinder.WithPreviewWindow(func(i, w, h int) string {
+			if i < 0 {
+				return ""
+			}
+			return resourceOptions[i].Desc
+		}),
+	)
+	if err != nil {
+		if err == fuzzyfinder.ErrAbort {
+			return "", nil
+		}
+		return "", err
+	}
+	return resourceOptions[idx].Key, nil
+}
+
+// runInteractiveEC2 is the EC2 flow: load instances → fuzzy-pick → action.
+func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config, cfgDir, token string, forceRefresh bool) error {
 	instances, err := ec2picker.LoadAll(cmd.Context(), c, cfg, cfgDir, forceRefresh)
 	if err != nil {
 		errLower := strings.ToLower(err.Error())
@@ -61,9 +130,10 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 			if loginErr := runLogin(cmd, []string{}); loginErr != nil {
 				return loginErr
 			}
-			token, err = config.LoadToken(cfgDir)
-			if err != nil {
-				return fmt.Errorf("login failed: %w", err)
+			var loadErr error
+			token, loadErr = config.LoadToken(cfgDir)
+			if loadErr != nil {
+				return fmt.Errorf("login failed: %w", loadErr)
 			}
 			c = client.New(cfg.BackendURL, token, "bbctl/"+Version)
 			fmt.Print("Loading instances...")
@@ -82,24 +152,10 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 		return nil
 	}
 
-	accountSet := make(map[string]bool)
-	for _, inst := range instances {
-		accountSet[inst.AccountID] = true
-	}
-
 	// Ensure token is current — may have been refreshed during 401 re-login.
 	if latestToken, lerr := config.LoadToken(cfgDir); lerr == nil {
 		token = latestToken
 	}
-
-	fmt.Print("\033[2J\033[H") // clear screen
-	shell.PrintWelcome(shell.WelcomeInfo{
-		Email:         emailFromToken(token),
-		Version:       Version,
-		InstanceCount: len(instances),
-		AccountCount:  len(accountSet),
-		CacheAge:      cacheAgeStr(cfgDir, cfg),
-	})
 
 	selected, err := ec2picker.Pick(instances)
 	if err != nil {
@@ -121,6 +177,118 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 	}
 
 	return executeAction(cmd.Context(), actionKey, selected, c, cfg, cfgDir, token)
+}
+
+// runInteractiveRDS loads RDS instances from all accounts, lets the user pick
+// one, then opens a governed MySQL REPL session.
+func runInteractiveRDS(ctx context.Context, c *client.Client, cfg *config.Config, token string) error {
+	if len(cfg.AccountAliases) == 0 {
+		return fmt.Errorf("no account_aliases in ~/.bbctl/config.yaml")
+	}
+
+	type result struct {
+		items []rdsItem
+		err   error
+	}
+
+	labels := make([]string, 0, len(cfg.AccountAliases))
+	for label := range cfg.AccountAliases {
+		labels = append(labels, label)
+	}
+
+	results := make([]result, len(labels))
+	var wg sync.WaitGroup
+	for i, label := range labels {
+		i, label := i, label
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := c.ListDatabases(ctx, label, "")
+			if err != nil {
+				results[i] = result{err: fmt.Errorf("%s: %w", label, err)}
+				return
+			}
+			items := make([]rdsItem, len(resp.Databases))
+			for j, db := range resp.Databases {
+				items[j] = rdsItem{
+					Identifier:   db.Identifier,
+					Endpoint:     db.Endpoint,
+					Port:         db.Port,
+					Engine:       db.Engine,
+					Status:       db.Status,
+					AccountLabel: label,
+				}
+			}
+			results[i] = result{items: items}
+		}()
+	}
+	wg.Wait()
+
+	var all []rdsItem
+	var errs []string
+	for _, r := range results {
+		if r.err != nil {
+			errs = append(errs, r.err.Error())
+			continue
+		}
+		all = append(all, r.items...)
+	}
+
+	if len(all) == 0 {
+		if len(errs) > 0 {
+			return fmt.Errorf("failed to load databases: %s", strings.Join(errs, "; "))
+		}
+		fmt.Println("No databases found.")
+		return nil
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].AccountLabel != all[j].AccountLabel {
+			return all[i].AccountLabel < all[j].AccountLabel
+		}
+		return all[i].Identifier < all[j].Identifier
+	})
+
+	selected, err := pickRDS(all)
+	if err != nil {
+		return err
+	}
+	if selected == nil {
+		fmt.Println("Cancelled.")
+		return nil
+	}
+	fmt.Printf("→ %s (%s)\n", selected.Identifier, selected.AccountLabel)
+
+	return startDBConnect(selected.Identifier, selected.AccountLabel, cfg, token)
+}
+
+func pickRDS(items []rdsItem) (*rdsItem, error) {
+	idx, err := fuzzyfinder.Find(
+		items,
+		func(i int) string {
+			it := items[i]
+			return fmt.Sprintf("%-45s %-12s %-12s %s",
+				instanceTruncate(it.Identifier, 45), it.Engine, it.Status, it.AccountLabel)
+		},
+		fuzzyfinder.WithHeader(fmt.Sprintf("%-45s %-12s %-12s %s",
+			"Identifier", "Engine", "Status", "Account")),
+		fuzzyfinder.WithPreviewWindow(func(i, w, h int) string {
+			if i < 0 {
+				return ""
+			}
+			it := items[i]
+			return fmt.Sprintf(
+				"Identifier: %s\nEngine:     %s\nStatus:     %s\nEndpoint:   %s:%d\nAccount:    %s",
+				it.Identifier, it.Engine, it.Status, it.Endpoint, it.Port, it.AccountLabel)
+		}),
+	)
+	if err != nil {
+		if err == fuzzyfinder.ErrAbort {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &items[idx], nil
 }
 
 func pickAction(inst *ec2picker.Instance) (string, error) {
@@ -229,7 +397,7 @@ func emailFromToken(token string) string {
 func cacheAgeStr(cfgDir string, cfg *config.Config) string {
 	var newest time.Time
 	for _, accountID := range cfg.AccountAliases {
-		info, err := os.Stat(ec2picker.CachePath(cfgDir, accountID))
+		info, err := os.Stat(ec2picker.CachePath(cfgDir, cfg.BackendURL, accountID))
 		if err != nil {
 			continue
 		}

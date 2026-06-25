@@ -260,6 +260,9 @@ func New(baseURL, token, clientVersion string) *Client {
 	}
 }
 
+// BaseURL returns the backend base URL this client was created with.
+func (c *Client) BaseURL() string { return c.baseURL }
+
 // RunCommand calls POST /v1/commands.
 func (c *Client) RunCommand(ctx context.Context, req CommandRequest) (*CommandResponse, error) {
 	req.ClientVersion = c.clientVersion

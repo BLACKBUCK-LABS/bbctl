@@ -43,19 +43,19 @@ Use 'bbctl run <instance-id> -- <command>' for a single command.`,
 }
 
 // Execute is the entry point called from main.
-// "bbctl dev <rest>" strips "dev" and forces the dev backend URL so all
-// subcommands (db, shell, run, etc.) hit bbctl-dev without any other changes.
+// Default (no prefix): hits dev backend (bbctl-dev.blackbuck.com).
+// "bbctl prod <rest>" strips "prod" and forces the prod backend URL.
 func Execute() {
-	if len(os.Args) > 1 && os.Args[1] == "dev" {
+	if len(os.Args) > 1 && os.Args[1] == "prod" {
 		os.Args = append(os.Args[:1], os.Args[2:]...)
 		if os.Getenv("BBCTL_BACKEND_URL") == "" {
-			devURL := "https://bbctl-dev.blackbuck.com" // default
+			prodURL := "https://bbctl.blackbuck.com" // default
 			if configDir, err := config.DefaultConfigDir(); err == nil {
-				if cfg, err := config.LoadOrDefault(configDir); err == nil && cfg.DevBackendURL != "" {
-					devURL = cfg.DevBackendURL
+				if cfg, err := config.LoadOrDefault(configDir); err == nil && cfg.ProdBackendURL != "" {
+					prodURL = cfg.ProdBackendURL
 				}
 			}
-			os.Setenv("BBCTL_BACKEND_URL", devURL) //nolint:errcheck
+			os.Setenv("BBCTL_BACKEND_URL", prodURL) //nolint:errcheck
 		}
 	}
 	if err := rootCmd.Execute(); err != nil {

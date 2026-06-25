@@ -12,7 +12,7 @@ import (
 )
 
 // LoadAll fetches instances from all configured accounts concurrently.
-// Uses cache when available. Skips accounts that fail.
+// Uses cache when available, namespaced by backend URL to avoid dev/prod collisions.
 func LoadAll(ctx context.Context,
 	c *client.Client,
 	cfg *config.Config,
@@ -38,8 +38,9 @@ func LoadAll(ctx context.Context,
 		go func() {
 			defer wg.Done()
 
+			backendURL := c.BaseURL()
 			if !forceRefresh {
-				cached, _ := LoadCache(configDir, accountID)
+				cached, _ := LoadCache(configDir, backendURL, accountID)
 				if cached != nil {
 					mu.Lock()
 					all = append(all, cached...)
@@ -56,7 +57,7 @@ func LoadAll(ctx context.Context,
 				return
 			}
 
-			_ = SaveCache(configDir, accountID, instances)
+			_ = SaveCache(configDir, backendURL, accountID, instances)
 
 			mu.Lock()
 			all = append(all, instances...)

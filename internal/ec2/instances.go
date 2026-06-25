@@ -2,8 +2,10 @@ package ec2
 
 import (
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 )
 
@@ -27,12 +29,24 @@ type accountCache struct {
 	FetchedAt time.Time  `json:"fetched_at"`
 }
 
-func CachePath(configDir, accountID string) string {
-	return filepath.Join(configDir, "cache", accountID+".json")
+var nonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+
+// backendSlug derives a short filesystem-safe slug from a backend URL hostname
+// so that dev and prod caches never collide (e.g. "bbctl-dev-blackbuck-com").
+func backendSlug(backendURL string) string {
+	u, err := url.Parse(backendURL)
+	if err != nil || u.Host == "" {
+		return "default"
+	}
+	return nonAlnum.ReplaceAllString(u.Host, "-")
 }
 
-func LoadCache(configDir, accountID string) ([]Instance, error) {
-	data, err := os.ReadFile(CachePath(configDir, accountID))
+func CachePath(configDir, backendURL, accountID string) string {
+	return filepath.Join(configDir, "cache", backendSlug(backendURL), accountID+".json")
+}
+
+func LoadCache(configDir, backendURL, accountID string) ([]Instance, error) {
+	data, err := os.ReadFile(CachePath(configDir, backendURL, accountID))
 	if err != nil {
 		return nil, nil // cache miss
 	}
@@ -46,8 +60,8 @@ func LoadCache(configDir, accountID string) ([]Instance, error) {
 	return c.Instances, nil
 }
 
-func SaveCache(configDir, accountID string, instances []Instance) error {
-	dir := filepath.Join(configDir, "cache")
+func SaveCache(configDir, backendURL, accountID string, instances []Instance) error {
+	dir := filepath.Join(configDir, "cache", backendSlug(backendURL))
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
@@ -58,12 +72,15 @@ func SaveCache(configDir, accountID string, instances []Instance) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(CachePath(configDir, accountID), data, 0600)
+	return os.WriteFile(CachePath(configDir, backendURL, accountID), data, 0600)
 }
 
-func ClearCache(configDir, accountID string) error {
+func ClearCache(configDir, backendURL, accountID string) error {
 	if accountID == "" {
-		return os.RemoveAll(filepath.Join(configDir, "cache"))
+		if backendURL == "" {
+			return os.RemoveAll(filepath.Join(configDir, "cache"))
+		}
+		return os.RemoveAll(filepath.Join(configDir, "cache", backendSlug(backendURL)))
 	}
-	return os.Remove(CachePath(configDir, accountID))
+	return os.Remove(CachePath(configDir, backendURL, accountID))
 }

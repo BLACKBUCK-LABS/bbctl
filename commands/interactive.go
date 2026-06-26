@@ -30,6 +30,7 @@ type action struct {
 
 var actions = []action{
 	{Key: "shell", Icon: "🖥 ", Label: "Open shell", Preview: "Start an interactive shell session on the selected instance"},
+	{Key: "bolt", Icon: "⚡ ", Label: "BOLT", Preview: "Open a fast relay PTY session on the selected instance"},
 	{Key: "run", Icon: "▶ ", Label: "Run command", Preview: "Execute a one-shot command on the selected instance"},
 	{Key: "upload", Icon: "↑ ", Label: "Upload file", Preview: "Upload a file from your machine to the instance"},
 	{Key: "download", Icon: "↓ ", Label: "Download file", Preview: "Download a file from the instance to your machine"},
@@ -319,6 +320,13 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 	switch actionKey {
 	case "shell":
 		return runShellDirect(inst.InstanceID, inst.AccountID, cfg, cfgDir, token, inst.PrivateIP)
+
+	case "bolt":
+		relayURL, boltToken, err := boltEnvAndToken(cfg, cfgDir)
+		if err != nil {
+			return err
+		}
+		return runBoltShell(relayURL, boltToken, inst.InstanceID)
 
 	case "run":
 		fmt.Print("Command: ")

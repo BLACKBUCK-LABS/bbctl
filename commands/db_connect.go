@@ -148,10 +148,10 @@ type dbConnectedMsg struct {
 }
 
 type dbResultSet struct {
-	Type       string     `json:"type"`
-	Columns    []string   `json:"columns"`
+	Type       string      `json:"type"`
+	Columns    []string    `json:"columns"`
 	Rows       [][]*string `json:"rows"`
-	DurationMs int64      `json:"duration_ms"`
+	DurationMs int64       `json:"duration_ms"`
 }
 
 type dbOKMsg struct {
@@ -199,12 +199,13 @@ func runDBConnect(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("backend_url not set in ~/.bbctl/config.yaml")
 	}
 
-	return startDBConnect(identifier, dbAccount, cfg, token)
+	boltToken, _ := config.LoadBoltToken(configDir, activeEnv)
+	return startDBConnect(identifier, dbAccount, cfg, token, boltToken)
 }
 
 // startDBConnect dials the backend WebSocket and starts a governed MySQL REPL.
 // Called by both the cobra subcommand and the interactive picker.
-func startDBConnect(identifier, account string, cfg *config.Config, token string) error {
+func startDBConnect(identifier, account string, cfg *config.Config, token, boltToken string) error {
 	wsURL := strings.Replace(cfg.BackendURL, "https://", "wss://", 1)
 	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
 	u, err := url.Parse(wsURL + "/v1/db/query")
@@ -212,9 +213,11 @@ func startDBConnect(identifier, account string, cfg *config.Config, token string
 		return fmt.Errorf("parse url: %w", err)
 	}
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	wsConn, _, err := dialer.Dial(u.String(), http.Header{
-		"Authorization": {"Bearer " + token},
-	})
+	hdr := http.Header{"Authorization": {"Bearer " + token}}
+	if boltToken != "" {
+		hdr.Set("X-Bolt-Token", boltToken)
+	}
+	wsConn, _, err := dialer.Dial(u.String(), hdr)
 	if err != nil {
 		return fmt.Errorf("websocket connect: %w", err)
 	}

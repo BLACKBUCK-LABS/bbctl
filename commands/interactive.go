@@ -260,7 +260,12 @@ func runInteractiveRDS(ctx context.Context, c *client.Client, cfg *config.Config
 	}
 	fmt.Printf("→ %s (%s)\n", selected.Identifier, selected.AccountLabel)
 
-	return startDBConnect(selected.Identifier, selected.AccountLabel, cfg, token)
+	cfgDir, err := config.DefaultConfigDir()
+	if err != nil {
+		cfgDir = ""
+	}
+	boltToken, _ := config.LoadBoltToken(cfgDir, activeEnv)
+	return startDBConnect(selected.Identifier, selected.AccountLabel, cfg, token, boltToken)
 }
 
 func pickRDS(items []rdsItem) (*rdsItem, error) {

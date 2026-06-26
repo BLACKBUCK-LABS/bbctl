@@ -48,6 +48,34 @@ func LoadRefreshToken(configDir string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
+// SaveBoltToken writes the BOLT (relay) session JWT for the given environment
+// ("dev" or "prod") to configDir/bolt_token_<env>.
+//
+// This is entirely separate from the Google ID token used by the existing flow
+// (the "token" / "refresh_token" files) — those are never touched by BOLT.
+func SaveBoltToken(configDir, env, token string) error {
+	if token == "" {
+		return nil
+	}
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(configDir, "bolt_token_"+env), []byte(token), 0600)
+}
+
+// LoadBoltToken reads the BOLT session JWT for the given environment ("dev" or "prod").
+// Returns ErrNotLoggedIn if absent — caller should prompt: bbctl login.
+func LoadBoltToken(configDir, env string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(configDir, "bolt_token_"+env))
+	if os.IsNotExist(err) {
+		return "", ErrNotLoggedIn
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 // DeleteToken removes the token file. Safe to call if already absent.
 func DeleteToken(configDir string) error {
 	err := os.Remove(filepath.Join(configDir, "token"))

@@ -18,6 +18,11 @@ var (
 
 var refreshCache bool
 
+// activeEnv is "dev" by default and set to "prod" when the user invokes
+// "bbctl prod ...". It is the authoritative signal for which environment's
+// BOLT token/relay to use — more robust than comparing backend URLs.
+var activeEnv = "dev"
+
 var rootCmd = &cobra.Command{
 	Use:   "bbctl",
 	Short: "Gated terminal access to prod EC2 instances via SSM",
@@ -48,6 +53,7 @@ Use 'bbctl run <instance-id> -- <command>' for a single command.`,
 func Execute() {
 	if len(os.Args) > 1 && os.Args[1] == "prod" {
 		os.Args = append(os.Args[:1], os.Args[2:]...)
+		activeEnv = "prod"
 		if os.Getenv("BBCTL_BACKEND_URL") == "" {
 			prodURL := "https://bbctl.blackbuck.com" // default
 			if configDir, err := config.DefaultConfigDir(); err == nil {

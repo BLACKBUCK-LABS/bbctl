@@ -41,6 +41,20 @@ type Config struct {
 	DefaultTimeoutSecs int               `yaml:"default_timeout_secs"`
 	DefaultAccountID   string            `yaml:"default_account_id"`
 	AccountAliases     map[string]string `yaml:"account_aliases"`
+	// BBAuthURL is the Blackbuck auth host for the DEV environment. Used only by
+	// the BOLT flow to exchange a Google access token for a BOLT session JWT.
+	// The existing login flow does not use this.
+	BBAuthURL string `yaml:"bb_auth_url"`
+	// ProdBBAuthURL is the Blackbuck auth host for the PROD environment.
+	// Empty until the prod host is provided — BOLT prod login is skipped while empty.
+	ProdBBAuthURL string `yaml:"prod_bb_auth_url"`
+	// RelayURL is the BOLT relay base for the DEV environment. When set it
+	// overrides the backend URL as the relay host (used for testing). Empty
+	// means: use the (dev) backend URL.
+	RelayURL string `yaml:"relay_url"`
+	// ProdRelayURL is the BOLT relay base for the PROD environment. Empty means:
+	// use the prod backend URL.
+	ProdRelayURL string `yaml:"prod_relay_url"`
 }
 
 // DefaultConfigDir returns ~/.bbctl.
@@ -59,6 +73,8 @@ func LoadOrDefault(configDir string) (*Config, error) {
 		DefaultTimeoutSecs: 30,
 		BackendURL:         "https://bbctl-dev.blackbuck.com",
 		ProdBackendURL:     "https://bbctl.blackbuck.com",
+		BBAuthURL:          "https://eks-api-gateway-stress.blackbuck.com",
+		ProdBBAuthURL:      "",
 		OIDCIssuer:         "https://accounts.google.com",
 		OIDCClientID:       "396628175360-g90ptoadcl2coqrtk09oa2625a0k4ppf.apps.googleusercontent.com",
 		OIDCAuthEndpoint:   "https://accounts.google.com/o/oauth2/v2/auth",

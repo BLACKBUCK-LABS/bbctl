@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -49,13 +50,39 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	idToken, refreshToken, err := runLoopbackFlow(ctx, cfg)
+	idToken, accessToken, refreshToken, err := runLoopbackFlow(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	if err := config.SaveToken(configDir, idToken, refreshToken); err != nil {
 		return fmt.Errorf("save token: %w", err)
 	}
+
+	// ── BOLT flow (additive) ─────────────────────────────────────────────────
+	// Exchange the Google access token for a BOLT session JWT per environment and
+	// store it in its own file. Non-fatal: any failure here never affects the
+	// existing login above. Prod is skipped while its auth host is unset.
+	if accessToken != "" {
+		if cfg.BBAuthURL != "" {
+			if boltTok, bErr := loginToBolt(ctx, cfg.BBAuthURL, accessToken); bErr == nil {
+				if sErr := config.SaveBoltToken(configDir, "dev", boltTok); sErr == nil {
+					fmt.Println("✓ BOLT dev token created")
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "note: BOLT dev login failed: %v\n", bErr)
+			}
+		}
+		if cfg.ProdBBAuthURL != "" {
+			if boltTok, bErr := loginToBolt(ctx, cfg.ProdBBAuthURL, accessToken); bErr == nil {
+				if sErr := config.SaveBoltToken(configDir, "prod", boltTok); sErr == nil {
+					fmt.Println("✓ BOLT prod token created")
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "note: BOLT prod login failed: %v\n", bErr)
+			}
+		}
+	}
+	// ── End BOLT flow ────────────────────────────────────────────────────────
 
 	// Sync account aliases from backend — non-fatal if the call fails.
 	{
@@ -91,10 +118,10 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runLoopbackFlow(ctx context.Context, cfg *config.Config) (idToken, refreshToken string, err error) {
+func runLoopbackFlow(ctx context.Context, cfg *config.Config) (idToken, accessToken, refreshToken string, err error) {
 	ln, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
-		return "", "", fmt.Errorf("start local callback server: %w", err)
+		return "", "", "", fmt.Errorf("start local callback server: %w", err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://localhost:%d", port)
@@ -141,13 +168,13 @@ func runLoopbackFlow(ctx context.Context, cfg *config.Config) (idToken, refreshT
 	case code := <-codeCh:
 		return exchangeCode(ctx, cfg, code, redirectURI)
 	case err := <-errCh:
-		return "", "", err
+		return "", "", "", err
 	case <-ctx.Done():
-		return "", "", errors.New("login timed out after 2 minutes — please try again")
+		return "", "", "", errors.New("login timed out after 2 minutes — please try again")
 	}
 }
 
-func exchangeCode(ctx context.Context, cfg *config.Config, code, redirectURI string) (idToken, refreshToken string, err error) {
+func exchangeCode(ctx context.Context, cfg *config.Config, code, redirectURI string) (idToken, accessToken, refreshToken string, err error) {
 	data := url.Values{
 		"grant_type":   {"authorization_code"},
 		"code":         {code},
@@ -161,33 +188,76 @@ func exchangeCode(ctx context.Context, cfg *config.Config, code, redirectURI str
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.OIDCTokenEndpoint,
 		strings.NewReader(data.Encode()))
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("token exchange: %w", err)
+		return "", "", "", fmt.Errorf("token exchange: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	var tok struct {
 		IDToken      string `json:"id_token"`
+		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
 		Error        string `json:"error"`
 		Desc         string `json:"error_description"`
 	}
 	if err := json.Unmarshal(body, &tok); err != nil {
-		return "", "", fmt.Errorf("token exchange: parse response: %w", err)
+		return "", "", "", fmt.Errorf("token exchange: parse response: %w", err)
 	}
 	if tok.Error != "" {
-		return "", "", fmt.Errorf("token exchange failed: %s — %s", tok.Error, tok.Desc)
+		return "", "", "", fmt.Errorf("token exchange failed: %s — %s", tok.Error, tok.Desc)
 	}
 	if tok.IDToken == "" {
-		return "", "", fmt.Errorf("token exchange: no id_token in response: %s", string(body))
+		return "", "", "", fmt.Errorf("token exchange: no id_token in response: %s", string(body))
 	}
-	return tok.IDToken, tok.RefreshToken, nil
+	return tok.IDToken, tok.AccessToken, tok.RefreshToken, nil
+}
+
+// loginToBolt exchanges a Google OAuth access token for a Blackbuck BOLT session
+// JWT at the given auth host. Used only by the new BOLT flow — it does not affect
+// the existing Google ID token stored by the standard login.
+func loginToBolt(ctx context.Context, authURL, googleAccessToken string) (string, error) {
+	payload, _ := json.Marshal(map[string]interface{}{
+		"login_type":  "GOOGLE",
+		"tenant":      "EMPLOYEE",
+		"client_name": "BBCTL",
+		"create_user": false,
+		"token":       googleAccessToken,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		authURL+"/authentication/v1/login", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("x-aaa-enabled", "true")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		ErrorMessage *string `json:"error_message"`
+		AccessToken  string  `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("parse response: %w", err)
+	}
+	if result.ErrorMessage != nil && *result.ErrorMessage != "" {
+		return "", errors.New(*result.ErrorMessage)
+	}
+	if result.AccessToken == "" {
+		return "", errors.New("no access_token in response")
+	}
+	return result.AccessToken, nil
 }
 
 // emailFromIDToken extracts the email claim from the JWT payload without

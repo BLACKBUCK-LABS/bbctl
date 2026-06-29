@@ -12,6 +12,7 @@ import (
 	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
 	ec2picker "github.com/blackbuck/bbctl/internal/ec2"
+	"github.com/blackbuck/bbctl/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -158,27 +159,32 @@ func runCommandDirect(ctx context.Context, instanceID, accountID, command, ticke
 	return nil
 }
 
-// handleAPIError prints a human-friendly message and exits for well-known HTTP errors.
-func handleAPIError(err *client.APIError) {
+// apiErrorText returns a styled human-friendly message for well-known HTTP errors,
+// or "" when the default (bare Error()) path applies. Pure function — no I/O, no exit.
+func apiErrorText(err *client.APIError) string {
 	switch err.HTTPStatus {
 	case 402:
-		fmt.Fprintln(os.Stderr, "⚠️  This command requires manager approval.")
-		fmt.Fprintln(os.Stderr, "   Create a Jira ticket in PRODACCESS project, then run:")
-		fmt.Fprintln(os.Stderr, "   bbctl run <instance-id> --ticket PRODACCESS-XXXX -- <command>")
-		os.Exit(1)
+		return ui.Warn("This command requires manager approval.") + "\n" +
+			"   Create a Jira ticket in PRODACCESS, then run:\n" +
+			"   bbctl run <instance-id> --ticket PRODACCESS-XXXX -- <command>"
 	case 401:
-		fmt.Fprintln(os.Stderr, "Not authenticated. Run: bbctl login")
-		os.Exit(1)
+		return ui.Err("Not authenticated. Run: bbctl login")
 	case 429:
-		fmt.Fprintln(os.Stderr, "Rate limit exceeded — slow down or wait a minute.")
-		os.Exit(1)
+		return ui.Warn("Rate limit exceeded — slow down or wait a minute.")
 	case 504:
-		fmt.Fprintln(os.Stderr, "⏱  Command timed out — the instance may be overloaded or the SSM agent may be unresponsive.")
-		os.Exit(1)
+		return ui.Err("Command timed out — instance overloaded or SSM agent unresponsive.")
 	default:
 		if err.Message != "" || err.Reason != "" {
-			fmt.Fprintln(os.Stderr, "Error:", err.Error())
+			return ui.Err("Error: " + err.Error())
 		}
-		os.Exit(1)
+		return ""
 	}
+}
+
+// handleAPIError prints a human-friendly message and exits for well-known HTTP errors.
+func handleAPIError(err *client.APIError) {
+	if msg := apiErrorText(err); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
+	os.Exit(1)
 }

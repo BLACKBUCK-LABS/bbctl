@@ -88,7 +88,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if runAccount == "" {
 			accountID = selected.AccountID
 		}
-		fmt.Printf("→ %s (%s)\n", selected.Name, selected.InstanceID)
+		fmt.Println(ui.Arrow(fmt.Sprintf("%s (%s)", selected.Name, selected.InstanceID)))
 	}
 
 	if accountID == "" {

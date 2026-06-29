@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"text/tabwriter"
 	"time"
 
 	"github.com/blackbuck/bbctl/internal/client"
@@ -445,12 +444,12 @@ func cacheAgeStr(cfgDir string, cfg *config.Config) string {
 }
 
 func printInstanceDetails(inst *ec2picker.Instance) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "Name:\t%s\n", inst.Name)
-	fmt.Fprintf(w, "Instance ID:\t%s\n", inst.InstanceID)
-	fmt.Fprintf(w, "Account:\t%s (%s)\n", inst.AccountLabel, inst.AccountID)
-	fmt.Fprintf(w, "Private IP:\t%s\n", inst.PrivateIP)
-	fmt.Fprintf(w, "Type:\t%s\n", inst.InstanceType)
-	fmt.Fprintf(w, "State:\t%s\n", inst.State)
-	w.Flush()
+	fmt.Println(ui.Card("Instance details", []ui.Field{
+		{Key: "Name", Value: inst.Name},
+		{Key: "Instance ID", Value: inst.InstanceID},
+		{Key: "Account", Value: fmt.Sprintf("%s (%s)", inst.AccountLabel, inst.AccountID)},
+		{Key: "Private IP", Value: inst.PrivateIP},
+		{Key: "Type", Value: inst.InstanceType},
+		{Key: "State", Value: inst.State},
+	}))
 }

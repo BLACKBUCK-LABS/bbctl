@@ -20,6 +20,7 @@ import (
 	"github.com/blackbuck/bbctl/internal/config"
 	ec2picker "github.com/blackbuck/bbctl/internal/ec2"
 	"github.com/blackbuck/bbctl/internal/shell"
+	"github.com/blackbuck/bbctl/internal/ui"
 	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
 )
@@ -87,7 +88,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 		if shellAccount == "" {
 			accountID = selected.AccountID
 		}
-		fmt.Printf("→ %s (%s)\n", selected.Name, selected.InstanceID)
+		fmt.Println(ui.Arrow(fmt.Sprintf("%s (%s)", selected.Name, selected.InstanceID)))
 	}
 
 	if accountID == "" {

@@ -99,11 +99,12 @@ func PrintWelcome(info WelcomeInfo) {
 	leftLine(fmt.Sprintf("%-14s %s%s%s", "Logged in as:", cCyan, info.Email, cReset), cGray)
 	leftLine(fmt.Sprintf("%-14s %s%s%s", "Version:", cWhite, info.Version, cReset), cGray)
 
+	// Instance count isn't known at welcome time (it loads after the resource
+	// picker). Only show it when a real count is supplied; otherwise the live
+	// "N instances across M accounts" line is printed after load instead.
 	if info.InstanceCount > 0 {
 		cacheStr := fmt.Sprintf("%d across %d accounts (%s)", info.InstanceCount, info.AccountCount, info.CacheAge)
 		leftLine(fmt.Sprintf("%-14s %s%s%s", "Instances:", cWhite, cacheStr, cReset), cGray)
-	} else {
-		leftLine(fmt.Sprintf("%-14s %s%s", "Instances:", cGray, "loading..."), cGray)
 	}
 
 	leftLine("Issues? Reach out to Krishna (#infra-devops)", cGray)

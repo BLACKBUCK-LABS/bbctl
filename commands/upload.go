@@ -101,12 +101,9 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 	}
 
 	if resp.TicketKey != "" {
-		fmt.Fprintf(os.Stdout, "\nAccess request created: %s\n", resp.TicketKey)
-		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
-		fmt.Fprintln(os.Stdout, "Waiting for manager approval.")
-		fmt.Fprintln(os.Stdout, "   Once approved, run:")
-		fmt.Fprintf(os.Stdout, "     bbctl upload %s -a %s %s %s --ticket %s\n\n",
+		rerun := fmt.Sprintf("bbctl upload %s -a %s %s %s --ticket %s",
 			instanceID, accountID, localPath, remotePath, resp.TicketKey)
+		fmt.Fprintln(os.Stdout, ticketCard(resp.TicketKey, resp.TicketURL, rerun))
 		return nil
 	}
 

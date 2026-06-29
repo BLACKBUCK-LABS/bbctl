@@ -129,11 +129,9 @@ func runCommandDirect(ctx context.Context, instanceID, accountID, command, ticke
 	}
 
 	if resp.TicketKey != "" {
-		fmt.Fprintf(os.Stdout, "Jira ticket created: %s\n", resp.TicketKey)
-		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
-		fmt.Fprintln(os.Stdout, "Waiting for manager approval.")
-		fmt.Fprintf(os.Stdout, "   Once approved, run:\n     bbctl run %s -a %s --ticket %s -- %s\n",
+		rerun := fmt.Sprintf("bbctl run %s -a %s --ticket %s -- %s",
 			instanceID, accountID, resp.TicketKey, command)
+		fmt.Fprintln(os.Stdout, ticketCard(resp.TicketKey, resp.TicketURL, rerun))
 		return nil
 	}
 

@@ -3,6 +3,8 @@ package commands
 import (
 	"fmt"
 	"strings"
+
+	"github.com/blackbuck/bbctl/internal/ui"
 )
 
 func renderTable(columns []string, rows [][]*string, durationMs int64) string {
@@ -36,15 +38,19 @@ func renderOK(rowsAffected, lastInsertID int64, durationMs int64) string {
 		rowsAffected, fmtDuration(durationMs))
 }
 
-func renderRestricted(ticketKey, ticketURL, sql string) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "\nRestricted query requires approval.\n")
-	fmt.Fprintf(&sb, "  Ticket : %s\n", ticketKey)
+func ticketCard(ticketKey, ticketURL, rerun string) string {
+	fields := []ui.Field{{Key: "Ticket", Value: ticketKey}}
 	if ticketURL != "" {
-		fmt.Fprintf(&sb, "  URL    : %s\n", ticketURL)
+		fields = append(fields, ui.Field{Key: "URL", Value: ticketURL})
 	}
-	fmt.Fprintf(&sb, "  SQL    : %s\n\n", sql)
-	return sb.String()
+	fields = append(fields,
+		ui.Field{Key: "Status", Value: "awaiting manager approval"},
+		ui.Field{Key: "Re-run", Value: rerun})
+	return ui.Card("Approval required", fields)
+}
+
+func renderRestricted(ticketKey, ticketURL, sql string) string {
+	return "\n" + ticketCard(ticketKey, ticketURL, sql) + "\n"
 }
 
 func renderError(code int, message string) string {

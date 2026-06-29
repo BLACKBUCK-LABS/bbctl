@@ -76,7 +76,9 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
 
-	fmt.Print("\033[2J\033[H") // clear screen
+	if ui.Std.TTY {
+		fmt.Print("\033[2J\033[H") // clear screen
+	}
 	shell.PrintWelcome(shell.WelcomeInfo{
 		Email:   emailFromToken(token),
 		Version: Version,

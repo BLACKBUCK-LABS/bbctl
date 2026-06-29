@@ -99,7 +99,7 @@ func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, l
 		return err
 	}
 
-	fmt.Fprintf(os.Stdout, "Downloading %s...\n", resp.Filename)
+	fmt.Fprintf(os.Stderr, "Downloading %s...\n", resp.Filename)
 	if err := downloadFromURL(resp.PresignedURL, localPath); err != nil {
 		return err
 	}

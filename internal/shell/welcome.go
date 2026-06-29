@@ -36,6 +36,9 @@ type WelcomeInfo struct {
 }
 
 func PrintWelcome(info WelcomeInfo) {
+	if !ui.Std.TTY {
+		return
+	}
 	// Local shadows: stripped to "" when color is unsupported so the panel
 	// emits zero ANSI escapes on piped/NO_COLOR output. Package-level consts
 	// remain intact for visibleLen() which needs them to strip sequences.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
+	"github.com/blackbuck/bbctl/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -102,7 +103,7 @@ func runDownloadDirect(ctx context.Context, instanceID, accountID, remotePath, l
 	if err := downloadFromURL(resp.PresignedURL, localPath); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "Downloaded %s:%s → %s\n", instanceID, remotePath, localPath)
+	fmt.Fprintln(os.Stdout, ui.Success(fmt.Sprintf("Downloaded %s:%s → %s", instanceID, remotePath, localPath)))
 	return nil
 }
 
@@ -158,8 +159,11 @@ func downloadFromURL(url, localPath string) error {
 		return fmt.Errorf("create %s: %w", localPath, err)
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	cr := ui.NewCountingReader(resp.Body, resp.ContentLength, os.Stderr)
+	if _, err := io.Copy(f, cr); err != nil {
+		cr.Finish()
 		return fmt.Errorf("write %s: %w", localPath, err)
 	}
+	cr.Finish()
 	return nil
 }

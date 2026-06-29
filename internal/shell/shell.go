@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/blackbuck/bbctl/internal/ui"
 )
 
 // IsSlashCommand returns true if input starts with "/".
@@ -29,15 +31,19 @@ func FormatPrompt(email, instanceID string, hasTicket bool, currentDir string) s
 	if idx := strings.Index(email, "@"); idx >= 0 {
 		user = email[:idx]
 	}
-	mode := ""
-	if hasTicket {
-		mode = " [approved]"
-	}
 	dir := "~"
 	if currentDir != "" {
 		dir = currentDir
 	}
-	return fmt.Sprintf("%s@%s:%s%s$ ", user, instanceID, dir, mode)
+	badge := ""
+	if hasTicket {
+		badge = " " + ui.Render(ui.Success_, "[approved]")
+	}
+	return fmt.Sprintf("%s@%s:%s%s$ ",
+		user,
+		ui.Render(ui.Brand, instanceID),
+		ui.Render(ui.Accent, dir),
+		badge)
 }
 
 // CleanPath normalises a path for use in FormatPrompt (exported for tests).

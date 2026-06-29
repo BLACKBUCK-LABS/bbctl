@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/blackbuck/bbctl/internal/shell"
+	"github.com/blackbuck/bbctl/internal/ui"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -54,4 +55,13 @@ func TestFormatPrompt_CurrentDir(t *testing.T) {
 func TestFormatPrompt_HomeDir(t *testing.T) {
 	p := shell.FormatPrompt("alice@org.com", "i-abc123", false, "")
 	assert.Contains(t, p, "~")
+}
+
+func TestFormatPrompt_PlainWhenNoColor(t *testing.T) {
+	ui.Std = ui.Caps{Color: false}
+	got := shell.FormatPrompt("k@x.com", "i-0abc", true, "/tmp")
+	want := "k@i-0abc:/tmp [approved]$ "
+	if got != want {
+		t.Errorf("FormatPrompt = %q, want %q", got, want)
+	}
 }

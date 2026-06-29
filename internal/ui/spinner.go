@@ -17,6 +17,7 @@ type Spinner struct {
 	msg  string
 	stop chan struct{}
 	done sync.WaitGroup
+	once sync.Once
 }
 
 // NewSpinner creates a spinner that writes to stderr.
@@ -56,11 +57,14 @@ func (s *Spinner) Start() {
 }
 
 func (s *Spinner) clear() {
-	if Std.TTY {
+	if !Std.TTY {
+		return
+	}
+	s.once.Do(func() {
 		close(s.stop)
 		s.done.Wait()
 		fmt.Fprintf(s.w, "\r\033[K") // carriage return + clear to EOL
-	}
+	})
 }
 
 // Stop clears the spinner line, leaving nothing behind.

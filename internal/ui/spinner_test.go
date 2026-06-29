@@ -25,12 +25,24 @@ func TestSpinner_NonTTYPrintsOnce(t *testing.T) {
 }
 
 func TestSpinner_StopErr(t *testing.T) {
-	Std = Caps{TTY: false, Unicode: false}
+	Std = Caps{TTY: false, Color: false, Unicode: false}
 	var buf bytes.Buffer
 	sp := NewSpinnerOut(&buf, "Connecting")
 	sp.Start()
 	sp.StopErr("timeout")
 	if !strings.Contains(buf.String(), "[x] timeout") {
 		t.Errorf("expected error summary, got %q", buf.String())
+	}
+}
+
+func TestSpinner_TTYDoubleStopNoPanic(t *testing.T) {
+	Std = Caps{TTY: true, Color: false, Unicode: false}
+	var buf bytes.Buffer
+	sp := NewSpinnerOut(&buf, "Working")
+	sp.Start()
+	sp.StopOK("done")
+	sp.Stop() // second stop must NOT panic
+	if !strings.Contains(buf.String(), "[OK] done") {
+		t.Errorf("expected OK summary, got %q", buf.String())
 	}
 }

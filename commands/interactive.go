@@ -158,6 +158,8 @@ func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 		fmt.Fprintln(os.Stdout, "No instances found.")
 		return nil
 	}
+	fmt.Println(ui.Info(fmt.Sprintf("%d instances across %d accounts (%s)",
+		len(instances), len(cfg.AccountAliases), cacheAgeStr(cfgDir, cfg))))
 
 	// Ensure token is current — may have been refreshed during 401 re-login.
 	if latestToken, lerr := config.LoadToken(cfgDir); lerr == nil {

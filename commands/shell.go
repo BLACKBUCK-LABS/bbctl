@@ -708,12 +708,12 @@ var defaultsToCwd = map[string]bool{
 var skipNextArg = map[string]bool{
 	"-n": true, "--lines": true,
 	"-c": true, "--bytes": true,
-	"-f": true,
-	"--pid": true,
+	"-f":          true,
+	"--pid":       true,
 	"--max-count": true, "-m": true,
 	"-A": true, "-B": true, "-C": true, // grep context lines
 	"--color": true,
-	"-e": true, "--regexp": true,
+	"-e":      true, "--regexp": true,
 	"--include": true, "--exclude": true, "--exclude-dir": true,
 }
 

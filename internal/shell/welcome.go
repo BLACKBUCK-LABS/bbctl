@@ -18,16 +18,13 @@ const (
 
 var bbctlASCII = []string{
 
-	                                                  
- ` ▄▄▄▄▄▄    ▄▄▄▄▄▄       ▄▄▄▄   ▄▄▄▄▄▄▄▄  ▄▄        `,    
- ` ██▀▀▀▀██  ██▀▀▀▀██   ██▀▀▀▀█  ▀▀▀██▀▀▀  ██       `,    
- ` ██    ██  ██    ██  ██▀          ██     ██       `,    
- ` ███████   ███████   ██           ██     ██       `,    
- ` ██    ██  ██    ██  ██▄          ██     ██       `,    
- ` ██▄▄▄▄██  ██▄▄▄▄██   ██▄▄▄▄█     ██     ██▄▄▄▄▄▄ `,    
- ` ▀▀▀▀▀▀▀   ▀▀▀▀▀▀▀      ▀▀▀▀      ▀▀     ▀▀▀▀▀▀▀▀ `,    
-                                                  
-                                                          
+	` ▄▄▄▄▄▄    ▄▄▄▄▄▄       ▄▄▄▄   ▄▄▄▄▄▄▄▄  ▄▄        `,
+	` ██▀▀▀▀██  ██▀▀▀▀██   ██▀▀▀▀█  ▀▀▀██▀▀▀  ██       `,
+	` ██    ██  ██    ██  ██▀          ██     ██       `,
+	` ███████   ███████   ██           ██     ██       `,
+	` ██    ██  ██    ██  ██▄          ██     ██       `,
+	` ██▄▄▄▄██  ██▄▄▄▄██   ██▄▄▄▄█     ██     ██▄▄▄▄▄▄ `,
+	` ▀▀▀▀▀▀▀   ▀▀▀▀▀▀▀      ▀▀▀▀      ▀▀     ▀▀▀▀▀▀▀▀ `,
 }
 
 type WelcomeInfo struct {
@@ -51,9 +48,9 @@ func PrintWelcome(info WelcomeInfo) {
 
 	width := 55
 
-	border  := cRed + "║" + cReset
-	topBar  := cRed + "╔" + strings.Repeat("═", width-2) + "╗" + cReset
-	botBar  := cRed + "╚" + strings.Repeat("═", width-2) + "╝" + cReset
+	border := cRed + "║" + cReset
+	topBar := cRed + "╔" + strings.Repeat("═", width-2) + "╗" + cReset
+	botBar := cRed + "╚" + strings.Repeat("═", width-2) + "╝" + cReset
 	divider := cRed + "║" + cGray + strings.Repeat("─", width-2) + cRed + "║" + cReset
 
 	emptyLine := func() {

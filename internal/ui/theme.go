@@ -2,7 +2,6 @@ package ui
 
 import (
 	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
 )
 
 // Brand palette — 256-color codes mirror the originals in welcome.go.
@@ -23,10 +22,5 @@ func Render(style lipgloss.Style, s string) string {
 	if !Std.Color {
 		return s
 	}
-	// Temporarily set color profile to TrueColor when colors are enabled,
-	// then restore it after rendering
-	oldProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(oldProfile)
 	return style.Render(s)
 }

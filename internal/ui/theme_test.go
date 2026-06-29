@@ -1,9 +1,18 @@
 package ui
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
+
+func TestMain(m *testing.M) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	os.Exit(m.Run())
+}
 
 func TestRender_ColorDisabled(t *testing.T) {
 	Std = Caps{Color: false}

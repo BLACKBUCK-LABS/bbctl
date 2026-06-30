@@ -20,6 +20,7 @@ import (
 	"github.com/blackbuck/bbctl/internal/config"
 	ec2picker "github.com/blackbuck/bbctl/internal/ec2"
 	"github.com/blackbuck/bbctl/internal/shell"
+	"github.com/blackbuck/bbctl/internal/ui"
 	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
 )
@@ -87,7 +88,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 		if shellAccount == "" {
 			accountID = selected.AccountID
 		}
-		fmt.Printf("→ %s (%s)\n", selected.Name, selected.InstanceID)
+		fmt.Println(ui.Arrow(fmt.Sprintf("%s (%s)", selected.Name, selected.InstanceID)))
 	}
 
 	if accountID == "" {
@@ -707,12 +708,12 @@ var defaultsToCwd = map[string]bool{
 var skipNextArg = map[string]bool{
 	"-n": true, "--lines": true,
 	"-c": true, "--bytes": true,
-	"-f": true,
-	"--pid": true,
+	"-f":          true,
+	"--pid":       true,
 	"--max-count": true, "-m": true,
 	"-A": true, "-B": true, "-C": true, // grep context lines
 	"--color": true,
-	"-e": true, "--regexp": true,
+	"-e":      true, "--regexp": true,
 	"--include": true, "--exclude": true, "--exclude-dir": true,
 }
 

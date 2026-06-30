@@ -3,6 +3,8 @@ package shell
 import (
 	"fmt"
 	"strings"
+
+	"github.com/blackbuck/bbctl/internal/ui"
 )
 
 const (
@@ -16,16 +18,13 @@ const (
 
 var bbctlASCII = []string{
 
-	                                                  
- ` ▄▄▄▄▄▄    ▄▄▄▄▄▄       ▄▄▄▄   ▄▄▄▄▄▄▄▄  ▄▄        `,    
- ` ██▀▀▀▀██  ██▀▀▀▀██   ██▀▀▀▀█  ▀▀▀██▀▀▀  ██       `,    
- ` ██    ██  ██    ██  ██▀          ██     ██       `,    
- ` ███████   ███████   ██           ██     ██       `,    
- ` ██    ██  ██    ██  ██▄          ██     ██       `,    
- ` ██▄▄▄▄██  ██▄▄▄▄██   ██▄▄▄▄█     ██     ██▄▄▄▄▄▄ `,    
- ` ▀▀▀▀▀▀▀   ▀▀▀▀▀▀▀      ▀▀▀▀      ▀▀     ▀▀▀▀▀▀▀▀ `,    
-                                                  
-                                                          
+	` ▄▄▄▄▄▄    ▄▄▄▄▄▄       ▄▄▄▄   ▄▄▄▄▄▄▄▄  ▄▄        `,
+	` ██▀▀▀▀██  ██▀▀▀▀██   ██▀▀▀▀█  ▀▀▀██▀▀▀  ██       `,
+	` ██    ██  ██    ██  ██▀          ██     ██       `,
+	` ███████   ███████   ██           ██     ██       `,
+	` ██    ██  ██    ██  ██▄          ██     ██       `,
+	` ██▄▄▄▄██  ██▄▄▄▄██   ██▄▄▄▄█     ██     ██▄▄▄▄▄▄ `,
+	` ▀▀▀▀▀▀▀   ▀▀▀▀▀▀▀      ▀▀▀▀      ▀▀     ▀▀▀▀▀▀▀▀ `,
 }
 
 type WelcomeInfo struct {
@@ -37,12 +36,25 @@ type WelcomeInfo struct {
 }
 
 func PrintWelcome(info WelcomeInfo) {
+	if !ui.Std.TTY {
+		return
+	}
+	// Local shadows: stripped to "" when color is unsupported so the panel
+	// emits zero ANSI escapes on piped/NO_COLOR output. Package-level consts
+	// remain intact for visibleLen() which needs them to strip sequences.
+	cReset, cRed, cCyan := colorReset, colorRed, colorCyan
+	cWhite, cGray, cBold := colorWhite, colorGray, colorBold
+	if !ui.Std.Color {
+		cReset, cRed, cCyan = "", "", ""
+		cWhite, cGray, cBold = "", "", ""
+	}
+
 	width := 55
 
-	border  := colorRed + "║" + colorReset
-	topBar  := colorRed + "╔" + strings.Repeat("═", width-2) + "╗" + colorReset
-	botBar  := colorRed + "╚" + strings.Repeat("═", width-2) + "╝" + colorReset
-	divider := colorRed + "║" + colorGray + strings.Repeat("─", width-2) + colorRed + "║" + colorReset
+	border := cRed + "║" + cReset
+	topBar := cRed + "╔" + strings.Repeat("═", width-2) + "╗" + cReset
+	botBar := cRed + "╚" + strings.Repeat("═", width-2) + "╝" + cReset
+	divider := cRed + "║" + cGray + strings.Repeat("─", width-2) + cRed + "║" + cReset
 
 	emptyLine := func() {
 		fmt.Printf("%s%s%s\n", border, strings.Repeat(" ", width-2), border)
@@ -58,8 +70,8 @@ func PrintWelcome(info WelcomeInfo) {
 		right := padding - left
 		fmt.Printf("%s%s%s%s%s%s\n",
 			border, strings.Repeat(" ", left),
-			color+content+colorReset,
-			strings.Repeat(" ", right), border, colorReset)
+			color+content+cReset,
+			strings.Repeat(" ", right), border, cReset)
 	}
 
 	leftLine := func(content, color string) {
@@ -69,32 +81,33 @@ func PrintWelcome(info WelcomeInfo) {
 			padding = 0
 		}
 		fmt.Printf("%s  %s%s%s%s%s\n",
-			border, color, content, colorReset,
+			border, color, content, cReset,
 			strings.Repeat(" ", padding), border)
 	}
 
 	fmt.Println(topBar)
 	emptyLine()
 	for _, line := range bbctlASCII {
-		padLine(line, colorRed+colorBold)
+		padLine(line, cRed+cBold)
 	}
 	emptyLine()
-	padLine("Gated EC2 Access  —  Blackbuck Engineering", colorGray)
+	padLine("Gated EC2 Access  —  Blackbuck Engineering", cGray)
 	emptyLine()
 	fmt.Println(divider)
 	emptyLine()
 
-	leftLine(fmt.Sprintf("%-14s %s%s%s", "Logged in as:", colorCyan, info.Email, colorReset), colorGray)
-	leftLine(fmt.Sprintf("%-14s %s%s%s", "Version:", colorWhite, info.Version, colorReset), colorGray)
+	leftLine(fmt.Sprintf("%-14s %s%s%s", "Logged in as:", cCyan, info.Email, cReset), cGray)
+	leftLine(fmt.Sprintf("%-14s %s%s%s", "Version:", cWhite, info.Version, cReset), cGray)
 
+	// Instance count isn't known at welcome time (it loads after the resource
+	// picker). Only show it when a real count is supplied; otherwise the live
+	// "N instances across M accounts" line is printed after load instead.
 	if info.InstanceCount > 0 {
 		cacheStr := fmt.Sprintf("%d across %d accounts (%s)", info.InstanceCount, info.AccountCount, info.CacheAge)
-		leftLine(fmt.Sprintf("%-14s %s%s%s", "Instances:", colorWhite, cacheStr, colorReset), colorGray)
-	} else {
-		leftLine(fmt.Sprintf("%-14s %s%s", "Instances:", colorGray, "loading..."), colorGray)
+		leftLine(fmt.Sprintf("%-14s %s%s%s", "Instances:", cWhite, cacheStr, cReset), cGray)
 	}
 
-	leftLine("Issues? Reach out to Krishna (#infra-devops)", colorGray)
+	leftLine("Issues? Reach out to Krishna (#infra-devops)", cGray)
 
 	emptyLine()
 	fmt.Println(botBar)

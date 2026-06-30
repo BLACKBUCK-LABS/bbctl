@@ -6,6 +6,7 @@ import (
 
 	"github.com/blackbuck/bbctl/internal/config"
 	"github.com/blackbuck/bbctl/internal/shell"
+	"github.com/blackbuck/bbctl/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -51,6 +52,7 @@ Use 'bbctl run <instance-id> -- <command>' for a single command.`,
 // Default (no prefix): hits dev backend (bbctl-dev.blackbuck.com).
 // "bbctl prod <rest>" strips "prod" and forces the prod backend URL.
 func Execute() {
+	ui.Init()
 	if len(os.Args) > 1 && os.Args[1] == "prod" {
 		os.Args = append(os.Args[:1], os.Args[2:]...)
 		activeEnv = "prod"

@@ -10,13 +10,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"text/tabwriter"
 	"time"
 
 	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
 	ec2picker "github.com/blackbuck/bbctl/internal/ec2"
 	"github.com/blackbuck/bbctl/internal/shell"
+	"github.com/blackbuck/bbctl/internal/ui"
 	fuzzyfinder "github.com/ktr0731/go-fuzzyfinder"
 	"github.com/spf13/cobra"
 )
@@ -76,7 +76,9 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
 
-	fmt.Print("\033[2J\033[H") // clear screen
+	if ui.Std.TTY {
+		fmt.Print("\033[2J\033[H") // clear screen
+	}
 	shell.PrintWelcome(shell.WelcomeInfo{
 		Email:   emailFromToken(token),
 		Version: Version,
@@ -123,8 +125,13 @@ func pickResourceType() (string, error) {
 
 // runInteractiveEC2 is the EC2 flow: load instances → fuzzy-pick → action.
 func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config, cfgDir, token string, forceRefresh bool) error {
+	sp := ui.NewSpinner("Loading EC2 instances")
+	sp.Start()
 	instances, err := ec2picker.LoadAll(cmd.Context(), c, cfg, cfgDir, forceRefresh)
-	if err != nil {
+	if err == nil {
+		sp.StopOK(fmt.Sprintf("Loaded %d instances", len(instances)))
+	} else {
+		sp.StopErr("Failed to load instances")
 		errLower := strings.ToLower(err.Error())
 		if strings.Contains(errLower, "401") || strings.Contains(errLower, "unauthorized") {
 			fmt.Println("Session expired. Logging in again...")
@@ -137,13 +144,14 @@ func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 				return fmt.Errorf("login failed: %w", loadErr)
 			}
 			c = client.New(cfg.BackendURL, token, "bbctl/"+Version)
-			fmt.Print("Loading instances...")
+			sp2 := ui.NewSpinner("Loading EC2 instances")
+			sp2.Start()
 			instances, err = ec2picker.LoadAll(cmd.Context(), c, cfg, cfgDir, forceRefresh)
 			if err != nil {
-				fmt.Println()
+				sp2.StopErr("Failed to load instances")
 				return fmt.Errorf("load instances: %w", err)
 			}
-			fmt.Printf("\r%-30s\r", "")
+			sp2.StopOK(fmt.Sprintf("Loaded %d instances", len(instances)))
 		} else {
 			return fmt.Errorf("load instances: %w", err)
 		}
@@ -152,6 +160,8 @@ func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 		fmt.Fprintln(os.Stdout, "No instances found.")
 		return nil
 	}
+	fmt.Println(ui.Info(fmt.Sprintf("%d instances across %d accounts (%s)",
+		len(instances), len(cfg.AccountAliases), cacheAgeStr(cfgDir, cfg))))
 
 	// Ensure token is current — may have been refreshed during 401 re-login.
 	if latestToken, lerr := config.LoadToken(cfgDir); lerr == nil {
@@ -166,7 +176,7 @@ func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 		fmt.Println("Cancelled.")
 		return nil
 	}
-	fmt.Printf("→ %s (%s)\n", selected.Name, selected.InstanceID)
+	fmt.Println(ui.Arrow(fmt.Sprintf("%s (%s)", selected.Name, selected.InstanceID)))
 
 	actionKey, err := pickAction(selected)
 	if err != nil {
@@ -198,6 +208,8 @@ func runInteractiveRDS(ctx context.Context, c *client.Client, cfg *config.Config
 	}
 
 	results := make([]result, len(labels))
+	sp := ui.NewSpinner(fmt.Sprintf("Loading databases across %d accounts", len(labels)))
+	sp.Start()
 	var wg sync.WaitGroup
 	for i, label := range labels {
 		i, label := i, label
@@ -235,10 +247,13 @@ func runInteractiveRDS(ctx context.Context, c *client.Client, cfg *config.Config
 		all = append(all, r.items...)
 	}
 
+	if len(all) == 0 && len(errs) > 0 {
+		sp.StopErr("No databases loaded")
+		return fmt.Errorf("failed to load databases: %s", strings.Join(errs, "; "))
+	}
+	sp.StopOK(fmt.Sprintf("Loaded %d databases", len(all)))
+
 	if len(all) == 0 {
-		if len(errs) > 0 {
-			return fmt.Errorf("failed to load databases: %s", strings.Join(errs, "; "))
-		}
 		fmt.Println("No databases found.")
 		return nil
 	}
@@ -258,7 +273,7 @@ func runInteractiveRDS(ctx context.Context, c *client.Client, cfg *config.Config
 		fmt.Println("Cancelled.")
 		return nil
 	}
-	fmt.Printf("→ %s (%s)\n", selected.Identifier, selected.AccountLabel)
+	fmt.Println(ui.Arrow(fmt.Sprintf("%s (%s)", selected.Identifier, selected.AccountLabel)))
 
 	cfgDir, err := config.DefaultConfigDir()
 	if err != nil {
@@ -433,12 +448,12 @@ func cacheAgeStr(cfgDir string, cfg *config.Config) string {
 }
 
 func printInstanceDetails(inst *ec2picker.Instance) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "Name:\t%s\n", inst.Name)
-	fmt.Fprintf(w, "Instance ID:\t%s\n", inst.InstanceID)
-	fmt.Fprintf(w, "Account:\t%s (%s)\n", inst.AccountLabel, inst.AccountID)
-	fmt.Fprintf(w, "Private IP:\t%s\n", inst.PrivateIP)
-	fmt.Fprintf(w, "Type:\t%s\n", inst.InstanceType)
-	fmt.Fprintf(w, "State:\t%s\n", inst.State)
-	w.Flush()
+	fmt.Println(ui.Card("Instance details", []ui.Field{
+		{Key: "Name", Value: inst.Name},
+		{Key: "Instance ID", Value: inst.InstanceID},
+		{Key: "Account", Value: fmt.Sprintf("%s (%s)", inst.AccountLabel, inst.AccountID)},
+		{Key: "Private IP", Value: inst.PrivateIP},
+		{Key: "Type", Value: inst.InstanceType},
+		{Key: "State", Value: inst.State},
+	}))
 }

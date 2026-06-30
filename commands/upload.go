@@ -13,6 +13,7 @@ import (
 
 	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
+	"github.com/blackbuck/bbctl/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -83,6 +84,8 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 	sha256hex := fmt.Sprintf("%x", sum)
 	contentB64 := base64.StdEncoding.EncodeToString(content)
 
+	sp := ui.NewSpinner(fmt.Sprintf("Uploading %s · %s", filename, ui.HumanBytes(int64(len(content)))))
+	sp.Start()
 	resp, err := c.Upload(ctx, client.UploadRequest{
 		InstanceID: instanceID,
 		AccountID:  accountID,
@@ -93,24 +96,23 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 		TicketID:   ticketID,
 	})
 	if err != nil {
+		sp.StopErr("Upload failed")
 		var apiErr *client.APIError
 		if errors.As(err, &apiErr) {
 			handleAPIError(apiErr)
 		}
 		return err
 	}
+	sp.Stop()
 
 	if resp.TicketKey != "" {
-		fmt.Fprintf(os.Stdout, "\nAccess request created: %s\n", resp.TicketKey)
-		fmt.Fprintf(os.Stdout, "   %s\n\n", resp.TicketURL)
-		fmt.Fprintln(os.Stdout, "Waiting for manager approval.")
-		fmt.Fprintln(os.Stdout, "   Once approved, run:")
-		fmt.Fprintf(os.Stdout, "     bbctl upload %s -a %s %s %s --ticket %s\n\n",
+		rerun := fmt.Sprintf("bbctl upload %s -a %s %s %s --ticket %s",
 			instanceID, accountID, localPath, remotePath, resp.TicketKey)
+		fmt.Fprintln(os.Stdout, ticketCard(resp.TicketKey, resp.TicketURL, rerun))
 		return nil
 	}
 
-	fmt.Fprintf(os.Stdout, "Uploaded %s → %s:%s\n", localPath, instanceID, remotePath)
+	fmt.Fprintln(os.Stdout, ui.Success(fmt.Sprintf("Uploaded %s → %s:%s", localPath, instanceID, remotePath)))
 	return nil
 }
 

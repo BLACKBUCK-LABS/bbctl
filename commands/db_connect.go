@@ -13,6 +13,7 @@ import (
 
 	"github.com/blackbuck/bbctl/internal/client"
 	"github.com/blackbuck/bbctl/internal/config"
+	"github.com/blackbuck/bbctl/internal/ui"
 	"github.com/chzyer/readline"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
@@ -247,9 +248,13 @@ func startDBConnect(identifier, account string, cfg *config.Config, token, boltT
 	var connected dbConnectedMsg
 	json.Unmarshal(msg, &connected) //nolint:errcheck
 
-	fmt.Printf("\nConnected to %s  (%s)\n", connected.Host, connected.Version)
-	fmt.Printf("Session: %s\n", connected.SessionID)
-	fmt.Printf("Type SQL terminated with ; — Ctrl+C or Ctrl+D to exit.\n\n")
+	fmt.Println(ui.Success(fmt.Sprintf("Connected to %s", connected.Host)))
+	fmt.Println(ui.Card("Session", []ui.Field{
+		{Key: "Host", Value: connected.Host},
+		{Key: "Version", Value: connected.Version},
+		{Key: "Session", Value: connected.SessionID},
+	}))
+	fmt.Println("Type SQL terminated with ; — Ctrl+C or Ctrl+D to exit.")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM)
@@ -260,14 +265,26 @@ func startDBConnect(identifier, account string, cfg *config.Config, token, boltT
 		os.Exit(0)
 	}()
 
-	return runREPL(wsConn)
+	return runREPL(wsConn, identifier)
 }
 
 // ─── REPL ─────────────────────────────────────────────────────────────────────
 
-func runREPL(wsConn *websocket.Conn) error {
+func dbPrompt(identifier string, hasTicket bool) string {
+	caret := ui.Glyph("❯", ">")
+	badge := ""
+	if hasTicket {
+		badge = " " + ui.Render(ui.Success_, "[approved]")
+	}
+	return fmt.Sprintf("bbctl-db · %s%s %s ",
+		ui.Render(ui.Brand, identifier), badge, ui.Render(ui.Accent, caret))
+}
+
+func dbContinuation() string { return "  " + ui.Glyph("…", "...") + " " }
+
+func runREPL(wsConn *websocket.Conn, identifier string) error {
 	rl, err := readline.NewEx(&readline.Config{
-		Prompt:          "mysql> ",
+		Prompt:          dbPrompt(identifier, false),
 		HistoryFile:     os.ExpandEnv("$HOME/.bbctl_db_history"),
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
@@ -282,9 +299,9 @@ func runREPL(wsConn *websocket.Conn) error {
 
 	for {
 		if scanner.active() {
-			rl.SetPrompt("    -> ")
+			rl.SetPrompt(dbContinuation())
 		} else {
-			rl.SetPrompt("mysql> ")
+			rl.SetPrompt(dbPrompt(identifier, pendingTicket != ""))
 		}
 
 		line, err := rl.Readline()

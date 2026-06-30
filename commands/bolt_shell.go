@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -95,6 +96,158 @@ func joinBoltPaste(buf []byte) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+// boltLine reconstructs the current visible prompt line from the remote's output
+// stream. History is recorded from this (ground truth) rather than from typed
+// input, so tab-completion and remote-side line edits are captured correctly.
+//
+// It models a single visible line: \n starts a fresh line (and forgets where the
+// prompt ended), \r and \b and the common CSI cursor/erase sequences move or trim
+// within it. markPrompt() records the column where user input begins (called when
+// the user first types on a fresh prompt); command() returns everything after it.
+type boltLine struct {
+	buf          []byte
+	cursor       int
+	promptLen    int
+	promptMarked bool
+	insertMode   bool // IRM (CSI 4h) — printable chars insert instead of overwrite
+}
+
+func (t *boltLine) feed(data []byte) {
+	i := 0
+	for i < len(data) {
+		b := data[i]
+		if b == 0x1b && i+1 < len(data) && data[i+1] == '[' {
+			j := i + 2
+			for j < len(data) && !(data[j] >= 0x40 && data[j] <= 0x7e) {
+				j++
+			}
+			if j < len(data) {
+				t.applyCSI(string(data[i+2:j]), data[j])
+				i = j + 1
+			} else {
+				i = j
+			}
+			continue
+		}
+		switch b {
+		case '\r':
+			t.cursor = 0
+		case '\n':
+			t.buf = t.buf[:0]
+			t.cursor = 0
+			t.promptLen = 0
+			t.promptMarked = false
+		case '\b':
+			if t.cursor > 0 {
+				t.cursor--
+			}
+		default:
+			if b >= 0x20 {
+				if t.cursor >= len(t.buf) {
+					t.buf = append(t.buf, b)
+				} else if t.insertMode {
+					// IRM active — shift right and insert.
+					t.buf = append(t.buf, 0)
+					copy(t.buf[t.cursor+1:], t.buf[t.cursor:])
+					t.buf[t.cursor] = b
+				} else {
+					t.buf[t.cursor] = b
+				}
+				t.cursor++
+			}
+		}
+		i++
+	}
+}
+
+func (t *boltLine) applyCSI(params string, final byte) {
+	switch final {
+	case 'K': // erase in line
+		switch csiNum(params, 0) {
+		case 0: // cursor → end
+			if t.cursor < len(t.buf) {
+				t.buf = t.buf[:t.cursor]
+			}
+		case 2: // whole line
+			t.buf = t.buf[:0]
+			t.cursor = 0
+		}
+	case 'D': // cursor left
+		t.cursor -= csiNum(params, 1)
+		if t.cursor < 0 {
+			t.cursor = 0
+		}
+	case 'C': // cursor right
+		t.cursor += csiNum(params, 1)
+		if t.cursor > len(t.buf) {
+			t.cursor = len(t.buf)
+		}
+	case 'G': // cursor to absolute column (1-indexed)
+		t.cursor = csiNum(params, 1) - 1
+		if t.cursor < 0 {
+			t.cursor = 0
+		}
+		if t.cursor > len(t.buf) {
+			t.cursor = len(t.buf)
+		}
+	case '@': // ICH — insert N blanks at the cursor (tail shifts right)
+		n := csiNum(params, 1)
+		if t.cursor <= len(t.buf) {
+			blanks := make([]byte, n)
+			for k := range blanks {
+				blanks[k] = ' '
+			}
+			t.buf = append(t.buf[:t.cursor], append(blanks, t.buf[t.cursor:]...)...)
+		}
+	case 'P': // DCH — delete N chars at the cursor (tail shifts left)
+		n := csiNum(params, 1)
+		if t.cursor < len(t.buf) {
+			end := t.cursor + n
+			if end > len(t.buf) {
+				end = len(t.buf)
+			}
+			t.buf = append(t.buf[:t.cursor], t.buf[end:]...)
+		}
+	case 'h': // SM — set mode; 4 = IRM (insert mode)
+		if params == "4" {
+			t.insertMode = true
+		}
+	case 'l': // RM — reset mode
+		if params == "4" {
+			t.insertMode = false
+		}
+	}
+}
+
+// markPrompt records where the command starts (idempotent until the next \n).
+func (t *boltLine) markPrompt() {
+	if !t.promptMarked {
+		t.promptLen = len(t.buf)
+		t.promptMarked = true
+	}
+}
+
+// command returns the text typed after the prompt, or "" if no prompt was marked.
+func (t *boltLine) command() string {
+	if !t.promptMarked || t.promptLen > len(t.buf) {
+		return ""
+	}
+	return string(t.buf[t.promptLen:])
+}
+
+func csiNum(params string, def int) int {
+	if params == "" {
+		return def
+	}
+	if idx := strings.IndexByte(params, ';'); idx >= 0 {
+		params = params[:idx]
+	}
+	if n, err := strconv.Atoi(params); err == nil && n >= 0 {
+		return n
+	}
+	return def
 }
 
 // ─── session start ──────────────────────────────────────────────────────────
@@ -225,133 +378,55 @@ func runBoltShell(relayURL, token, instanceID string) error {
 		}
 	}
 
-	// modeMu guards the terminal-mode flags written by the output goroutine and
-	// read by the input goroutine. While a full-screen app (vim/less/top) or
-	// application-cursor mode is active, we must NOT intercept arrow keys.
-	var modeMu sync.Mutex
+	// Shared state guarded by stateMu: the output-driven line tracker (source of
+	// truth for history) and the terminal-mode flags. While a full-screen app
+	// (vim/less/top/nano) or application-cursor mode is active we must not record
+	// history, join pastes, or hijack arrow keys.
+	var stateMu sync.Mutex
 	var altScreen, appCursorMode bool
+	tracker := &boltLine{}
 
 	// stdin → relay INPUT
 	//
-	// All input is forwarded verbatim EXCEPT:
+	// Input is forwarded verbatim EXCEPT:
 	//   • pastes — joined into a single line so the PTY never runs partial lines.
-	//   • up/down at the shell prompt — handled locally for history (see above).
-	// We mirror typed bytes into lineBuf only to record history on Enter and to
-	// know what to clear when recalling. Enter still just forwards \r — the
-	// remote bash owns its readline buffer, so we never re-send the command.
+	//   • up/down at the shell prompt — handled locally for history.
+	// History is NOT derived from typed bytes — it is read from the output line
+	// tracker (what the remote actually echoed), so tab-completion and remote-side
+	// edits are captured correctly. Enter still just forwards \r.
 	go func() {
 		buf := make([]byte, 4096)
 		var collectingPaste bool
 		var pasteBuf []byte
 		startMarker := []byte("\x1b[200~")
 		endMarker := []byte("\x1b[201~")
-
-		var lineBuf []byte
-		cursor := 0 // insertion point within lineBuf — tracks the remote cursor
 		histIdx := len(history)
 
-		// mirror updates lineBuf + cursor from forwarded bytes so the recorded
-		// history matches what is actually on the remote line — including
-		// mid-line edits via arrows, Home/End, Delete, and the readline controls.
-		mirror := func(d []byte) {
-			i := 0
-			for i < len(d) {
-				b := d[i]
-				if b == 0x1b { // ESC — parse a CSI / SS3 sequence
-					if i+1 < len(d) && (d[i+1] == '[' || d[i+1] == 'O') {
-						j := i + 2
-						for j < len(d) && !(d[j] >= 0x40 && d[j] <= 0x7e) {
-							j++
-						}
-						if j >= len(d) {
-							i = j
-							continue
-						}
-						final := d[j]
-						params := string(d[i+2 : j])
-						switch final {
-						case 'D': // left
-							if cursor > 0 {
-								cursor--
-							}
-						case 'C': // right
-							if cursor < len(lineBuf) {
-								cursor++
-							}
-						case 'H': // Home
-							cursor = 0
-						case 'F': // End
-							cursor = len(lineBuf)
-						case '~':
-							switch params {
-							case "1", "7": // Home
-								cursor = 0
-							case "4", "8": // End
-								cursor = len(lineBuf)
-							case "3": // Delete (forward)
-								if cursor < len(lineBuf) {
-									lineBuf = append(lineBuf[:cursor], lineBuf[cursor+1:]...)
-								}
-							}
-						}
-						i = j + 1
-						continue
-					}
-					i++
-					continue
-				}
-				switch {
-				case b == 0x08 || b == 0x7f: // backspace
-					if cursor > 0 {
-						lineBuf = append(lineBuf[:cursor-1], lineBuf[cursor:]...)
-						cursor--
-					}
-				case b == 0x01: // Ctrl-A — start of line
-					cursor = 0
-				case b == 0x05: // Ctrl-E — end of line
-					cursor = len(lineBuf)
-				case b == 0x15: // Ctrl-U — kill from cursor to start
-					lineBuf = append([]byte(nil), lineBuf[cursor:]...)
-					cursor = 0
-				case b == 0x0b: // Ctrl-K — kill from cursor to end
-					lineBuf = lineBuf[:cursor]
-				case b == 0x03: // Ctrl-C — abandon the line
-					lineBuf = lineBuf[:0]
-					cursor = 0
-				case b >= 0x20: // printable — insert at cursor
-					lineBuf = append(lineBuf, 0)
-					copy(lineBuf[cursor+1:], lineBuf[cursor:])
-					lineBuf[cursor] = b
-					cursor++
-				}
-				i++
-			}
-		}
-
-		// setLine replaces the local buffer (used for paste/history recall).
-		setLine := func(s string) {
-			lineBuf = append(lineBuf[:0], []byte(s)...)
-			cursor = len(lineBuf)
+		markPrompt := func() {
+			stateMu.Lock()
+			tracker.markPrompt()
+			stateMu.Unlock()
 		}
 
 		// replaceLine clears the remote prompt line and types s in its place.
 		// Ctrl-E (to end) + Ctrl-U (kill to start) clears regardless of cursor.
 		replaceLine := func(s string) {
+			markPrompt()
 			payload := append([]byte{0x05, 0x15}, []byte(s)...)
 			sendFrame(boltMsgInput, payload) //nolint:errcheck
-			setLine(s)
 		}
 
+		// recordHistory reads the visible command from the tracker and appends it.
 		recordHistory := func() {
-			cmd := strings.TrimSpace(string(lineBuf))
+			stateMu.Lock()
+			cmd := strings.TrimSpace(tracker.command())
+			stateMu.Unlock()
 			if cmd != "" && (len(history) == 0 || history[len(history)-1] != cmd) {
 				history = append(history, cmd)
 				if histFile != nil {
 					histFile.WriteString(cmd + "\n") //nolint:errcheck
 				}
 			}
-			lineBuf = lineBuf[:0]
-			cursor = 0
 			histIdx = len(history)
 		}
 
@@ -375,9 +450,9 @@ func runBoltShell(relayURL, token, instanceID string) error {
 			// behave like a plain pass-through terminal. Forward raw bytes — do
 			// NOT join pastes (newlines must survive in an editor), do NOT record
 			// history, do NOT hijack arrows. The remote app owns the screen.
-			modeMu.Lock()
+			stateMu.Lock()
 			inFullScreen := altScreen
-			modeMu.Unlock()
+			stateMu.Unlock()
 			if inFullScreen {
 				if err := sendFrame(boltMsgInput, append([]byte(nil), data...)); err != nil {
 					errCh <- err
@@ -394,9 +469,7 @@ func runBoltShell(relayURL, token, instanceID string) error {
 					joined := joinBoltPaste(pasteBuf)
 					pasteBuf = pasteBuf[:0]
 					if joined != "" {
-						lineBuf = append(lineBuf, []byte(joined)...)
-						cursor = len(lineBuf)
-						histIdx = len(history)
+						markPrompt()
 						if err := sendFrame(boltMsgInput, []byte(joined)); err != nil {
 							errCh <- err
 							return
@@ -417,7 +490,7 @@ func runBoltShell(relayURL, token, instanceID string) error {
 			// Start of a bracketed paste.
 			if startIdx := bytes.Index(data, startMarker); startIdx >= 0 {
 				if startIdx > 0 {
-					mirror(data[:startIdx])
+					markPrompt()
 					if err := sendFrame(boltMsgInput, data[:startIdx]); err != nil {
 						errCh <- err
 						return
@@ -432,9 +505,7 @@ func runBoltShell(relayURL, token, instanceID string) error {
 					joined := joinBoltPaste(pasteBuf)
 					pasteBuf = pasteBuf[:0]
 					if joined != "" {
-						lineBuf = append(lineBuf, []byte(joined)...)
-						cursor = len(lineBuf)
-						histIdx = len(history)
+						markPrompt()
 						if err := sendFrame(boltMsgInput, []byte(joined)); err != nil {
 							errCh <- err
 							return
@@ -462,8 +533,7 @@ func runBoltShell(relayURL, token, instanceID string) error {
 				}
 				joined := joinBoltPaste(content)
 				if joined != "" {
-					lineBuf = append(lineBuf, []byte(joined)...)
-						cursor = len(lineBuf)
+					markPrompt()
 					if err := sendFrame(boltMsgInput, []byte(joined)); err != nil {
 						errCh <- err
 						return
@@ -471,6 +541,7 @@ func runBoltShell(relayURL, token, instanceID string) error {
 				}
 				os.Stdout.Write([]byte("\x1b[?2004h")) //nolint:errcheck
 				if endsWithCR {
+					time.Sleep(25 * time.Millisecond) // let the echo settle into the tracker
 					recordHistory()
 					if err := sendFrame(boltMsgInput, []byte{0x0d}); err != nil {
 						errCh <- err
@@ -482,9 +553,9 @@ func runBoltShell(relayURL, token, instanceID string) error {
 
 			// History navigation: up/down arrow (CSI form) at the shell prompt.
 			if n == 3 && data[0] == 0x1b && data[1] == '[' && (data[2] == 'A' || data[2] == 'B') {
-				modeMu.Lock()
+				stateMu.Lock()
 				inApp := altScreen || appCursorMode
-				modeMu.Unlock()
+				stateMu.Unlock()
 				if !inApp && len(history) > 0 {
 					if data[2] == 'A' { // up
 						if histIdx > 0 {
@@ -511,21 +582,26 @@ func runBoltShell(relayURL, token, instanceID string) error {
 				continue
 			}
 
-			// Enter: record the line into history, then forward verbatim.
+			// Enter: record the visible command from the tracker, then forward \r.
 			if data[n-1] == 0x0d {
 				if n > 1 {
-					mirror(data[:n-1])
+					markPrompt()
+					if err := sendFrame(boltMsgInput, data[:n-1]); err != nil {
+						errCh <- err
+						return
+					}
 				}
+				time.Sleep(25 * time.Millisecond) // let the echo settle into the tracker
 				recordHistory()
-				if err := sendFrame(boltMsgInput, append([]byte(nil), data...)); err != nil {
+				if err := sendFrame(boltMsgInput, []byte{0x0d}); err != nil {
 					errCh <- err
 					return
 				}
 				continue
 			}
 
-			// Everything else: mirror into lineBuf and forward verbatim.
-			mirror(data)
+			// Everything else: mark the prompt (first keystroke) and forward.
+			markPrompt()
 			if err := sendFrame(boltMsgInput, append([]byte(nil), data...)); err != nil {
 				errCh <- err
 				return
@@ -557,9 +633,12 @@ func runBoltShell(relayURL, token, instanceID string) error {
 			switch f.MsgType {
 			case boltMsgOutput:
 				os.Stdout.Write(f.Payload) //nolint:errcheck
-				// Track terminal modes so the input goroutine knows when NOT to
-				// hijack arrow keys (full-screen apps, application-cursor mode).
-				updateTerminalModes(f.Payload, &modeMu, &altScreen, &appCursorMode)
+				// Feed the line tracker (history source of truth) and track
+				// terminal modes (so we don't hijack arrows in full-screen apps).
+				stateMu.Lock()
+				tracker.feed(f.Payload)
+				stateMu.Unlock()
+				updateTerminalModes(f.Payload, &stateMu, &altScreen, &appCursorMode)
 				// Re-enable bracketed paste if an inner shell disabled it.
 				if bytes.Contains(f.Payload, []byte("\x1b[?2004l")) {
 					os.Stdout.Write([]byte("\x1b[?2004h")) //nolint:errcheck

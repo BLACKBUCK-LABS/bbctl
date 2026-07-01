@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -367,21 +366,15 @@ func runBoltShell(relayURL, token, instanceID string) error {
 	errCh := make(chan error, 3)
 
 	// ── Local command history (client-side up/down) ───────────────────────────
-	// The remote agent does not act on arrow keys, so we keep history locally and
-	// rewrite the prompt line ourselves. History persists across sessions.
-	history, histPath := loadBoltHistory()
-	var histFile *os.File
-	if histPath != "" {
-		histFile, _ = os.OpenFile(histPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-		if histFile != nil {
-			defer histFile.Close()
-		}
-	}
+	// In-memory only — cleared when the session ends, never shared across
+	// instances or sessions. The remote agent does not act on arrow keys, so we
+	// keep history here and rewrite the prompt line ourselves.
+	var history []string
 
-	// Shared state guarded by stateMu: the output-driven line tracker (source of
-	// truth for history) and the terminal-mode flags. While a full-screen app
-	// (vim/less/top/nano) or application-cursor mode is active we must not record
-	// history, join pastes, or hijack arrow keys.
+	// Shared state guarded by stateMu: the output line tracker (used only as a
+	// fallback for tab-completed commands) and the terminal-mode flags. While a
+	// full-screen app (vim/less/top/nano) or application-cursor mode is active we
+	// must not record history, join pastes, or hijack arrow keys.
 	var stateMu sync.Mutex
 	var altScreen, appCursorMode bool
 	tracker := &boltLine{}
@@ -391,15 +384,22 @@ func runBoltShell(relayURL, token, instanceID string) error {
 	// Input is forwarded verbatim EXCEPT:
 	//   • pastes — joined into a single line so the PTY never runs partial lines.
 	//   • up/down at the shell prompt — handled locally for history.
-	// History is NOT derived from typed bytes — it is read from the output line
-	// tracker (what the remote actually echoed), so tab-completion and remote-side
-	// edits are captured correctly. Enter still just forwards \r.
+	//
+	// History source: a LOGICAL input buffer (lineBuf) that mirrors what the user
+	// typed/edited/pasted. Being logical, it is immune to physical line-wrapping —
+	// so long curl commands record correctly. Its one blind spot is tab-completion
+	// (chars the remote adds), so when Tab is used we fall back to the output
+	// tracker for that command. Enter still just forwards \r.
 	go func() {
 		buf := make([]byte, 4096)
 		var collectingPaste bool
 		var pasteBuf []byte
 		startMarker := []byte("\x1b[200~")
 		endMarker := []byte("\x1b[201~")
+
+		var lineBuf []byte
+		cursor := 0    // insertion point within lineBuf (tracks the remote cursor)
+		tabUsed := false // Tab pressed on this line → trust the output tracker instead
 		histIdx := len(history)
 
 		markPrompt := func() {
@@ -408,25 +408,123 @@ func runBoltShell(relayURL, token, instanceID string) error {
 			stateMu.Unlock()
 		}
 
+		// mirror updates lineBuf + cursor from typed bytes, handling the common
+		// editing keys so mid-line edits are recorded accurately. Tab sets tabUsed.
+		mirror := func(d []byte) {
+			i := 0
+			for i < len(d) {
+				b := d[i]
+				if b == 0x1b { // ESC — a CSI/SS3 sequence (cursor move, etc.)
+					if i+1 < len(d) && (d[i+1] == '[' || d[i+1] == 'O') {
+						j := i + 2
+						for j < len(d) && !(d[j] >= 0x40 && d[j] <= 0x7e) {
+							j++
+						}
+						if j >= len(d) {
+							i = j
+							continue
+						}
+						final := d[j]
+						params := string(d[i+2 : j])
+						switch final {
+						case 'D': // left
+							if cursor > 0 {
+								cursor--
+							}
+						case 'C': // right
+							if cursor < len(lineBuf) {
+								cursor++
+							}
+						case 'H':
+							cursor = 0
+						case 'F':
+							cursor = len(lineBuf)
+						case '~':
+							switch params {
+							case "1", "7":
+								cursor = 0
+							case "4", "8":
+								cursor = len(lineBuf)
+							case "3": // Delete forward
+								if cursor < len(lineBuf) {
+									lineBuf = append(lineBuf[:cursor], lineBuf[cursor+1:]...)
+								}
+							}
+						}
+						i = j + 1
+						continue
+					}
+					i++
+					continue
+				}
+				switch {
+				case b == 0x09: // Tab — remote will complete; trust the tracker
+					tabUsed = true
+				case b == 0x08 || b == 0x7f: // backspace
+					if cursor > 0 {
+						lineBuf = append(lineBuf[:cursor-1], lineBuf[cursor:]...)
+						cursor--
+					}
+				case b == 0x01: // Ctrl-A
+					cursor = 0
+				case b == 0x05: // Ctrl-E
+					cursor = len(lineBuf)
+				case b == 0x15: // Ctrl-U — kill to start
+					lineBuf = append([]byte(nil), lineBuf[cursor:]...)
+					cursor = 0
+				case b == 0x0b: // Ctrl-K — kill to end
+					lineBuf = lineBuf[:cursor]
+				case b == 0x03: // Ctrl-C — abandon line
+					lineBuf = lineBuf[:0]
+					cursor = 0
+					tabUsed = false
+				case b >= 0x20: // printable — insert at cursor
+					lineBuf = append(lineBuf, 0)
+					copy(lineBuf[cursor+1:], lineBuf[cursor:])
+					lineBuf[cursor] = b
+					cursor++
+				}
+				i++
+			}
+		}
+
+		setLine := func(s string) {
+			lineBuf = append(lineBuf[:0], []byte(s)...)
+			cursor = len(lineBuf)
+			tabUsed = false
+		}
+
+		appendPaste := func(joined string) {
+			lineBuf = append(lineBuf[:cursor], append([]byte(joined), lineBuf[cursor:]...)...)
+			cursor += len(joined)
+		}
+
 		// replaceLine clears the remote prompt line and types s in its place.
-		// Ctrl-E (to end) + Ctrl-U (kill to start) clears regardless of cursor.
 		replaceLine := func(s string) {
 			markPrompt()
 			payload := append([]byte{0x05, 0x15}, []byte(s)...)
 			sendFrame(boltMsgInput, payload) //nolint:errcheck
+			setLine(s)
 		}
 
-		// recordHistory reads the visible command from the tracker and appends it.
+		// recordHistory appends the finished command. It uses the logical lineBuf,
+		// except when Tab was used — then the output tracker holds the completed text.
 		recordHistory := func() {
-			stateMu.Lock()
-			cmd := strings.TrimSpace(tracker.command())
-			stateMu.Unlock()
-			if cmd != "" && (len(history) == 0 || history[len(history)-1] != cmd) {
-				history = append(history, cmd)
-				if histFile != nil {
-					histFile.WriteString(cmd + "\n") //nolint:errcheck
+			cmd := strings.TrimSpace(string(lineBuf))
+			if tabUsed {
+				stateMu.Lock()
+				tcmd := strings.TrimSpace(tracker.command())
+				stateMu.Unlock()
+				if tcmd != "" {
+					cmd = tcmd
 				}
 			}
+			if cmd != "" && (len(history) == 0 || history[len(history)-1] != cmd) {
+				history = append(history, cmd)
+			}
+			lineBuf = lineBuf[:0]
+			cursor = 0
+			tabUsed = false
 			histIdx = len(history)
 		}
 
@@ -470,6 +568,7 @@ func runBoltShell(relayURL, token, instanceID string) error {
 					pasteBuf = pasteBuf[:0]
 					if joined != "" {
 						markPrompt()
+						appendPaste(joined)
 						if err := sendFrame(boltMsgInput, []byte(joined)); err != nil {
 							errCh <- err
 							return
@@ -491,6 +590,7 @@ func runBoltShell(relayURL, token, instanceID string) error {
 			if startIdx := bytes.Index(data, startMarker); startIdx >= 0 {
 				if startIdx > 0 {
 					markPrompt()
+					mirror(data[:startIdx])
 					if err := sendFrame(boltMsgInput, data[:startIdx]); err != nil {
 						errCh <- err
 						return
@@ -506,6 +606,7 @@ func runBoltShell(relayURL, token, instanceID string) error {
 					pasteBuf = pasteBuf[:0]
 					if joined != "" {
 						markPrompt()
+						appendPaste(joined)
 						if err := sendFrame(boltMsgInput, []byte(joined)); err != nil {
 							errCh <- err
 							return
@@ -534,6 +635,7 @@ func runBoltShell(relayURL, token, instanceID string) error {
 				joined := joinBoltPaste(content)
 				if joined != "" {
 					markPrompt()
+					appendPaste(joined)
 					if err := sendFrame(boltMsgInput, []byte(joined)); err != nil {
 						errCh <- err
 						return
@@ -541,7 +643,6 @@ func runBoltShell(relayURL, token, instanceID string) error {
 				}
 				os.Stdout.Write([]byte("\x1b[?2004h")) //nolint:errcheck
 				if endsWithCR {
-					time.Sleep(25 * time.Millisecond) // let the echo settle into the tracker
 					recordHistory()
 					if err := sendFrame(boltMsgInput, []byte{0x0d}); err != nil {
 						errCh <- err
@@ -582,16 +683,19 @@ func runBoltShell(relayURL, token, instanceID string) error {
 				continue
 			}
 
-			// Enter: record the visible command from the tracker, then forward \r.
+			// Enter: record the command, then forward \r.
 			if data[n-1] == 0x0d {
 				if n > 1 {
 					markPrompt()
+					mirror(data[:n-1])
 					if err := sendFrame(boltMsgInput, data[:n-1]); err != nil {
 						errCh <- err
 						return
 					}
 				}
-				time.Sleep(25 * time.Millisecond) // let the echo settle into the tracker
+				if tabUsed {
+					time.Sleep(25 * time.Millisecond) // let the completion settle into the tracker
+				}
 				recordHistory()
 				if err := sendFrame(boltMsgInput, []byte{0x0d}); err != nil {
 					errCh <- err
@@ -600,8 +704,9 @@ func runBoltShell(relayURL, token, instanceID string) error {
 				continue
 			}
 
-			// Everything else: mark the prompt (first keystroke) and forward.
+			// Everything else: mark the prompt, mirror into lineBuf, and forward.
 			markPrompt()
+			mirror(data)
 			if err := sendFrame(boltMsgInput, append([]byte(nil), data...)); err != nil {
 				errCh <- err
 				return
@@ -681,25 +786,6 @@ func runBoltShell(relayURL, token, instanceID string) error {
 	<-errCh
 	fmt.Fprintf(os.Stdout, "\r\n")
 	return nil
-}
-
-// loadBoltHistory reads ~/.bbctl_bolt_history into a slice (oldest first) and
-// returns the slice and the file path (empty if the home dir is unavailable).
-func loadBoltHistory() ([]string, string) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, ""
-	}
-	path := filepath.Join(home, ".bbctl_bolt_history")
-	data, _ := os.ReadFile(path)
-	var hist []string
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimRight(line, "\r")
-		if strings.TrimSpace(line) != "" {
-			hist = append(hist, line)
-		}
-	}
-	return hist, path
 }
 
 // updateTerminalModes scans remote output for mode-change sequences and updates

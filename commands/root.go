@@ -43,6 +43,11 @@ the same command with the ticket ID to execute it.
 Use 'bbctl shell <instance-id>' for an interactive session.
 Use 'bbctl run <instance-id> -- <command>' for a single command.`,
 	Version: Version,
+	// Runtime failures (auth, network, a dropped DB session) should print a
+	// clean error — not the full command usage/help. Cobra should only surface
+	// usage for argument/flag parsing errors. Execute() prints the error once.
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runInteractive(cmd, refreshCache)
 	},

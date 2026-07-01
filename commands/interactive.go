@@ -97,7 +97,7 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 	case "ec2":
 		return runInteractiveEC2(cmd, c, cfg, cfgDir, token, forceRefresh)
 	case "rds":
-		return runInteractiveRDS(cmd.Context(), c, cfg, token)
+		return runInteractiveRDS(cmd, c, cfg, cfgDir, token)
 	}
 	return nil
 }
@@ -123,6 +123,23 @@ func pickResourceType() (string, error) {
 	return resourceOptions[idx].Key, nil
 }
 
+// isAuthErrText reports whether an error string looks like an expired/invalid
+// session (HTTP 401 / unauthorized), which warrants a re-login.
+func isAuthErrText(s string) bool {
+	l := strings.ToLower(s)
+	return strings.Contains(l, "401") || strings.Contains(l, "unauthorized")
+}
+
+// anyAuthErr reports whether any error in the list is auth-related.
+func anyAuthErr(errs []string) bool {
+	for _, e := range errs {
+		if isAuthErrText(e) {
+			return true
+		}
+	}
+	return false
+}
+
 // runInteractiveEC2 is the EC2 flow: load instances → fuzzy-pick → action.
 func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config, cfgDir, token string, forceRefresh bool) error {
 	sp := ui.NewSpinner("Loading EC2 instances")
@@ -132,8 +149,7 @@ func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 		sp.StopOK(fmt.Sprintf("Loaded %d instances", len(instances)))
 	} else {
 		sp.StopErr("Failed to load instances")
-		errLower := strings.ToLower(err.Error())
-		if strings.Contains(errLower, "401") || strings.Contains(errLower, "unauthorized") {
+		if isAuthErrText(err.Error()) {
 			fmt.Println("Session expired. Logging in again...")
 			if loginErr := runLogin(cmd, []string{}); loginErr != nil {
 				return loginErr
@@ -190,26 +206,14 @@ func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 	return executeAction(cmd.Context(), actionKey, selected, c, cfg, cfgDir, token)
 }
 
-// runInteractiveRDS loads RDS instances from all accounts, lets the user pick
-// one, then opens a governed MySQL REPL session.
-func runInteractiveRDS(ctx context.Context, c *client.Client, cfg *config.Config, token string) error {
-	if len(cfg.AccountAliases) == 0 {
-		return fmt.Errorf("no account_aliases in ~/.bbctl/config.yaml")
-	}
-
+// loadAllRDS fans out ListDatabases across every account concurrently and
+// returns the merged instances plus any per-account error strings.
+func loadAllRDS(ctx context.Context, c *client.Client, labels []string) ([]rdsItem, []string) {
 	type result struct {
 		items []rdsItem
 		err   error
 	}
-
-	labels := make([]string, 0, len(cfg.AccountAliases))
-	for label := range cfg.AccountAliases {
-		labels = append(labels, label)
-	}
-
 	results := make([]result, len(labels))
-	sp := ui.NewSpinner(fmt.Sprintf("Loading databases across %d accounts", len(labels)))
-	sp.Start()
 	var wg sync.WaitGroup
 	for i, label := range labels {
 		i, label := i, label
@@ -246,12 +250,54 @@ func runInteractiveRDS(ctx context.Context, c *client.Client, cfg *config.Config
 		}
 		all = append(all, r.items...)
 	}
+	return all, errs
+}
 
-	if len(all) == 0 && len(errs) > 0 {
+// runInteractiveRDS loads RDS instances from all accounts, lets the user pick
+// one, then opens a governed MySQL REPL session. Like the EC2 flow, it
+// re-authenticates once if the session has expired (HTTP 401).
+func runInteractiveRDS(cmd *cobra.Command, c *client.Client, cfg *config.Config, cfgDir, token string) error {
+	if len(cfg.AccountAliases) == 0 {
+		return fmt.Errorf("no account_aliases in ~/.bbctl/config.yaml")
+	}
+	ctx := cmd.Context()
+
+	labels := make([]string, 0, len(cfg.AccountAliases))
+	for label := range cfg.AccountAliases {
+		labels = append(labels, label)
+	}
+
+	sp := ui.NewSpinner(fmt.Sprintf("Loading databases across %d accounts", len(labels)))
+	sp.Start()
+	all, errs := loadAllRDS(ctx, c, labels)
+
+	// Re-login once if the token expired, mirroring the EC2 flow.
+	if len(all) == 0 && anyAuthErr(errs) {
+		sp.StopErr("Session expired")
+		fmt.Println("Session expired. Logging in again...")
+		if loginErr := runLogin(cmd, []string{}); loginErr != nil {
+			return loginErr
+		}
+		newToken, loadErr := config.LoadToken(cfgDir)
+		if loadErr != nil {
+			return fmt.Errorf("login failed: %w", loadErr)
+		}
+		token = newToken
+		c = client.New(cfg.BackendURL, token, "bbctl/"+Version)
+		sp2 := ui.NewSpinner(fmt.Sprintf("Loading databases across %d accounts", len(labels)))
+		sp2.Start()
+		all, errs = loadAllRDS(ctx, c, labels)
+		if len(all) == 0 && len(errs) > 0 {
+			sp2.StopErr("No databases loaded")
+			return fmt.Errorf("failed to load databases: %s", strings.Join(errs, "; "))
+		}
+		sp2.StopOK(fmt.Sprintf("Loaded %d databases", len(all)))
+	} else if len(all) == 0 && len(errs) > 0 {
 		sp.StopErr("No databases loaded")
 		return fmt.Errorf("failed to load databases: %s", strings.Join(errs, "; "))
+	} else {
+		sp.StopOK(fmt.Sprintf("Loaded %d databases", len(all)))
 	}
-	sp.StopOK(fmt.Sprintf("Loaded %d databases", len(all)))
 
 	if len(all) == 0 {
 		fmt.Println("No databases found.")
@@ -275,10 +321,6 @@ func runInteractiveRDS(ctx context.Context, c *client.Client, cfg *config.Config
 	}
 	fmt.Println(ui.Arrow(fmt.Sprintf("%s (%s)", selected.Identifier, selected.AccountLabel)))
 
-	cfgDir, err := config.DefaultConfigDir()
-	if err != nil {
-		cfgDir = ""
-	}
 	boltToken, _ := config.LoadBoltToken(cfgDir, activeEnv)
 	return startDBConnect(selected.Identifier, selected.AccountLabel, cfg, token, boltToken)
 }

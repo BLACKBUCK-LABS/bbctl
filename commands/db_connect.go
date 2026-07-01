@@ -282,6 +282,51 @@ func dbPrompt(identifier string, hasTicket bool) string {
 
 func dbContinuation() string { return "  " + ui.Glyph("…", "...") + " " }
 
+// interruptExits reports whether Ctrl+C at the prompt should exit the REPL.
+// It exits ONLY when there is nothing in flight: no buffered multi-line
+// statement (midStatement) and no text on the current line. Otherwise Ctrl+C
+// cancels the in-progress input and returns to a fresh prompt (mysql-like),
+// which is the fix for Ctrl+C wrongly exiting during a multi-line statement.
+func interruptExits(midStatement bool, line string) bool {
+	return !midStatement && strings.TrimSpace(line) == ""
+}
+
+// isConnClosed reports whether err indicates the WebSocket/TCP connection is
+// gone (server closed it, idle timeout at the load balancer, network drop),
+// as opposed to a normal application-level error. Used to show a friendly
+// reconnect hint instead of a raw "websocket: close 1006" stack.
+func isConnClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	if websocket.IsCloseError(err,
+		websocket.CloseNormalClosure,
+		websocket.CloseGoingAway,
+		websocket.CloseAbnormalClosure,
+		websocket.CloseNoStatusReceived,
+	) || websocket.IsUnexpectedCloseError(err) {
+		return true
+	}
+	msg := err.Error()
+	for _, frag := range []string{
+		"close 1006", "unexpected EOF", "broken pipe",
+		"use of closed network connection", "connection reset",
+	} {
+		if strings.Contains(msg, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+// connClosedHint prints a clean reconnect message for a dropped session and
+// returns nil so the caller exits without dumping a raw error / cobra usage.
+func connClosedHint(identifier string) error {
+	fmt.Fprintln(os.Stderr, ui.Warn("Session closed (idle timeout or network drop)."))
+	fmt.Fprintf(os.Stderr, "  Reconnect: bbctl db connect %s -a %s\n", identifier, dbAccount)
+	return nil
+}
+
 func runREPL(wsConn *websocket.Conn, identifier string) error {
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          dbPrompt(identifier, false),
@@ -293,6 +338,27 @@ func runREPL(wsConn *websocket.Conn, identifier string) error {
 		return fmt.Errorf("readline init: %w", err)
 	}
 	defer rl.Close()
+
+	// Keepalive: the DB WebSocket carries no traffic while the user reads output
+	// or steps away (e.g. to approve access). Without periodic frames the load
+	// balancer drops the idle connection, surfacing later as "close 1006". Send
+	// a ping well under the LB idle timeout. WriteControl is safe to call
+	// concurrently with the main loop's writes (gorilla guarantees this).
+	pingStop := make(chan struct{})
+	defer close(pingStop)
+	go func() {
+		t := time.NewTicker(20 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-pingStop:
+				return
+			case <-t.C:
+				_ = wsConn.WriteControl(websocket.PingMessage, []byte("keepalive"),
+					time.Now().Add(10*time.Second)) //nolint:errcheck
+			}
+		}
+	}()
 
 	var scanner scanState
 	var pendingTicket string
@@ -306,11 +372,11 @@ func runREPL(wsConn *websocket.Conn, identifier string) error {
 
 		line, err := rl.Readline()
 		if err == readline.ErrInterrupt {
-			if line == "" {
+			if interruptExits(scanner.active(), line) {
 				fmt.Println("\nBye")
 				return nil
 			}
-			// Reset mid-statement input on Ctrl+C.
+			// Cancel the in-progress statement/line and return to a fresh prompt.
 			scanner = scanState{}
 			pendingTicket = ""
 			fmt.Println()
@@ -333,10 +399,16 @@ func runREPL(wsConn *websocket.Conn, identifier string) error {
 				continue
 			}
 			if err := sendDBTicket(wsConn, key); err != nil {
+				if isConnClosed(err) {
+					return connClosedHint(identifier)
+				}
 				return err
 			}
 			pendingTicket = ""
 			if _, err := receiveDBResponse(wsConn); err != nil {
+				if isConnClosed(err) {
+					return connClosedHint(identifier)
+				}
 				return err
 			}
 			continue
@@ -359,10 +431,16 @@ func runREPL(wsConn *websocket.Conn, identifier string) error {
 		}
 
 		if err := sendDBQuery(wsConn, sql); err != nil {
+			if isConnClosed(err) {
+				return connClosedHint(identifier)
+			}
 			return err
 		}
 		ticketKey, err := receiveDBResponse(wsConn)
 		if err != nil {
+			if isConnClosed(err) {
+				return connClosedHint(identifier)
+			}
 			return err
 		}
 		if ticketKey != "" {

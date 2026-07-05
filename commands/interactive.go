@@ -388,7 +388,7 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		if err != nil {
 			return err
 		}
-		return runBoltShell(relayURL, boltToken, inst.InstanceID)
+		return runBoltShell(relayURL, boltToken, inst.InstanceID, inst.Name)
 
 	case "run":
 		fmt.Print("Command: ")

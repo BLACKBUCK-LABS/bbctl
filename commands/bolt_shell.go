@@ -287,20 +287,64 @@ func startBoltSession(ctx context.Context, relayURL, token, instanceID string) (
 
 // ─── main entry point ───────────────────────────────────────────────────────
 
+// BOLT UI palette (ANSI 256-color). Used only for client-drawn chrome — the
+// remote PTY controls its own colors.
+const (
+	bReset  = "\x1b[0m"
+	bBold   = "\x1b[1m"
+	bDim    = "\x1b[2m"
+	bYellow = "\x1b[38;5;226m"
+	bGold   = "\x1b[38;5;220m"
+	bOrange = "\x1b[38;5;208m"
+	bPurple = "\x1b[38;5;141m"
+	bGray   = "\x1b[38;5;245m"
+	bGreen  = "\x1b[38;5;42m"
+	bRed    = "\x1b[38;5;203m"
+)
+
+// relayHost strips scheme/path from a relay URL for display.
+func relayHost(u string) string {
+	for _, p := range []string{"https://", "http://", "wss://", "ws://"} {
+		u = strings.TrimPrefix(u, p)
+	}
+	if i := strings.IndexByte(u, '/'); i >= 0 {
+		u = u[:i]
+	}
+	return u
+}
+
+// printBoltHeader draws the branded BOLT session header (client chrome).
+func printBoltHeader(instanceName, instanceID, relayURL string) {
+	host := relayHost(relayURL)
+	// Terminal tab title.
+	fmt.Printf("\x1b]0;⚡ BOLT · %s\a", instanceName)
+	fmt.Println()
+	fmt.Printf("  %s%s⚡ BOLT%s %s%sSHELL%s\n", bBold, bYellow, bReset, bBold, bGold, bReset)
+	fmt.Printf("  %s%s│%s %s%s%s%s\n", bDim, bGold, bReset, bBold, bPurple, instanceName, bReset)
+	fmt.Printf("  %s%s│%s %s%s%s  %s·%s  %s%s%s\n",
+		bDim, bGold, bReset, bGray, instanceID, bReset, bDim, bReset, bGray, host, bReset)
+	fmt.Println()
+}
+
 // runBoltShell opens a BOLT relay PTY session against instanceID.
 // relayURL is the relay base (default: the dev backend URL); token is the
 // environment's BOLT JWT (bolt_token_dev / bolt_token_prod).
-func runBoltShell(relayURL, token, instanceID string) error {
+func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 	if relayURL == "" {
 		return fmt.Errorf("relay URL not configured")
 	}
+	if instanceName == "" {
+		instanceName = instanceID
+	}
 
-	fmt.Fprintf(os.Stderr, "⚡ Starting BOLT session for %s...\n", instanceID)
+	printBoltHeader(instanceName, instanceID, relayURL)
+	fmt.Printf("  %s%s◍%s %sconnecting to relay…%s\n", bBold, bOrange, bReset, bGray, bReset)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	session, err := startBoltSession(ctx, relayURL, token, instanceID)
 	cancel()
 	if err != nil {
+		fmt.Printf("  %s%s✖%s %s%v%s\n", bBold, bRed, bReset, bRed, err, bReset)
 		return err
 	}
 
@@ -325,6 +369,10 @@ func runBoltShell(relayURL, token, instanceID string) error {
 		return fmt.Errorf("BOLT requires an interactive terminal")
 	}
 
+	fmt.Printf("  %s%s●%s %sconnected%s  %s— type %sexit%s%s or %sCtrl-D%s%s to leave%s\n\n",
+		bBold, bGreen, bReset, bGreen, bReset,
+		bGray, bBold+bGray, bReset, bGray, bBold+bGray, bReset, bGray, bReset)
+
 	cols, rows := uint16(220), uint16(50)
 	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
 		cols, rows = uint16(w), uint16(h)
@@ -343,12 +391,34 @@ func runBoltShell(relayURL, token, instanceID string) error {
 		term.Restore(fd, oldState)
 	}()
 
+	// Optional frame debug log: BBCTL_BOLT_DEBUG=1 writes every sent/received
+	// frame (type + quoted payload) to ~/.bbctl_bolt_debug.log for diagnosing
+	// relay behavior (e.g. how forbidden commands are returned).
+	var dbg *os.File
+	if os.Getenv("BBCTL_BOLT_DEBUG") != "" {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			dbg, _ = os.OpenFile(home+"/.bbctl_bolt_debug.log",
+				os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+			if dbg != nil {
+				defer dbg.Close()
+				fmt.Fprintf(dbg, "\n=== BOLT session %s ===\n", session.SessionID)
+			}
+		}
+	}
+	dbgLog := func(dir string, msgType byte, payload []byte) {
+		if dbg == nil {
+			return
+		}
+		fmt.Fprintf(dbg, "%s type=0x%02x len=%d %q\n", dir, msgType, len(payload), string(payload))
+	}
+
 	var seqNo uint64
 	var writeMu sync.Mutex
 	sendFrame := func(msgType byte, payload []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		seqNo++
+		dbgLog("SEND", msgType, payload)
 		return conn.WriteMessage(websocket.BinaryMessage,
 			encodeBoltFrame(msgType, seqNo, session.SessionID, payload))
 	}
@@ -715,6 +785,8 @@ func runBoltShell(relayURL, token, instanceID string) error {
 	}()
 
 	// relay → stdout
+	deniedMarker := []byte("[bbctl] permission denied")
+	deniedPending := false
 	go func() {
 		for {
 			msgType, data, err := conn.ReadMessage()
@@ -735,9 +807,31 @@ func runBoltShell(relayURL, token, instanceID string) error {
 			if err != nil {
 				continue
 			}
+			dbgLog("RECV", f.MsgType, f.Payload)
 			switch f.MsgType {
 			case boltMsgOutput:
-				os.Stdout.Write(f.Payload) //nolint:errcheck
+				// The agent's post-denial redraw uses hand-computed cursor moves
+				// that garble wrapped/edited lines and leave you stuck. Suppress
+				// that one frame — we force a clean prompt with Ctrl-C instead.
+				if deniedPending {
+					deniedPending = false
+					continue
+				}
+				payload := f.Payload
+				// On a permission-denied banner: mark it with ⛔ + red, then send
+				// Ctrl-C so the remote shell abandons the rejected line and draws a
+				// fresh clean prompt (what you'd otherwise do by hand).
+				if idx := bytes.Index(payload, deniedMarker); idx >= 0 {
+					colored := append([]byte(nil), payload[:idx]...)
+					colored = append(colored, []byte(bBold+bRed+"⛔ "+bReset+bRed)...)
+					colored = append(colored, payload[idx:]...)
+					colored = append(colored, []byte(bReset)...)
+					os.Stdout.Write(colored) //nolint:errcheck
+					deniedPending = true
+					sendFrame(boltMsgInput, []byte{0x03}) //nolint:errcheck — Ctrl-C
+					continue
+				}
+				os.Stdout.Write(payload) //nolint:errcheck
 				// Feed the line tracker (history source of truth) and track
 				// terminal modes (so we don't hijack arrows in full-screen apps).
 				stateMu.Lock()
@@ -751,12 +845,20 @@ func runBoltShell(relayURL, token, instanceID string) error {
 			case boltMsgClose:
 				reason := strings.TrimSpace(string(f.Payload))
 				if reason != "" {
-					fmt.Fprintf(os.Stdout, "\r\n[session closed: %s]\r\n", reason)
+					fmt.Fprintf(os.Stdout, "\r\n  %s%s✖ session closed%s %s— %s%s\r\n",
+						bBold, bRed, bReset, bGray, reason, bReset)
 				}
 				errCh <- nil
 				return
 			case boltMsgKeepalive:
 				// ignored
+			default:
+				// Any other frame (e.g. the relay's forbidden/reject message) was
+				// previously dropped silently — so the error never showed and the
+				// prompt was left mid-line. Surface its payload on a clean line.
+				if msg := strings.TrimRight(string(f.Payload), "\r\n"); msg != "" {
+					fmt.Fprintf(os.Stdout, "\r\n%s\r\n", msg)
+				}
 			}
 		}
 	}()
@@ -784,7 +886,7 @@ func runBoltShell(relayURL, token, instanceID string) error {
 	}()
 
 	<-errCh
-	fmt.Fprintf(os.Stdout, "\r\n")
+	fmt.Fprintf(os.Stdout, "\r\n  %s%s⚡ BOLT%s %ssession ended%s\r\n", bBold, bYellow, bReset, bGray, bReset)
 	return nil
 }
 

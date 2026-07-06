@@ -28,9 +28,18 @@ type action struct {
 	Preview string
 }
 
-var actions = []action{
-	{Key: "shell", Icon: "🖥 ", Label: "Open shell", Preview: "Start an interactive shell session on the selected instance"},
+// devActions includes BOLT; prodActions omits it (not available in prod yet).
+var devActions = []action{
 	{Key: "bolt", Icon: "⚡ ", Label: "BOLT", Preview: "Open a fast relay PTY session on the selected instance"},
+	{Key: "shell", Icon: "🖥 ", Label: "Open shell", Preview: "Start an interactive shell session on the selected instance"},
+	{Key: "run", Icon: "▶ ", Label: "Run command", Preview: "Execute a one-shot command on the selected instance"},
+	{Key: "upload", Icon: "↑ ", Label: "Upload file", Preview: "Upload a file from your machine to the instance"},
+	{Key: "download", Icon: "↓ ", Label: "Download file", Preview: "Download a file from the instance to your machine"},
+	{Key: "details", Icon: "ℹ ", Label: "Instance details", Preview: "Display detailed information about the instance"},
+}
+
+var prodActions = []action{
+	{Key: "shell", Icon: "🖥 ", Label: "Open shell", Preview: "Start an interactive shell session on the selected instance"},
 	{Key: "run", Icon: "▶ ", Label: "Run command", Preview: "Execute a one-shot command on the selected instance"},
 	{Key: "upload", Icon: "↑ ", Label: "Upload file", Preview: "Upload a file from your machine to the instance"},
 	{Key: "download", Icon: "↓ ", Label: "Download file", Preview: "Download a file from the instance to your machine"},
@@ -83,6 +92,11 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 		Email:   emailFromToken(token),
 		Version: Version,
 	})
+
+	// prod goes straight to EC2 — no resource picker, no RDS option.
+	if activeEnv == "prod" {
+		return runInteractiveEC2(cmd, c, cfg, cfgDir, token, forceRefresh)
+	}
 
 	resKey, err := pickResourceType()
 	if err != nil {
@@ -355,17 +369,21 @@ func pickRDS(items []rdsItem) (*rdsItem, error) {
 }
 
 func pickAction(inst *ec2picker.Instance) (string, error) {
+	acts := devActions
+	if activeEnv == "prod" {
+		acts = prodActions
+	}
 	idx, err := fuzzyfinder.Find(
-		actions,
+		acts,
 		func(i int) string {
-			return actions[i].Icon + " " + actions[i].Label
+			return acts[i].Icon + " " + acts[i].Label
 		},
 		fuzzyfinder.WithHeader(fmt.Sprintf("Action for %s (%s)", inst.Name, inst.InstanceID)),
 		fuzzyfinder.WithPreviewWindow(func(i, w, h int) string {
 			if i < 0 {
 				return ""
 			}
-			return actions[i].Preview
+			return acts[i].Preview
 		}),
 	)
 	if err != nil {
@@ -374,7 +392,7 @@ func pickAction(inst *ec2picker.Instance) (string, error) {
 		}
 		return "", err
 	}
-	return actions[idx].Key, nil
+	return acts[idx].Key, nil
 }
 
 func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instance, c *client.Client, cfg *config.Config, cfgDir, token string) error {

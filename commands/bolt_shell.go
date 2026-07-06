@@ -78,6 +78,19 @@ func decodeBoltFrame(data []byte) (*boltFrame, error) {
 	}, nil
 }
 
+// boltBracketPaste wraps text in bracketed-paste markers so the remote readline
+// inserts it via one clean redisplay, instead of echoing it character-by-character
+// (which emits a stray CR at the wrap column and overwrites the first row of long
+// lines). The remote must have bracketed-paste mode enabled (it does at the shell
+// prompt — it emits ESC[?2004h).
+func boltBracketPaste(s string) []byte {
+	out := make([]byte, 0, len(s)+12)
+	out = append(out, "\x1b[200~"...)
+	out = append(out, s...)
+	out = append(out, "\x1b[201~"...)
+	return out
+}
+
 // joinBoltPaste flattens a multi-line pasted bash command to a single line.
 // Trailing-space-before-backslash continuations ("cmd \ \n") are handled.
 func joinBoltPaste(buf []byte) string {
@@ -639,7 +652,7 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 					if joined != "" {
 						markPrompt()
 						appendPaste(joined)
-						if err := sendFrame(boltMsgInput, []byte(joined)); err != nil {
+						if err := sendFrame(boltMsgInput, boltBracketPaste(joined)); err != nil {
 							errCh <- err
 							return
 						}
@@ -677,7 +690,7 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 					if joined != "" {
 						markPrompt()
 						appendPaste(joined)
-						if err := sendFrame(boltMsgInput, []byte(joined)); err != nil {
+						if err := sendFrame(boltMsgInput, boltBracketPaste(joined)); err != nil {
 							errCh <- err
 							return
 						}
@@ -786,7 +799,10 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 
 	// relay → stdout
 	deniedMarker := []byte("[bbctl] permission denied")
+	ctrlCEcho := []byte("^C")
 	deniedPending := false
+	ctrlCScrub := 0 // frames left to scan for our injected Ctrl-C's shell echo
+	sizeSynced := false
 	go func() {
 		for {
 			msgType, data, err := conn.ReadMessage()
@@ -810,6 +826,19 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 			dbgLog("RECV", f.MsgType, f.Payload)
 			switch f.MsgType {
 			case boltMsgOutput:
+				// Re-sync the real terminal size once the PTY is producing output.
+				// The initial resize can be missed if it arrives before the agent's
+				// PTY is ready, leaving the agent wrapping at the wrong column — which
+				// makes long pasted lines overwrite themselves (only the tail shows).
+				if !sizeSynced {
+					sizeSynced = true
+					if w, h, gerr := term.GetSize(int(os.Stdout.Fd())); gerr == nil {
+						p := make([]byte, 4)
+						binary.BigEndian.PutUint16(p[0:2], uint16(h))
+						binary.BigEndian.PutUint16(p[2:4], uint16(w))
+						sendFrame(boltMsgResize, p) //nolint:errcheck
+					}
+				}
 				// The agent's post-denial redraw uses hand-computed cursor moves
 				// that garble wrapped/edited lines and leave you stuck. Suppress
 				// that one frame — we force a clean prompt with Ctrl-C instead.
@@ -828,8 +857,19 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 					colored = append(colored, []byte(bReset)...)
 					os.Stdout.Write(colored) //nolint:errcheck
 					deniedPending = true
+					ctrlCScrub = 5 // the shell's "^C" echo lands within the next few frames
 					sendFrame(boltMsgInput, []byte{0x03}) //nolint:errcheck — Ctrl-C
 					continue
+				}
+				// Hide the shell's echo of the Ctrl-C we injected above — the user
+				// never pressed it, so showing "^C" would be a confusing artifact.
+				if ctrlCScrub > 0 {
+					if idx := bytes.Index(payload, ctrlCEcho); idx >= 0 {
+						payload = append(payload[:idx:idx], payload[idx+len(ctrlCEcho):]...)
+						ctrlCScrub = 0
+					} else {
+						ctrlCScrub--
+					}
 				}
 				os.Stdout.Write(payload) //nolint:errcheck
 				// Feed the line tracker (history source of truth) and track

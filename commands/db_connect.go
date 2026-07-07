@@ -153,6 +153,7 @@ type dbResultSet struct {
 	Columns    []string    `json:"columns"`
 	Rows       [][]*string `json:"rows"`
 	DurationMs int64       `json:"duration_ms"`
+	Vertical   bool        `json:"vertical"`
 }
 
 type dbOKMsg struct {
@@ -475,7 +476,11 @@ func receiveDBResponse(wsConn *websocket.Conn) (string, error) {
 	case "resultset":
 		var rs dbResultSet
 		json.Unmarshal(msg, &rs) //nolint:errcheck
-		fmt.Print(renderTable(rs.Columns, rs.Rows, rs.DurationMs))
+		if rs.Vertical {
+			fmt.Print(renderVertical(rs.Columns, rs.Rows, rs.DurationMs))
+		} else {
+			fmt.Print(renderTable(rs.Columns, rs.Rows, rs.DurationMs))
+		}
 	case "ok":
 		var ok dbOKMsg
 		json.Unmarshal(msg, &ok) //nolint:errcheck

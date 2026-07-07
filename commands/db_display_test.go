@@ -30,6 +30,72 @@ func TestRenderTable_EmptySet(t *testing.T) {
 	}
 }
 
+func TestRenderVertical_SingleRow(t *testing.T) {
+	ui.Std = ui.Caps{Color: false, Unicode: false, TTY: false}
+	id, name := "1", "admin"
+	out := renderVertical([]string{"id", "created_by"}, [][]*string{{&id, &name}}, 10)
+
+	wantHeader := "*************************** 1. row ***************************\n"
+	if !strings.Contains(out, wantHeader) {
+		t.Errorf("missing row header: %q", out)
+	}
+	if !strings.Contains(out, "        id: 1\n") {
+		t.Errorf("expected right-aligned id field: %q", out)
+	}
+	if !strings.Contains(out, "created_by: admin\n") {
+		t.Errorf("expected created_by field: %q", out)
+	}
+	if !strings.Contains(out, "1 row in set") {
+		t.Errorf("missing footer: %q", out)
+	}
+}
+
+func TestRenderVertical_MultipleRowsAndNull(t *testing.T) {
+	ui.Std = ui.Caps{Color: false, Unicode: false, TTY: false}
+	a := "1"
+	out := renderVertical([]string{"id", "name"}, [][]*string{{&a, nil}, {&a, nil}}, 5)
+
+	if !strings.Contains(out, "*************************** 1. row ***************************\n") {
+		t.Errorf("missing row 1 header: %q", out)
+	}
+	if !strings.Contains(out, "*************************** 2. row ***************************\n") {
+		t.Errorf("missing row 2 header: %q", out)
+	}
+	if !strings.Contains(out, "name: NULL\n") {
+		t.Errorf("expected NULL rendering: %q", out)
+	}
+	if !strings.Contains(out, "2 rows in set") {
+		t.Errorf("missing plural footer: %q", out)
+	}
+}
+
+func TestRenderVertical_EmptySet(t *testing.T) {
+	ui.Std = ui.Caps{Color: false, Unicode: false, TTY: false}
+	out := renderVertical([]string{}, [][]*string{}, 50)
+	if !strings.Contains(out, "Empty set") {
+		t.Errorf("expected 'Empty set': %q", out)
+	}
+}
+
+// TestRenderVertical_ZeroRowsWithColumns locks in parity with renderTable:
+// when a SELECT matches no rows but still has columns (e.g. WHERE 1=0), both
+// renderers print "0 rows in set" rather than "Empty set" — no row headers.
+func TestRenderVertical_ZeroRowsWithColumns(t *testing.T) {
+	ui.Std = ui.Caps{Color: false, Unicode: false, TTY: false}
+	out := renderVertical([]string{"id"}, [][]*string{}, 5)
+	if !strings.Contains(out, "0 rows in set") {
+		t.Errorf("expected '0 rows in set': %q", out)
+	}
+	if strings.Contains(out, "row ***") {
+		t.Errorf("did not expect a row header for zero rows: %q", out)
+	}
+
+	tableOut := renderTable([]string{"id"}, [][]*string{}, 5)
+	if !strings.Contains(tableOut, "0 rows in set") {
+		t.Errorf("renderTable diverges from renderVertical for zero-row parity: %q", tableOut)
+	}
+}
+
 func TestRenderTable_PluralRows(t *testing.T) {
 	ui.Std = ui.Caps{Color: false, Unicode: false, TTY: false}
 	a, b := "foo", "bar"

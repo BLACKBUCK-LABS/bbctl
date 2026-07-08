@@ -99,6 +99,9 @@ func runLogin(cmd *cobra.Command, args []string) error {
 						cfg.DefaultAccountID = zinkaID
 					}
 				}
+				// Never persist an env-overridden BackendURL — it would lock
+				// plain `bbctl` to the prod URL after a `bbctl prod` login.
+				cfg.BackendURL = ""
 				if saveErr := config.SaveConfig(configDir, cfg); saveErr != nil {
 					fmt.Fprintf(os.Stderr,
 						"note: could not save account aliases: %v\n", saveErr)

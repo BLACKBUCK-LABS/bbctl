@@ -94,7 +94,11 @@ func LoadOrDefault(configDir string) (*Config, error) {
 	if cfg.DefaultTimeoutSecs == 0 {
 		cfg.DefaultTimeoutSecs = 30
 	}
-	// BBCTL_BACKEND_URL env var takes highest precedence.
+	// BackendURL is never read from config.yaml — it is controlled exclusively
+	// by the BBCTL_BACKEND_URL env var (set by `bbctl prod`) or the hardcoded
+	// default above. This prevents a stale prod URL from being baked into the
+	// file and silently redirecting plain `bbctl` to the wrong backend.
+	cfg.BackendURL = "https://bbctl-dev.blackbuck.com"
 	if v := os.Getenv("BBCTL_BACKEND_URL"); v != "" {
 		cfg.BackendURL = v
 	}

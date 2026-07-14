@@ -94,6 +94,15 @@ func LoadOrDefault(configDir string) (*Config, error) {
 	if cfg.DefaultTimeoutSecs == 0 {
 		cfg.DefaultTimeoutSecs = 30
 	}
+	// Backfill auth URLs when a persisted config.yaml has them empty — an older
+	// login saved prod_bb_auth_url="" before this default existed, and that empty
+	// value would otherwise override the default and silently skip prod BOLT login.
+	if cfg.BBAuthURL == "" {
+		cfg.BBAuthURL = "https://eks-api-gateway-stress.blackbuck.com"
+	}
+	if cfg.ProdBBAuthURL == "" {
+		cfg.ProdBBAuthURL = "https://api.blackbuck.com"
+	}
 	// BackendURL is never read from config.yaml — it is controlled exclusively
 	// by the BBCTL_BACKEND_URL env var (set by `bbctl prod`) or the hardcoded
 	// default above. This prevents a stale prod URL from being baked into the

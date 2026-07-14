@@ -13,6 +13,11 @@ func Pick(instances []Instance) (*Instance, error) {
 		return nil, fmt.Errorf("no instances available")
 	}
 
+	// Full-width single-table layout — no side preview. go-fuzzyfinder fixes
+	// the preview pane at ~50% of the screen with no way to shrink it, which
+	// left a large empty right panel. Dropping it hands the list the full
+	// width; the preview's extra fields (Type, AZ) are folded into the row so
+	// nothing is lost.
 	idx, err := fuzzyfinder.Find(
 		instances,
 		func(i int) string {
@@ -21,43 +26,18 @@ func Pick(instances []Instance) (*Instance, error) {
 			if name == "" {
 				name = "(no name)"
 			}
-			return fmt.Sprintf("%-45s %-22s %-10s %-16s %s",
-				truncate(name, 45),
+			return fmt.Sprintf("%-42s   %-21s   %-9s   %-16s   %-13s   %-10s   %s",
+				truncate(name, 42),
 				inst.InstanceID,
 				inst.AccountLabel,
 				inst.PrivateIP,
-				inst.State)
-		},
-		fuzzyfinder.WithHeader(fmt.Sprintf(
-			"%-45s %-22s %-10s %-16s %s",
-			"Name", "Instance ID", "Account", "Private IP", "State")),
-		fuzzyfinder.WithPreviewWindow(func(i, w, h int) string {
-			if i == -1 {
-				return ""
-			}
-			inst := instances[i]
-			name := inst.Name
-			if name == "" {
-				name = "(no name)"
-			}
-			return fmt.Sprintf(
-				"Name:      %s\n"+
-					"ID:        %s\n"+
-					"Account:   %s (%s)\n"+
-					"Private:   %s\n"+
-					"Public:    %s\n"+
-					"Type:      %s\n"+
-					"State:     %s\n"+
-					"AZ:        %s",
-				name,
-				inst.InstanceID,
-				inst.AccountLabel, inst.AccountID,
-				inst.PrivateIP,
-				inst.PublicIP,
 				inst.InstanceType,
 				inst.State,
 				inst.AZ)
-		}),
+		},
+		fuzzyfinder.WithHeader(fmt.Sprintf(
+			"%-42s   %-21s   %-9s   %-16s   %-13s   %-10s   %s",
+			"Name", "Instance ID", "Account", "Private IP", "Type", "State", "AZ")),
 	)
 
 	if err != nil {

@@ -328,24 +328,20 @@ func runInteractiveRDS(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 }
 
 func pickRDS(items []rdsItem) (*rdsItem, error) {
+	// Full-width single-table layout — no side preview. The preview panel only
+	// repeated the row's columns (its one extra field, the endpoint, just
+	// mirrors the identifier and is shown again on connect), so it was dropped
+	// to remove the lopsided empty right pane. Columns are widened to use the
+	// reclaimed space.
 	idx, err := fuzzyfinder.Find(
 		items,
 		func(i int) string {
 			it := items[i]
-			return fmt.Sprintf("%-45s %-12s %-12s %s",
-				instanceTruncate(it.Identifier, 45), it.Engine, it.Status, it.AccountLabel)
+			return fmt.Sprintf("%-52s   %-10s   %-12s   %s",
+				instanceTruncate(it.Identifier, 52), it.Engine, it.Status, it.AccountLabel)
 		},
-		fuzzyfinder.WithHeader(fmt.Sprintf("%-45s %-12s %-12s %s",
+		fuzzyfinder.WithHeader(fmt.Sprintf("%-52s   %-10s   %-12s   %s",
 			"Identifier", "Engine", "Status", "Account")),
-		fuzzyfinder.WithPreviewWindow(func(i, w, h int) string {
-			if i < 0 {
-				return ""
-			}
-			it := items[i]
-			return fmt.Sprintf(
-				"Identifier: %s\nEngine:     %s\nStatus:     %s\nEndpoint:   %s:%d\nAccount:    %s",
-				it.Identifier, it.Engine, it.Status, it.Endpoint, it.Port, it.AccountLabel)
-		}),
 	)
 	if err != nil {
 		if err == fuzzyfinder.ErrAbort {

@@ -74,7 +74,7 @@ func LoadOrDefault(configDir string) (*Config, error) {
 		BackendURL:         "https://bbctl-dev.blackbuck.com",
 		ProdBackendURL:     "https://bbctl.blackbuck.com",
 		BBAuthURL:          "https://eks-api-gateway-stress.blackbuck.com",
-		ProdBBAuthURL:      "",
+		ProdBBAuthURL:      "https://api.blackbuck.com",
 		OIDCIssuer:         "https://accounts.google.com",
 		OIDCClientID:       "396628175360-g90ptoadcl2coqrtk09oa2625a0k4ppf.apps.googleusercontent.com",
 		OIDCAuthEndpoint:   "https://accounts.google.com/o/oauth2/v2/auth",

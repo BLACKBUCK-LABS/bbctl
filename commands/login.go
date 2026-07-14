@@ -59,26 +59,30 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── BOLT flow (additive) ─────────────────────────────────────────────────
-	// Exchange the Google access token for a BOLT session JWT per environment and
-	// store it in its own file. Non-fatal: any failure here never affects the
-	// existing login above. Prod is skipped while its auth host is unset.
+	// Exchange the Google access token for a BOLT session JWT for the ACTIVE
+	// environment only. Default (`bbctl login`) mints the SIT/dev token; the
+	// prod token is minted only when the user runs `bbctl prod login`. Non-fatal:
+	// any failure here never affects the ID-token login above.
 	if accessToken != "" {
-		if cfg.BBAuthURL != "" {
-			if boltTok, bErr := loginToBolt(ctx, cfg.BBAuthURL, accessToken); bErr == nil {
-				if sErr := config.SaveBoltToken(configDir, "dev", boltTok); sErr == nil {
-					fmt.Println("✓ BOLT dev token created")
+		if activeEnv == "prod" {
+			if cfg.ProdBBAuthURL != "" {
+				if boltTok, bErr := loginToBolt(ctx, cfg.ProdBBAuthURL, accessToken); bErr == nil {
+					if sErr := config.SaveBoltToken(configDir, "prod", boltTok); sErr == nil {
+						fmt.Println("✓ BOLT prod token created")
+					}
+				} else {
+					fmt.Fprintf(os.Stderr, "note: BOLT prod login failed: %v\n", bErr)
 				}
-			} else {
-				fmt.Fprintf(os.Stderr, "note: BOLT dev login failed: %v\n", bErr)
 			}
-		}
-		if cfg.ProdBBAuthURL != "" {
-			if boltTok, bErr := loginToBolt(ctx, cfg.ProdBBAuthURL, accessToken); bErr == nil {
-				if sErr := config.SaveBoltToken(configDir, "prod", boltTok); sErr == nil {
-					fmt.Println("✓ BOLT prod token created")
+		} else {
+			if cfg.BBAuthURL != "" {
+				if boltTok, bErr := loginToBolt(ctx, cfg.BBAuthURL, accessToken); bErr == nil {
+					if sErr := config.SaveBoltToken(configDir, "dev", boltTok); sErr == nil {
+						fmt.Println("✓ BOLT dev token created")
+					}
+				} else {
+					fmt.Fprintf(os.Stderr, "note: BOLT dev login failed: %v\n", bErr)
 				}
-			} else {
-				fmt.Fprintf(os.Stderr, "note: BOLT prod login failed: %v\n", bErr)
 			}
 		}
 	}

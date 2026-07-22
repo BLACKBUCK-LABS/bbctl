@@ -93,6 +93,23 @@ func boltBracketPaste(s string) []byte {
 	return out
 }
 
+// trailingPasteMarkerPrefix returns the number of trailing bytes of data that
+// form an INCOMPLETE bracketed-paste marker (ESC[200~ / ESC[201~) split across
+// reads. Only 3+ byte prefixes are matched so bare ESC and arrow keys are never
+// held back (which would make Esc/vim laggy). Returns 0 if no partial marker.
+func trailingPasteMarkerPrefix(data []byte) int {
+	for _, p := range [][]byte{
+		[]byte("\x1b[200"), []byte("\x1b[201"), // 5 bytes (only ~ missing)
+		[]byte("\x1b[20"), // 4 bytes
+		[]byte("\x1b[2"),  // 3 bytes
+	} {
+		if bytes.HasSuffix(data, p) {
+			return len(p)
+		}
+	}
+	return 0
+}
+
 // joinBoltPaste flattens a multi-line pasted bash command to a single line.
 // Trailing-space-before-backslash continuations ("cmd \ \n") are handled.
 func joinBoltPaste(buf []byte) string {
@@ -613,6 +630,7 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 			histIdx = len(history)
 		}
 
+		var markerCarry []byte // holds a trailing partial paste marker across reads
 		for {
 			select {
 			case <-runCtx.Done():
@@ -628,6 +646,22 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 				continue
 			}
 			data := buf[:n]
+
+			// Recombine a paste marker that was split across reads (some terminals,
+			// e.g. macOS Terminal.app, deliver ESC[200~/ESC[201~ in a separate or
+			// partial chunk). Without this the leftover bytes ("0~"…"1~") leak to
+			// the remote as literal text.
+			if len(markerCarry) > 0 {
+				data = append(markerCarry, data...)
+				markerCarry = nil
+			}
+			if p := trailingPasteMarkerPrefix(data); p > 0 {
+				markerCarry = append(markerCarry, data[len(data)-p:]...)
+				data = data[:len(data)-p]
+				if len(data) == 0 {
+					continue // whole read was a partial marker — wait for the rest
+				}
+			}
 
 			// Full-screen interactive app (nano, vim, less, top, …) is active:
 			// behave like a plain pass-through terminal. Forward raw bytes — do

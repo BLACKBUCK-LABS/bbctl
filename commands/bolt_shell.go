@@ -479,6 +479,14 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 	// must not record history, join pastes, or hijack arrow keys.
 	var stateMu sync.Mutex
 	var altScreen, appCursorMode bool
+	// remoteBracketPaste is true only once the remote shell has itself emitted
+	// ESC[?2004h, confirming its readline understands bracketed-paste markers.
+	// Until then we must NOT wrap forwarded pastes in ESC[200~/201~ — a remote
+	// without bracketed-paste support (older bash, restricted shell, wrong TERM)
+	// mis-parses the raw marker bytes as an unrecognized key sequence and leaks
+	// a "0~" / "1~" fragment as literal input, corrupting real pasted content
+	// (e.g. an instance ID losing its last character).
+	var remoteBracketPaste bool
 	tracker := &boltLine{}
 
 	// stdin → relay INPUT
@@ -508,6 +516,21 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 			stateMu.Lock()
 			tracker.markPrompt()
 			stateMu.Unlock()
+		}
+
+		// pastePayload builds the bytes to forward for a flattened paste. It only
+		// wraps in ESC[200~/201~ once the remote has confirmed (by emitting
+		// ESC[?2004h itself) that its readline understands the markers — otherwise
+		// the raw already-flattened text is sent, since an unwrapped single line
+		// is always safe to forward regardless of remote paste support.
+		pastePayload := func(s string) []byte {
+			stateMu.Lock()
+			supported := remoteBracketPaste
+			stateMu.Unlock()
+			if supported {
+				return boltBracketPaste(s)
+			}
+			return []byte(s)
 		}
 
 		// mirror updates lineBuf + cursor from typed bytes, handling the common
@@ -688,7 +711,7 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 					if joined != "" {
 						markPrompt()
 						appendPaste(joined)
-						if err := sendFrame(boltMsgInput, boltBracketPaste(joined)); err != nil {
+						if err := sendFrame(boltMsgInput, pastePayload(joined)); err != nil {
 							errCh <- err
 							return
 						}
@@ -726,7 +749,7 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 					if joined != "" {
 						markPrompt()
 						appendPaste(joined)
-						if err := sendFrame(boltMsgInput, boltBracketPaste(joined)); err != nil {
+						if err := sendFrame(boltMsgInput, pastePayload(joined)); err != nil {
 							errCh <- err
 							return
 						}
@@ -914,8 +937,19 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 				tracker.feed(f.Payload)
 				stateMu.Unlock()
 				updateTerminalModes(f.Payload, &stateMu, &altScreen, &appCursorMode)
+				// Track whether the remote itself has confirmed bracketed-paste
+				// support (it emits ESC[?2004h at its prompt when it does) — only
+				// then is it safe to wrap forwarded pastes in ESC[200~/201~.
+				if bytes.Contains(f.Payload, []byte("\x1b[?2004h")) {
+					stateMu.Lock()
+					remoteBracketPaste = true
+					stateMu.Unlock()
+				}
 				// Re-enable bracketed paste if an inner shell disabled it.
 				if bytes.Contains(f.Payload, []byte("\x1b[?2004l")) {
+					stateMu.Lock()
+					remoteBracketPaste = false
+					stateMu.Unlock()
 					os.Stdout.Write([]byte("\x1b[?2004h")) //nolint:errcheck
 				}
 			case boltMsgClose:

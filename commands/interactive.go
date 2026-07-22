@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -17,6 +16,7 @@ import (
 	ec2picker "github.com/blackbuck/bbctl/internal/ec2"
 	"github.com/blackbuck/bbctl/internal/shell"
 	"github.com/blackbuck/bbctl/internal/ui"
+	"github.com/chzyer/readline"
 	fuzzyfinder "github.com/ktr0731/go-fuzzyfinder"
 	"github.com/spf13/cobra"
 )
@@ -376,7 +376,6 @@ func pickAction(inst *ec2picker.Instance) (string, error) {
 }
 
 func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instance, c *client.Client, cfg *config.Config, cfgDir, token string) error {
-	scanner := bufio.NewScanner(os.Stdin)
 	switch actionKey {
 	case "shell":
 		return runShellDirect(inst.InstanceID, inst.AccountID, cfg, cfgDir, token, inst.PrivateIP)
@@ -389,43 +388,35 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		return runBoltShell(relayURL, boltToken, inst.InstanceID, inst.Name)
 
 	case "run":
-		fmt.Print("Command: ")
-		if !scanner.Scan() {
-			return nil
-		}
-		command := strings.TrimSpace(scanner.Text())
-		if command == "" {
+		command, err := promptLine("Command: ")
+		if err != nil || command == "" {
 			return nil
 		}
 		return runCommandDirect(ctx, inst.InstanceID, inst.AccountID, command, "", inst.PrivateIP, c)
 
 	case "upload":
-		fmt.Print("Local path:  ")
-		if !scanner.Scan() {
+		localPath, err := promptLine("Local path:  ")
+		if err != nil {
 			return nil
 		}
-		localPath := strings.TrimSpace(scanner.Text())
-		fmt.Print("Remote path: ")
-		if !scanner.Scan() {
+		remotePath, err := promptLine("Remote path: ")
+		if err != nil {
 			return nil
 		}
-		remotePath := strings.TrimSpace(scanner.Text())
 		if localPath == "" || remotePath == "" {
 			return nil
 		}
 		return runUploadSession(ctx, inst.InstanceID, inst.AccountID, localPath, remotePath, "", c)
 
 	case "download":
-		fmt.Print("Remote file path: ")
-		if !scanner.Scan() {
+		remotePath, err := promptLine("Remote file path: ")
+		if err != nil {
 			return nil
 		}
-		remotePath := strings.TrimSpace(scanner.Text())
-		fmt.Print("Local path (or - for stdout): ")
-		if !scanner.Scan() {
+		localPath, err := promptLine("Local path (or - for stdout): ")
+		if err != nil {
 			return nil
 		}
-		localPath := strings.TrimSpace(scanner.Text())
 		if remotePath == "" || localPath == "" {
 			return nil
 		}
@@ -438,6 +429,25 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 	default:
 		return nil
 	}
+}
+
+// promptLine reads one line of input using the readline library, which fully
+// re-initializes terminal state on each call. A plain bufio.Scanner here is
+// unsafe: these prompts run immediately after the fuzzyfinder picker (tcell)
+// restores the terminal, and the tcell→stdin handoff can silently drop bytes
+// from the first read (observed: a trailing ".csv" lost from an upload path).
+// readline avoids the race by doing its own tcgetattr/tcsetattr from scratch.
+func promptLine(prompt string) (string, error) {
+	rl, err := readline.New(prompt)
+	if err != nil {
+		return "", err
+	}
+	defer rl.Close()
+	line, err := rl.Readline()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
 }
 
 // emailFromToken extracts the email claim from a JWT without verifying the

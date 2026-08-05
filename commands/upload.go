@@ -106,6 +106,18 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 	sp.Stop()
 
 	if resp.TicketKey != "" {
+		// Attach the file to the ticket so the approver can review its contents
+		// before granting access. The backend attaches to Jira directly for
+		// files <=10MB and falls back to an S3 console link for larger ones.
+		// Best-effort: a failed attach must not block the access request.
+		if attachErr := c.AttachToTicket(ctx, client.AttachRequest{
+			TicketKey:  resp.TicketKey,
+			Filename:   filename,
+			ContentB64: contentB64,
+		}); attachErr != nil {
+			fmt.Fprintf(os.Stderr, "note: could not attach %s to %s: %v\n",
+				filename, resp.TicketKey, attachErr)
+		}
 		rerun := fmt.Sprintf("bbctl upload %s -a %s %s %s --ticket %s",
 			instanceID, accountID, localPath, remotePath, resp.TicketKey)
 		fmt.Fprintln(os.Stdout, ticketCard(resp.TicketKey, resp.TicketURL, rerun))

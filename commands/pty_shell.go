@@ -1,5 +1,3 @@
-//go:build !windows
-
 package commands
 
 import (
@@ -9,13 +7,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/blackbuck/bbctl/internal/config"
+	"github.com/blackbuck/bbctl/internal/resize"
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
 )
@@ -183,16 +180,15 @@ func runPTYShell(cfg *config.Config, token, instanceID, accountID string) error 
 		}
 	}()
 
-	// SIGWINCH → TypeResize frames
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGWINCH)
-	defer signal.Stop(sigCh)
+	// Terminal resize → TypeResize frames
+	resizeCh, stopResize := resize.Watch()
+	defer stopResize()
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-sigCh:
+			case <-resizeCh:
 				w, h, err := term.GetSize(int(os.Stdout.Fd()))
 				if err != nil {
 					continue

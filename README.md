@@ -4,8 +4,17 @@ bbctl is Blackbuck's gated EC2 access tool. It replaces direct SSH/SSM with a co
 
 ## Install
 
+macOS / Linux:
+
 ```bash
 brew install Blackbuck-LABS/bbctl/bbctl
+```
+
+Windows (PowerShell, via [Scoop](https://scoop.sh)):
+
+```powershell
+scoop bucket add bbctl https://github.com/Blackbuck-LABS/scoop-bbctl
+scoop install bbctl
 ```
 
 Or download a binary from the [Releases](https://github.com/Blackbuck-LABS/bbctl/releases) page.

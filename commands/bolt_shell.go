@@ -1,5 +1,3 @@
-//go:build !windows
-
 package commands
 
 import (
@@ -11,14 +9,13 @@ import (
 	"hash/crc32"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/blackbuck/bbctl/internal/config"
+	"github.com/blackbuck/bbctl/internal/resize"
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
 )
@@ -973,16 +970,15 @@ func runBoltShell(relayURL, token, instanceID, instanceName string) error {
 		}
 	}()
 
-	// SIGWINCH → resize
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGWINCH)
-	defer signal.Stop(sigCh)
+	// Terminal resize
+	resizeCh, stopResize := resize.Watch()
+	defer stopResize()
 	go func() {
 		for {
 			select {
 			case <-runCtx.Done():
 				return
-			case <-sigCh:
+			case <-resizeCh:
 				w, h, err := term.GetSize(int(os.Stdout.Fd()))
 				if err != nil {
 					continue

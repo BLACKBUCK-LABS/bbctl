@@ -295,7 +295,11 @@ func openBrowser(u string) {
 	case "linux":
 		cmd = exec.Command("xdg-open", u)
 	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", u)
+		// cmd.exe's own line parser splits on unquoted "&" — which every OAuth
+		// URL has between query params — so "cmd /c start <url>" mangles it.
+		// rundll32's URL handler takes the URL as one argument and never goes
+		// through cmd.exe, so query params survive intact.
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
 	default:
 		return
 	}

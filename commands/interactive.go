@@ -406,7 +406,7 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		if localPath == "" || remotePath == "" {
 			return nil
 		}
-		return runUploadSession(ctx, inst.InstanceID, inst.AccountID, localPath, remotePath, "", c)
+		return runUploadSession(ctx, inst.InstanceID, inst.AccountID, localPath, remotePath, c)
 
 	case "download":
 		remotePath, err := promptLine("Remote file path: ")

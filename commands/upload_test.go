@@ -84,3 +84,51 @@ func TestHashFile_MatchesKnownSHA256(t *testing.T) {
 	// echo -n "hello world" | sha256sum
 	assert.Equal(t, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9", got)
 }
+
+func TestResolveRemotePath(t *testing.T) {
+	cases := []struct {
+		name, remote, local, want, wantErr string
+	}{
+		{"absolute file path unchanged", "/data/in/out.csv", "/local/report.csv", "/data/in/out.csv", ""},
+		{"trailing slash appends filename", "/data/in/", "/local/report.csv", "/data/in/report.csv", ""},
+		{"empty path rejected", "", "/local/report.csv", "", "must be an absolute path"},
+		{"relative path rejected", "data/out.csv", "/local/report.csv", "", "must be an absolute path"},
+		{"bare slash plus filename", "/", "/local/report.csv", "/report.csv", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveRemotePath(tc.remote, tc.local)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestRunUpload_TicketFlagRejected(t *testing.T) {
+	uploadTicket = "REQ-123"
+	defer func() { uploadTicket = "" }()
+
+	err := runUpload(uploadCmd, []string{"i-abc", "/tmp/does-not-matter", "/data/x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--ticket is no longer supported for upload")
+}
+
+func TestRunUpload_ExpiredBoltTokenFailsFast(t *testing.T) {
+	dir := t.TempDir()
+	// config.DefaultConfigDir() reads os.UserHomeDir(), which on unix reads
+	// $HOME — there's no dedicated BBCTL_CONFIG_DIR override, so redirect HOME.
+	t.Setenv("HOME", dir)
+	uploadTicket = ""
+
+	f := filepath.Join(dir, "f.txt")
+	require.NoError(t, os.WriteFile(f, []byte("hi"), 0644))
+
+	err := runUpload(uploadCmd, []string{"i-abc", f, "/data/x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bbctl login")
+}

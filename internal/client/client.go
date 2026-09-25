@@ -319,6 +319,7 @@ type Client struct {
 	baseURL       string
 	token         string
 	clientVersion string
+	boltToken     string
 	http          *http.Client
 }
 
@@ -331,6 +332,11 @@ func New(baseURL, token, clientVersion string) *Client {
 		http:          &http.Client{},
 	}
 }
+
+// SetBoltToken sets the BOLT token sent as X-Bolt-Token on plain JSON
+// requests (via addAuth). It is never sent on a presigned S3 PUT — S3 would
+// reject any header not in its signed header set.
+func (c *Client) SetBoltToken(token string) { c.boltToken = token }
 
 // BaseURL returns the backend base URL this client was created with.
 func (c *Client) BaseURL() string { return c.baseURL }
@@ -432,6 +438,9 @@ func (c *Client) GenerateMCPToken(ctx context.Context) (*MCPTokenResponse, error
 func (c *Client) addAuth(req *http.Request) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if c.boltToken != "" {
+		req.Header.Set("X-Bolt-Token", c.boltToken)
 	}
 }
 

@@ -52,6 +52,25 @@ func TestRunCommand_SetsClientVersion(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestPostJSON_SendsBoltTokenHeaderWhenSet(t *testing.T) {
+	var gotHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Bolt-Token")
+		json.NewEncoder(w).Encode(client.CommandResponse{Status: "success"})
+	}))
+	defer srv.Close()
+
+	c := client.New(srv.URL, "tok", "ec2ctl/test")
+	_, err := c.RunCommand(context.Background(), client.CommandRequest{InstanceID: "i-abc", Command: "ls"})
+	require.NoError(t, err)
+	assert.Empty(t, gotHeader, "X-Bolt-Token should be absent when not set")
+
+	c.SetBoltToken("bolt-tok-123")
+	_, err = c.RunCommand(context.Background(), client.CommandRequest{InstanceID: "i-abc", Command: "ls"})
+	require.NoError(t, err)
+	assert.Equal(t, "bolt-tok-123", gotHeader)
+}
+
 func TestClassify_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/classify", r.URL.Path)

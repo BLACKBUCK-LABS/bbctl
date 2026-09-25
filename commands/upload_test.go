@@ -69,6 +69,16 @@ func TestStatUploadFile_RejectsOversize(t *testing.T) {
 	assert.Contains(t, err.Error(), "exceeds the 5 GiB upload limit")
 }
 
+func TestStatUploadFile_RejectsEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "empty.txt")
+	require.NoError(t, os.WriteFile(p, []byte{}, 0644))
+
+	_, _, err := statUploadFile(p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is empty; nothing to upload")
+}
+
 func TestStatUploadFile_MissingFile(t *testing.T) {
 	_, _, err := statUploadFile("/nonexistent/path/does-not-exist")
 	require.Error(t, err)

@@ -53,6 +53,9 @@ func statUploadFile(path string) (size int64, executable bool, err error) {
 	if info.Size() > maxUploadSize {
 		return 0, false, fmt.Errorf("%s (%s) exceeds the 5 GiB upload limit", path, ui.HumanBytes(info.Size()))
 	}
+	if info.Size() == 0 {
+		return 0, false, fmt.Errorf("%s is empty; nothing to upload", path)
+	}
 	return info.Size(), info.Mode()&0111 != 0, nil
 }
 

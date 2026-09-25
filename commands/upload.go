@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,41 @@ func init() {
 	uploadCmd.Flags().StringVar(&uploadTicket, "ticket", "", "Access request ID (required for restricted paths)")
 	uploadCmd.Flags().StringVarP(&uploadAccount, "account", "a", "", "AWS account name or ID")
 	rootCmd.AddCommand(uploadCmd)
+}
+
+const maxUploadSize int64 = 5 * 1024 * 1024 * 1024 // 5 GiB, the S3 single-PUT limit (spec D11).
+
+// statUploadFile validates the local path is an uploadable regular file and
+// returns its size and whether the executable bit is set for the owner.
+// Lstat (not Stat) is used so a symlink is rejected as itself, not followed.
+func statUploadFile(path string) (size int64, executable bool, err error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return 0, false, fmt.Errorf("%s is not a regular file", path)
+	}
+	if info.Size() > maxUploadSize {
+		return 0, false, fmt.Errorf("%s (%s) exceeds the 5 GiB upload limit", path, ui.HumanBytes(info.Size()))
+	}
+	return info.Size(), info.Mode()&0111 != 0, nil
+}
+
+// hashFile computes the sha256 of path by streaming it, never holding the
+// whole file in memory.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hash %s: %w", path, err)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func runUpload(cmd *cobra.Command, args []string) error {

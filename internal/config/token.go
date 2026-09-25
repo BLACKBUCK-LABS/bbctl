@@ -85,16 +85,12 @@ func DeleteToken(configDir string) error {
 	return err
 }
 
-// IsTokenExpired returns true if the stored JWT is missing, unparseable,
-// or within 60 seconds of expiry.
-func IsTokenExpired(configDir string) bool {
-	token, err := LoadToken(configDir)
-	if err != nil || token == "" {
-		return true
-	}
+// decodeJWTExp extracts the "exp" claim from a JWT's second (payload) segment.
+// Returns ok=false if the token is malformed or has no readable exp.
+func decodeJWTExp(token string) (exp int64, ok bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return true
+		return 0, false
 	}
 	payload := parts[1]
 	switch len(payload) % 4 {
@@ -105,15 +101,44 @@ func IsTokenExpired(configDir string) bool {
 	}
 	data, err := base64.RawURLEncoding.DecodeString(payload)
 	if err != nil {
-		return true
+		return 0, false
 	}
 	var claims struct {
 		Exp int64 `json:"exp"`
 	}
 	if err := json.Unmarshal(data, &claims); err != nil {
+		return 0, false
+	}
+	return claims.Exp, true
+}
+
+// IsTokenExpired returns true if the stored JWT is missing, unparseable,
+// or within 60 seconds of expiry.
+func IsTokenExpired(configDir string) bool {
+	token, err := LoadToken(configDir)
+	if err != nil || token == "" {
 		return true
 	}
-	return time.Now().Add(60 * time.Second).Unix() > claims.Exp
+	exp, ok := decodeJWTExp(token)
+	if !ok {
+		return true
+	}
+	return time.Now().Add(60*time.Second).Unix() > exp
+}
+
+// IsBoltTokenExpired returns true if the stored BOLT session JWT for env is
+// missing, unparseable, or within 60 seconds of expiry. Unlike the Google
+// token, there is no refresh path — an expired BOLT token means: bbctl login.
+func IsBoltTokenExpired(configDir, env string) bool {
+	token, err := LoadBoltToken(configDir, env)
+	if err != nil || token == "" {
+		return true
+	}
+	exp, ok := decodeJWTExp(token)
+	if !ok {
+		return true
+	}
+	return time.Now().Add(60*time.Second).Unix() > exp
 }
 
 // RefreshToken exchanges the stored refresh_token for a new id_token,

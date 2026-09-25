@@ -77,6 +77,9 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 	}
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+	if boltToken, berr := config.LoadBoltToken(cfgDir, activeEnv); berr == nil {
+		c.SetBoltToken(boltToken)
+	}
 
 	if ui.Std.TTY {
 		fmt.Print("\033[2J\033[H") // clear screen
@@ -162,6 +165,9 @@ func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 				return fmt.Errorf("login failed: %w", loadErr)
 			}
 			c = client.New(cfg.BackendURL, token, "bbctl/"+Version)
+			if boltToken, berr := config.LoadBoltToken(cfgDir, activeEnv); berr == nil {
+				c.SetBoltToken(boltToken)
+			}
 			sp2 := ui.NewSpinner("Loading EC2 instances")
 			sp2.Start()
 			instances, err = ec2picker.LoadAll(cmd.Context(), c, cfg, cfgDir, forceRefresh)
@@ -395,6 +401,18 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		return runCommandDirect(ctx, inst.InstanceID, inst.AccountID, command, "", inst.PrivateIP, c)
 
 	case "upload":
+		if config.IsBoltTokenExpired(cfgDir, activeEnv) {
+			return fmt.Errorf("upload needs Access Portal login — run: bbctl login")
+		}
+		// Reload the BOLT token fresh rather than reusing the one loaded at
+		// interactive-mode startup — the user may have re-run bbctl login in
+		// another terminal since then, and the client must carry the current
+		// token at the moment of use, not a stale one from startup.
+		freshBoltToken, err := config.LoadBoltToken(cfgDir, activeEnv)
+		if err != nil {
+			return fmt.Errorf("upload needs Access Portal login — run: bbctl login")
+		}
+		c.SetBoltToken(freshBoltToken)
 		localPath, err := promptLine("Local path:  ")
 		if err != nil {
 			return nil
@@ -406,7 +424,7 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		if localPath == "" || remotePath == "" {
 			return nil
 		}
-		return runUploadSession(ctx, inst.InstanceID, inst.AccountID, localPath, remotePath, "", c)
+		return runUploadSession(ctx, inst.InstanceID, inst.AccountID, localPath, remotePath, c)
 
 	case "download":
 		remotePath, err := promptLine("Remote file path: ")

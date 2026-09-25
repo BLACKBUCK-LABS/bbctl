@@ -33,6 +33,13 @@ func runMCPToken(cmd *cobra.Command, args []string) error {
 	if err != nil || token == "" {
 		return fmt.Errorf("not logged in — run: bbctl login")
 	}
+	if config.IsBoltTokenExpired(cfgDir, activeEnv) {
+		return fmt.Errorf("Access Portal session needed for MCP — run: bbctl login")
+	}
+	boltToken, err := config.LoadBoltToken(cfgDir, activeEnv)
+	if err != nil || boltToken == "" {
+		return fmt.Errorf("Access Portal session needed for MCP — run: bbctl login")
+	}
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
 	resp, err := c.GenerateMCPToken(cmd.Context())
@@ -45,8 +52,10 @@ func runMCPToken(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Run this command to add bbctl to Claude Code:\n\n")
 	fmt.Printf("  claude mcp add --transport http bbctl --scope user %s/mcp \\\n",
 		cfg.BackendURL)
-	fmt.Printf("    --header \"Authorization: Bearer %s\"\n\n", resp.Token)
+	fmt.Printf("    --header \"Authorization: Bearer %s\" \\\n", resp.Token)
+	fmt.Printf("    --header \"X-Bolt-Token: %s\"\n\n", boltToken)
 
+	fmt.Printf("Re-run bbctl mcp-token after your Access Portal session expires.\n\n")
 	fmt.Printf("Then restart Claude Code.\n\n")
 
 	tokenPath := filepath.Join(cfgDir, "mcp_token")

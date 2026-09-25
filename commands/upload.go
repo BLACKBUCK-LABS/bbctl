@@ -4,9 +4,9 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,25 +17,82 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const maxUploadSize int64 = 5 * 1024 * 1024 * 1024 // 5 GiB, the S3 single-PUT limit (spec D11).
+
 var uploadTicket string
 var uploadAccount string
 
 var uploadCmd = &cobra.Command{
 	Use:   "upload <instance-id> <local-path> <remote-path>",
-	Short: "Upload a file from local machine to an EC2 instance",
+	Short: "Upload a file from local machine to an EC2 instance (approved in Access Portal)",
 	Example: `  bbctl upload i-0abc123 ./dump.sql /tmp/dump.sql
-  bbctl upload i-0abc123 -a divum ./fix.py /opt/app/fix.py --ticket REQ-456`,
+  bbctl upload i-0abc123 -a divum ./fix.py /opt/app/fix.py`,
 	Args: cobra.ExactArgs(3),
 	RunE: runUpload,
 }
 
 func init() {
-	uploadCmd.Flags().StringVar(&uploadTicket, "ticket", "", "Access request ID (required for restricted paths)")
+	uploadCmd.Flags().StringVar(&uploadTicket, "ticket", "", "")
+	_ = uploadCmd.Flags().MarkHidden("ticket")
 	uploadCmd.Flags().StringVarP(&uploadAccount, "account", "a", "", "AWS account name or ID")
 	rootCmd.AddCommand(uploadCmd)
+	uploadCmd.AddCommand(uploadRetryCmd) // defined in upload_retry.go
+}
+
+// statUploadFile validates the local path is an uploadable regular file and
+// returns its size and whether the executable bit is set for the owner.
+// Lstat (not Stat) is used so a symlink is rejected as itself, not followed.
+func statUploadFile(path string) (size int64, executable bool, err error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return 0, false, fmt.Errorf("%s is not a regular file", path)
+	}
+	if info.Size() > maxUploadSize {
+		return 0, false, fmt.Errorf("%s (%s) exceeds the 5 GiB upload limit", path, ui.HumanBytes(info.Size()))
+	}
+	if info.Size() == 0 {
+		return 0, false, fmt.Errorf("%s is empty; nothing to upload", path)
+	}
+	return info.Size(), info.Mode()&0111 != 0, nil
+}
+
+// hashFile computes the sha256 of path by streaming it, never holding the
+// whole file in memory.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hash %s: %w", path, err)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// resolveRemotePath appends the local filename when remotePath ends in "/",
+// then requires the result to be an absolute path — the backend's dest_path
+// validator (Part 2) requires this too, so failing here saves a round trip.
+func resolveRemotePath(remotePath, localPath string) (string, error) {
+	if strings.HasSuffix(remotePath, "/") {
+		remotePath += filepath.Base(localPath)
+	}
+	if !strings.HasPrefix(remotePath, "/") {
+		return "", fmt.Errorf("remote path %q must be an absolute path", remotePath)
+	}
+	return remotePath, nil
 }
 
 func runUpload(cmd *cobra.Command, args []string) error {
+	if uploadTicket != "" {
+		return fmt.Errorf("--ticket is no longer supported for upload; approvals happen in Access Portal")
+	}
+
 	instanceID := args[0]
 	localPath := args[1]
 	remotePath := args[2]
@@ -44,9 +101,16 @@ func runUpload(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if config.IsBoltTokenExpired(configDir, activeEnv) {
+		return fmt.Errorf("upload needs Access Portal login — run: bbctl login")
+	}
 	token, err := config.LoadToken(configDir)
 	if err != nil {
 		return err
+	}
+	boltToken, err := config.LoadBoltToken(configDir, activeEnv)
+	if err != nil {
+		return fmt.Errorf("upload needs Access Portal login — run: bbctl login")
 	}
 	cfg, err := config.LoadOrDefault(configDir)
 	if err != nil {
@@ -66,71 +130,101 @@ func runUpload(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
-	return runUploadSession(context.Background(), instanceID, accountID, localPath, remotePath, uploadTicket, c)
+	c.SetBoltToken(boltToken)
+	return runUploadSession(context.Background(), instanceID, accountID, localPath, remotePath, c)
 }
 
-func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remotePath, ticketID string, c *client.Client) error {
-	filename := filepath.Base(localPath)
-	if strings.HasSuffix(remotePath, "/") {
-		remotePath = remotePath + filename
-	}
-
-	content, err := os.ReadFile(localPath)
+// runUploadDirect hashes localPath, requests a presigned PUT, streams the
+// file to S3 with a progress bar, and submits the request for approval. On a
+// 403 from S3 (presigned URL expired or otherwise rejected) it fails with an
+// actionable message rather than retrying automatically — the user re-runs
+// bbctl upload, which triggers a fresh init/PUT pair.
+func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remotePath string, c *client.Client) error {
+	remotePath, err := resolveRemotePath(remotePath, localPath)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", localPath, err)
-	}
-
-	sum := sha256.Sum256(content)
-	sha256hex := fmt.Sprintf("%x", sum)
-	contentB64 := base64.StdEncoding.EncodeToString(content)
-
-	sp := ui.NewSpinner(fmt.Sprintf("Uploading %s · %s", filename, ui.HumanBytes(int64(len(content)))))
-	sp.Start()
-	resp, err := c.Upload(ctx, client.UploadRequest{
-		InstanceID: instanceID,
-		AccountID:  accountID,
-		DestPath:   remotePath,
-		Filename:   filename,
-		ContentB64: contentB64,
-		SHA256:     sha256hex,
-		TicketID:   ticketID,
-	})
-	if err != nil {
-		sp.StopErr("Upload failed")
-		var apiErr *client.APIError
-		if errors.As(err, &apiErr) {
-			handleAPIError(apiErr)
-		}
 		return err
 	}
-	sp.Stop()
+	filename := filepath.Base(localPath)
 
-	if resp.TicketKey != "" {
-		// Attach the file to the ticket so the approver can review its contents
-		// before granting access. The backend attaches to Jira directly for
-		// files <=10MB and falls back to an S3 console link for larger ones.
-		// Best-effort: a failed attach must not block the access request.
-		if attachErr := c.AttachToTicket(ctx, client.AttachRequest{
-			TicketKey:  resp.TicketKey,
-			Filename:   filename,
-			ContentB64: contentB64,
-		}); attachErr != nil {
-			fmt.Fprintf(os.Stderr, "note: could not attach %s to %s: %v\n",
-				filename, resp.TicketKey, attachErr)
-		}
-		rerun := fmt.Sprintf("bbctl upload %s -a %s %s %s --ticket %s",
-			instanceID, accountID, localPath, remotePath, resp.TicketKey)
-		fmt.Fprintln(os.Stdout, ticketCard(resp.TicketKey, resp.TicketURL, rerun))
-		return nil
+	size, executable, err := statUploadFile(localPath)
+	if err != nil {
+		return err
 	}
 
-	fmt.Fprintln(os.Stdout, ui.Success(fmt.Sprintf("Uploaded %s → %s:%s", localPath, instanceID, remotePath)))
+	sp := ui.NewSpinner(fmt.Sprintf("Hashing %s · %s", filename, ui.HumanBytes(size)))
+	sp.Start()
+	sha256hex, err := hashFile(localPath)
+	sp.Stop()
+	if err != nil {
+		return err
+	}
+
+	init, err := c.InitUpload(ctx, client.InitUploadRequest{
+		InstanceID: instanceID, AccountID: accountID, DestPath: remotePath,
+		Filename: filename, SizeBytes: size, SHA256: sha256hex, Executable: executable,
+	})
+	if err != nil {
+		return err
+	}
+
+	if err := putPresignedFile(ctx, c, init, localPath, size); err != nil {
+		return err
+	}
+
+	resp, err := c.SubmitUpload(ctx, init.UploadID)
+	if err != nil {
+		return err
+	}
+
+	fields := []ui.Field{
+		{Key: "File", Value: fmt.Sprintf("%s (%s)", filename, ui.HumanBytes(size))},
+		{Key: "Destination", Value: fmt.Sprintf("%s:%s", instanceID, remotePath)},
+		{Key: "Request", Value: resp.RequestID},
+		{Key: "Approve", Value: resp.PortalURL},
+	}
+	fmt.Fprintln(os.Stdout, ui.Card("Upload request raised", fields))
+	fmt.Fprintln(os.Stdout, "The file is copied automatically once approved.")
 	return nil
 }
 
+// putPresignedFile streams localPath to the presigned PUT URL in init. On
+// ErrPresignedURLExpired it does not retry automatically — it fails with an
+// actionable message telling the user to re-run bbctl upload, which triggers
+// a fresh init/PUT pair (no unbounded retry loop).
+//
+// The checksum passed to c.PutPresigned is always init.ChecksumSHA256B64 —
+// the value the backend's /v1/upload/init response returned — never a value
+// re-derived or re-encoded locally from sha256hex. The backend computes this
+// checksum from the same sha256 the CLI sent it, encodes it as base64 exactly
+// as S3 expects for x-amz-checksum-sha256, and binds it into the presigned
+// URL's signature. Recomputing or re-encoding it here would risk reproducing
+// the checksum/signature-binding bug found in the backend during Part 2 review.
+func putPresignedFile(ctx context.Context, c *client.Client, init *client.InitUploadResponse, localPath string, size int64) error {
+	attempt := func(u *client.InitUploadResponse) error {
+		f, err := os.Open(localPath)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", localPath, err)
+		}
+		defer f.Close()
+		reader := ui.NewCountingReader(f, size, os.Stderr)
+		err = c.PutPresigned(ctx, u.PresignedPutURL, reader, size, u.ChecksumSHA256B64)
+		reader.Finish()
+		return err
+	}
+
+	err := attempt(init)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, client.ErrPresignedURLExpired) {
+		return fmt.Errorf("upload to storage: %w", err)
+	}
+	return fmt.Errorf("upload URL rejected (expired or invalid) — re-run bbctl upload: %w", err)
+}
+
 // runUploadSession runs one upload then loops asking for more files.
-func runUploadSession(ctx context.Context, instanceID, accountID, localPath, remotePath, ticketID string, c *client.Client) error {
-	if err := runUploadDirect(ctx, instanceID, accountID, localPath, remotePath, ticketID, c); err != nil {
+func runUploadSession(ctx context.Context, instanceID, accountID, localPath, remotePath string, c *client.Client) error {
+	if err := runUploadDirect(ctx, instanceID, accountID, localPath, remotePath, c); err != nil {
 		return err
 	}
 	scanner := bufio.NewScanner(os.Stdin)
@@ -156,7 +250,7 @@ func runUploadSession(ctx context.Context, instanceID, accountID, localPath, rem
 			fmt.Fprintln(os.Stdout, "Paths cannot be empty.")
 			continue
 		}
-		if err := runUploadDirect(ctx, instanceID, accountID, newLocalPath, newRemotePath, "", c); err != nil {
+		if err := runUploadDirect(ctx, instanceID, accountID, newLocalPath, newRemotePath, c); err != nil {
 			fmt.Fprintf(os.Stdout, "Error: %v\n", err)
 		}
 	}

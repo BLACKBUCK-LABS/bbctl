@@ -77,6 +77,9 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 	}
 
 	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+	if boltToken, berr := config.LoadBoltToken(cfgDir, activeEnv); berr == nil {
+		c.SetBoltToken(boltToken)
+	}
 
 	if ui.Std.TTY {
 		fmt.Print("\033[2J\033[H") // clear screen
@@ -162,6 +165,9 @@ func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 				return fmt.Errorf("login failed: %w", loadErr)
 			}
 			c = client.New(cfg.BackendURL, token, "bbctl/"+Version)
+			if boltToken, berr := config.LoadBoltToken(cfgDir, activeEnv); berr == nil {
+				c.SetBoltToken(boltToken)
+			}
 			sp2 := ui.NewSpinner("Loading EC2 instances")
 			sp2.Start()
 			instances, err = ec2picker.LoadAll(cmd.Context(), c, cfg, cfgDir, forceRefresh)
@@ -395,6 +401,9 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		return runCommandDirect(ctx, inst.InstanceID, inst.AccountID, command, "", inst.PrivateIP, c)
 
 	case "upload":
+		if config.IsBoltTokenExpired(cfgDir, activeEnv) {
+			return fmt.Errorf("upload needs Access Portal login — run: bbctl login")
+		}
 		localPath, err := promptLine("Local path:  ")
 		if err != nil {
 			return nil

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -210,7 +211,7 @@ func putWithOneRetry(ctx context.Context, c *client.Client, init *client.InitUpl
 	if err == nil {
 		return nil
 	}
-	if err != client.ErrPresignedURLExpired {
+	if !errors.Is(err, client.ErrPresignedURLExpired) {
 		return fmt.Errorf("upload to storage: %w", err)
 	}
 	// One re-init and one more attempt — no unbounded retry loop.

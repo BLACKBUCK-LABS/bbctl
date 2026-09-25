@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,17 +37,6 @@ type CommandResponse struct {
 	TicketKey        string `json:"ticket_key,omitempty"`
 	TicketURL        string `json:"ticket_url,omitempty"`
 	Message          string `json:"message,omitempty"`
-}
-
-// UploadRequest is the body for POST /v1/upload.
-type UploadRequest struct {
-	InstanceID string `json:"instance_id"`
-	AccountID  string `json:"account_id"`
-	DestPath   string `json:"dest_path"`
-	Filename   string `json:"filename"`
-	ContentB64 string `json:"content_b64"`
-	SHA256     string `json:"sha256"`
-	TicketID   string `json:"ticket_id,omitempty"`
 }
 
 // DownloadRequest is the body for POST /v1/download.
@@ -94,13 +84,95 @@ func (c *Client) ListInstances(ctx context.Context, accountID string) ([]Instanc
 	return resp.Instances, nil
 }
 
-// Upload calls POST /v1/upload.
-func (c *Client) Upload(ctx context.Context, req UploadRequest) (*CommandResponse, error) {
-	var resp CommandResponse
-	if err := c.postJSON(ctx, "/v1/upload", req, &resp); err != nil {
+// InitUploadRequest is the body for POST /v1/upload/init (spec §14.4.1).
+type InitUploadRequest struct {
+	InstanceID string `json:"instance_id"`
+	AccountID  string `json:"account_id"`
+	DestPath   string `json:"dest_path"`
+	Filename   string `json:"filename"`
+	SizeBytes  int64  `json:"size_bytes"`
+	SHA256     string `json:"sha256"`
+	Executable bool   `json:"executable"`
+}
+
+// InitUploadResponse is the response from POST /v1/upload/init.
+type InitUploadResponse struct {
+	UploadID          string `json:"upload_id"`
+	PresignedPutURL   string `json:"presigned_put_url"`
+	ChecksumSHA256B64 string `json:"checksum_sha256_b64"`
+	ExpiresInSeconds  int    `json:"expires_in_seconds"`
+}
+
+// InitUpload calls POST /v1/upload/init.
+func (c *Client) InitUpload(ctx context.Context, req InitUploadRequest) (*InitUploadResponse, error) {
+	var resp InitUploadResponse
+	if err := c.postJSON(ctx, "/v1/upload/init", req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// SubmitUploadResponse is the response from POST /v1/upload/submit.
+type SubmitUploadResponse struct {
+	RequestID string `json:"request_id"`
+	PortalURL string `json:"portal_url"`
+}
+
+// SubmitUpload calls POST /v1/upload/submit.
+func (c *Client) SubmitUpload(ctx context.Context, uploadID string) (*SubmitUploadResponse, error) {
+	var resp SubmitUploadResponse
+	if err := c.postJSON(ctx, "/v1/upload/submit", map[string]string{"upload_id": uploadID}, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// RetryUploadResponse is the response from POST /v1/upload/retry.
+type RetryUploadResponse struct {
+	RequestID string `json:"request_id"`
+	Status    string `json:"status"`
+}
+
+// RetryUpload calls POST /v1/upload/retry.
+func (c *Client) RetryUpload(ctx context.Context, requestID string) (*RetryUploadResponse, error) {
+	var resp RetryUploadResponse
+	if err := c.postJSON(ctx, "/v1/upload/retry", map[string]string{"request_id": requestID}, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ErrPresignedURLExpired signals a presigned PUT was rejected as expired (S3
+// returns 403 for a signature past its TTL). Callers may init a fresh URL and
+// retry the PUT exactly once.
+var ErrPresignedURLExpired = errors.New("presigned upload URL expired")
+
+// PutPresigned streams body (size bytes) to a presigned S3 PUT URL, setting
+// the checksum header the backend bound into the signature. It does not go
+// through postJSON/addAuth: the presigned URL is self-authenticating, and
+// sending our own bearer token to S3 would be meaningless.
+func (c *Client) PutPresigned(ctx context.Context, url string, body io.Reader, size int64, checksumB64 string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = size
+	req.Header.Set("x-amz-checksum-sha256", checksumB64)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusForbidden {
+		return ErrPresignedURLExpired
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upload to storage failed: status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
 }
 
 // StageRequest is the body for POST /v1/stage.

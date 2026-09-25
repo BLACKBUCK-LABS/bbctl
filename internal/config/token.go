@@ -123,7 +123,7 @@ func IsTokenExpired(configDir string) bool {
 	if !ok {
 		return true
 	}
-	return time.Now().Add(60 * time.Second).Unix() > exp
+	return time.Now().Add(60*time.Second).Unix() > exp
 }
 
 // IsBoltTokenExpired returns true if the stored BOLT session JWT for env is
@@ -138,7 +138,7 @@ func IsBoltTokenExpired(configDir, env string) bool {
 	if !ok {
 		return true
 	}
-	return time.Now().Add(60 * time.Second).Unix() > exp
+	return time.Now().Add(60*time.Second).Unix() > exp
 }
 
 // RefreshToken exchanges the stored refresh_token for a new id_token,

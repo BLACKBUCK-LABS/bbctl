@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/blackbuck/bbctl/internal/client"
@@ -49,8 +50,7 @@ func runUploadRetry(cmd *cobra.Command, args []string) error {
 	resp, err := c.RetryUpload(context.Background(), requestID)
 	if err != nil {
 		var apiErr *client.APIError
-		if err2, ok := err.(*client.APIError); ok {
-			apiErr = err2
+		if errors.As(err, &apiErr) {
 			handleAPIError(apiErr)
 		}
 		return err

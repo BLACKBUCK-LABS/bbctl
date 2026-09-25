@@ -36,7 +36,7 @@ func init() {
 	_ = uploadCmd.Flags().MarkHidden("ticket")
 	uploadCmd.Flags().StringVarP(&uploadAccount, "account", "a", "", "AWS account name or ID")
 	rootCmd.AddCommand(uploadCmd)
-	rootCmd.AddCommand(uploadRetryCmd) // defined in upload_retry.go
+	uploadCmd.AddCommand(uploadRetryCmd) // defined in upload_retry.go
 }
 
 // statUploadFile validates the local path is an uploadable regular file and

@@ -404,6 +404,15 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		if config.IsBoltTokenExpired(cfgDir, activeEnv) {
 			return fmt.Errorf("upload needs Access Portal login — run: bbctl login")
 		}
+		// Reload the BOLT token fresh rather than reusing the one loaded at
+		// interactive-mode startup — the user may have re-run bbctl login in
+		// another terminal since then, and the client must carry the current
+		// token at the moment of use, not a stale one from startup.
+		freshBoltToken, err := config.LoadBoltToken(cfgDir, activeEnv)
+		if err != nil {
+			return fmt.Errorf("upload needs Access Portal login — run: bbctl login")
+		}
+		c.SetBoltToken(freshBoltToken)
 		localPath, err := promptLine("Local path:  ")
 		if err != nil {
 			return nil

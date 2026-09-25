@@ -216,8 +216,7 @@ func putPresignedFile(ctx context.Context, c *client.Client, init *client.InitUp
 	if !errors.Is(err, client.ErrPresignedURLExpired) {
 		return fmt.Errorf("upload to storage: %w", err)
 	}
-	// One re-init and one more attempt — no unbounded retry loop.
-	return fmt.Errorf("presigned URL expired mid-upload; re-run bbctl upload (a fresh init/PUT pair is not retried automatically to avoid a silent infinite loop): %w", err)
+	return fmt.Errorf("upload URL rejected (expired or invalid) — re-run bbctl upload: %w", err)
 }
 
 // runUploadSession runs one upload then loops asking for more files.

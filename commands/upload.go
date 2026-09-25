@@ -133,8 +133,9 @@ func runUpload(cmd *cobra.Command, args []string) error {
 
 // runUploadDirect hashes localPath, requests a presigned PUT, streams the
 // file to S3 with a progress bar, and submits the request for approval. On a
-// 403 from S3 (expired presigned URL) it re-inits exactly once and retries
-// the PUT from the start.
+// 403 from S3 (presigned URL expired or otherwise rejected) it fails with an
+// actionable message rather than retrying automatically — the user re-runs
+// bbctl upload, which triggers a fresh init/PUT pair.
 func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remotePath string, c *client.Client) error {
 	remotePath, err := resolveRemotePath(remotePath, localPath)
 	if err != nil {
@@ -163,7 +164,7 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 		return err
 	}
 
-	if err := putWithOneRetry(ctx, c, init, localPath, size); err != nil {
+	if err := putPresignedFile(ctx, c, init, localPath, size); err != nil {
 		return err
 	}
 
@@ -183,9 +184,10 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 	return nil
 }
 
-// putWithOneRetry streams localPath to the presigned PUT URL in init. On
-// ErrPresignedURLExpired it calls InitUpload once more and retries the PUT
-// from the start (Review Focus #4).
+// putPresignedFile streams localPath to the presigned PUT URL in init. On
+// ErrPresignedURLExpired it does not retry automatically — it fails with an
+// actionable message telling the user to re-run bbctl upload, which triggers
+// a fresh init/PUT pair (no unbounded retry loop).
 //
 // The checksum passed to c.PutPresigned is always init.ChecksumSHA256B64 —
 // the value the backend's /v1/upload/init response returned — never a value
@@ -194,7 +196,7 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 // as S3 expects for x-amz-checksum-sha256, and binds it into the presigned
 // URL's signature. Recomputing or re-encoding it here would risk reproducing
 // the checksum/signature-binding bug found in the backend during Part 2 review.
-func putWithOneRetry(ctx context.Context, c *client.Client, init *client.InitUploadResponse, localPath string, size int64) error {
+func putPresignedFile(ctx context.Context, c *client.Client, init *client.InitUploadResponse, localPath string, size int64) error {
 	attempt := func(u *client.InitUploadResponse) error {
 		f, err := os.Open(localPath)
 		if err != nil {

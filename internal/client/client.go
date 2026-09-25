@@ -142,9 +142,12 @@ func (c *Client) RetryUpload(ctx context.Context, requestID string) (*RetryUploa
 	return &resp, nil
 }
 
-// ErrPresignedURLExpired signals a presigned PUT was rejected as expired (S3
-// returns 403 for a signature past its TTL). Callers may init a fresh URL and
-// retry the PUT exactly once.
+// ErrPresignedURLExpired signals a presigned PUT was rejected with a 403 (S3
+// returns this for a signature past its TTL, but also for other causes such
+// as SignatureDoesNotMatch or AccessDenied — the wrapped response body helps
+// distinguish these). Callers fail with an actionable message rather than
+// retrying automatically; a fresh presigned URL is obtained by the user
+// manually re-running the command, which triggers a new init.
 var ErrPresignedURLExpired = errors.New("presigned upload URL expired")
 
 // PutPresigned streams body (size bytes) to a presigned S3 PUT URL, setting
@@ -166,7 +169,8 @@ func (c *Client) PutPresigned(ctx context.Context, url string, body io.Reader, s
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusForbidden {
-		return ErrPresignedURLExpired
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("%w: status 403: %s", ErrPresignedURLExpired, respBody)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)

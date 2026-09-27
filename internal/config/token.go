@@ -92,14 +92,13 @@ func decodeJWTExp(token string) (exp int64, ok bool) {
 	if len(parts) != 3 {
 		return 0, false
 	}
-	payload := parts[1]
-	switch len(payload) % 4 {
-	case 2:
-		payload += "=="
-	case 3:
-		payload += "="
-	}
-	data, err := base64.RawURLEncoding.DecodeString(payload)
+	// base64.RawURLEncoding is the *unpadded* variant — it already accepts a
+	// final group of 2 or 3 characters with no "=" appended. Manually adding
+	// padding here (a prior version of this function did) and still decoding
+	// with RawURLEncoding is invalid: RawURLEncoding rejects any "=" at all,
+	// so it failed for every payload whose length wasn't already a multiple
+	// of 4 — i.e. intermittently, depending on incidental claim lengths.
+	data, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return 0, false
 	}
@@ -127,8 +126,14 @@ func IsTokenExpired(configDir string) bool {
 }
 
 // IsBoltTokenExpired returns true if the stored BOLT session JWT for env is
-// missing, unparseable, or within 60 seconds of expiry. Unlike the Google
-// token, there is no refresh path — an expired BOLT token means: bbctl login.
+// missing or unparseable, or (when it carries an "exp" claim) within 60
+// seconds of that expiry. Unlike the Google token, there is no refresh path
+// — an expired BOLT token means: bbctl login.
+//
+// BOLT session JWTs today carry no "exp" claim (session lifetime is managed
+// server-side, not locally) — decodeJWTExp then reports exp=0, which must be
+// read as "no local expiry to check", not "expired at the Unix epoch". A
+// genuinely invalid/rejected token is caught server-side on the next call.
 func IsBoltTokenExpired(configDir, env string) bool {
 	token, err := LoadBoltToken(configDir, env)
 	if err != nil || token == "" {
@@ -137,6 +142,9 @@ func IsBoltTokenExpired(configDir, env string) bool {
 	exp, ok := decodeJWTExp(token)
 	if !ok {
 		return true
+	}
+	if exp == 0 {
+		return false
 	}
 	return time.Now().Add(60*time.Second).Unix() > exp
 }

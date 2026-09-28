@@ -150,17 +150,21 @@ func (c *Client) RetryUpload(ctx context.Context, requestID string) (*RetryUploa
 // manually re-running the command, which triggers a new init.
 var ErrPresignedURLExpired = errors.New("presigned upload URL expired")
 
-// PutPresigned streams body (size bytes) to a presigned S3 PUT URL, setting
-// the checksum header the backend bound into the signature. It does not go
-// through postJSON/addAuth: the presigned URL is self-authenticating, and
-// sending our own bearer token to S3 would be meaningless.
-func (c *Client) PutPresigned(ctx context.Context, url string, body io.Reader, size int64, checksumB64 string) error {
+// PutPresigned streams body (size bytes) to a presigned S3 PUT URL. It does
+// not go through postJSON/addAuth: the presigned URL is self-authenticating,
+// and sending our own bearer token to S3 would be meaningless.
+//
+// The backend binds the checksum into the presigned URL's signed QUERY
+// STRING (AWS SDK v2 behavior for ChecksumSHA256 on PutObject), not into a
+// header. Setting x-amz-checksum-sha256 as an actual header here is outside
+// the signature's SignedHeaders set, so S3 rejects the request with 403
+// "HeadersNotSigned: x-amz-checksum-sha256" on every real upload.
+func (c *Client) PutPresigned(ctx context.Context, url string, body io.Reader, size int64) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
 		return err
 	}
 	req.ContentLength = size
-	req.Header.Set("x-amz-checksum-sha256", checksumB64)
 
 	resp, err := c.http.Do(req)
 	if err != nil {

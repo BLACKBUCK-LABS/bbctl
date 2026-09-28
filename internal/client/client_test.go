@@ -185,10 +185,10 @@ func TestRetryUpload_Success(t *testing.T) {
 	assert.Equal(t, "EXECUTING", resp.Status)
 }
 
-func TestPutPresigned_SendsChecksumHeaderAndBody(t *testing.T) {
+func TestPutPresigned_DoesNotSendChecksumHeader(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPut, r.Method)
-		assert.Equal(t, "abc=", r.Header.Get("x-amz-checksum-sha256"))
+		assert.Empty(t, r.Header.Get("x-amz-checksum-sha256"), "checksum is signed into the presigned URL's query string, not a header")
 		body, _ := io.ReadAll(r.Body)
 		assert.Equal(t, "hello world", string(body))
 		w.WriteHeader(http.StatusOK)
@@ -196,7 +196,7 @@ func TestPutPresigned_SendsChecksumHeaderAndBody(t *testing.T) {
 	defer srv.Close()
 
 	c := client.New("http://unused", "tok", "ec2ctl/test")
-	err := c.PutPresigned(context.Background(), srv.URL, strings.NewReader("hello world"), 11, "abc=")
+	err := c.PutPresigned(context.Background(), srv.URL, strings.NewReader("hello world"), 11)
 	require.NoError(t, err)
 }
 
@@ -208,7 +208,7 @@ func TestPutPresigned_403ReturnsExpiredSentinel(t *testing.T) {
 	defer srv.Close()
 
 	c := client.New("http://unused", "tok", "ec2ctl/test")
-	err := c.PutPresigned(context.Background(), srv.URL, strings.NewReader("x"), 1, "abc=")
+	err := c.PutPresigned(context.Background(), srv.URL, strings.NewReader("x"), 1)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, client.ErrPresignedURLExpired)
 }
@@ -220,7 +220,7 @@ func TestPutPresigned_OtherErrorIsNotExpiredSentinel(t *testing.T) {
 	defer srv.Close()
 
 	c := client.New("http://unused", "tok", "ec2ctl/test")
-	err := c.PutPresigned(context.Background(), srv.URL, strings.NewReader("x"), 1, "abc=")
+	err := c.PutPresigned(context.Background(), srv.URL, strings.NewReader("x"), 1)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, client.ErrPresignedURLExpired)
 }

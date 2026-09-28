@@ -192,13 +192,9 @@ func runUploadDirect(ctx context.Context, instanceID, accountID, localPath, remo
 // actionable message telling the user to re-run bbctl upload, which triggers
 // a fresh init/PUT pair (no unbounded retry loop).
 //
-// The checksum passed to c.PutPresigned is always init.ChecksumSHA256B64 —
-// the value the backend's /v1/upload/init response returned — never a value
-// re-derived or re-encoded locally from sha256hex. The backend computes this
-// checksum from the same sha256 the CLI sent it, encodes it as base64 exactly
-// as S3 expects for x-amz-checksum-sha256, and binds it into the presigned
-// URL's signature. Recomputing or re-encoding it here would risk reproducing
-// the checksum/signature-binding bug found in the backend during Part 2 review.
+// The backend's /v1/upload/init response binds ChecksumSHA256B64 into the
+// presigned PUT URL's own signed query string (AWS SDK v2 behavior) — it is
+// never sent as a header here; see client.PutPresigned.
 func putPresignedFile(ctx context.Context, c *client.Client, init *client.InitUploadResponse, localPath string, size int64) error {
 	attempt := func(u *client.InitUploadResponse) error {
 		f, err := os.Open(localPath)
@@ -207,7 +203,7 @@ func putPresignedFile(ctx context.Context, c *client.Client, init *client.InitUp
 		}
 		defer f.Close()
 		reader := ui.NewCountingReader(f, size, os.Stderr)
-		err = c.PutPresigned(ctx, u.PresignedPutURL, reader, size, u.ChecksumSHA256B64)
+		err = c.PutPresigned(ctx, u.PresignedPutURL, reader, size)
 		reader.Finish()
 		return err
 	}

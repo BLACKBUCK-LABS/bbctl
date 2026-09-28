@@ -29,3 +29,7 @@ dist/
 
 RDS_DWARPAL_INTEGRATION.md
 docs/
+
+# code-review-graph related config files
+AGENTS.md
+GEMINI.md

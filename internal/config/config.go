@@ -26,6 +26,10 @@ var ErrNotLoggedIn = errors.New("not logged in — run: bbctl login")
 // When rotating: update the value here, tag a new release.
 const defaultOIDCClientSecret = "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"
 
+// DefaultProdBackendURL is the fallback prod backend when neither
+// BBCTL_BACKEND_URL nor prod_backend_url in config.yaml is set.
+const DefaultProdBackendURL = "https://bbctl.blackbuck.com"
+
 // Config holds all user-facing configuration.
 type Config struct {
 	BackendURL         string `yaml:"backend_url"`
@@ -72,7 +76,7 @@ func LoadOrDefault(configDir string) (*Config, error) {
 		AuthMode:           "jwt",
 		DefaultTimeoutSecs: 30,
 		BackendURL:         "https://bbctl-dev.blackbuck.com",
-		ProdBackendURL:     "https://bbctl.blackbuck.com",
+		ProdBackendURL:     DefaultProdBackendURL,
 		BBAuthURL:          "https://eks-api-gateway-stress.blackbuck.com",
 		ProdBBAuthURL:      "https://api.blackbuck.com",
 		OIDCIssuer:         "https://accounts.google.com",

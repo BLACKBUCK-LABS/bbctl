@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/blackbuck/bbctl/internal/config"
 	"github.com/blackbuck/bbctl/internal/shell"
@@ -56,25 +57,43 @@ Use 'bbctl run <instance-id> -- <command>' for a single command.`,
 // Execute is the entry point called from main.
 // Default (no prefix): hits dev backend (bbctl-dev.blackbuck.com).
 // "bbctl prod <rest>" strips "prod" and forces the prod backend URL.
+// Windows always forces prod — the Windows instance allowlist only exists
+// in the prod VPC, so the dev/prod split doesn't apply there.
 func Execute() {
 	ui.Init()
-	if len(os.Args) > 1 && os.Args[1] == "prod" {
+	if runtime.GOOS == "windows" {
+		activeEnv = "prod"
+		forceProdBackendURL()
+		// Already forced to prod above — "bbctl prod ..." is a harmless no-op
+		// on Windows, just strip the arg so it doesn't reach cobra as a command.
+		if len(os.Args) > 1 && os.Args[1] == "prod" {
+			os.Args = append(os.Args[:1], os.Args[2:]...)
+		}
+	} else if len(os.Args) > 1 && os.Args[1] == "prod" {
 		os.Args = append(os.Args[:1], os.Args[2:]...)
 		activeEnv = "prod"
-		if os.Getenv("BBCTL_BACKEND_URL") == "" {
-			prodURL := "https://bbctl.blackbuck.com" // default
-			if configDir, err := config.DefaultConfigDir(); err == nil {
-				if cfg, err := config.LoadOrDefault(configDir); err == nil && cfg.ProdBackendURL != "" {
-					prodURL = cfg.ProdBackendURL
-				}
-			}
-			os.Setenv("BBCTL_BACKEND_URL", prodURL) //nolint:errcheck
-		}
+		forceProdBackendURL()
 	}
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// forceProdBackendURL sets BBCTL_BACKEND_URL to the prod backend, unless
+// already set (e.g. for local testing). Resolution order: existing env var
+// (no-op) > prod_backend_url in config.yaml > config.DefaultProdBackendURL.
+func forceProdBackendURL() {
+	if os.Getenv("BBCTL_BACKEND_URL") != "" {
+		return
+	}
+	prodURL := config.DefaultProdBackendURL
+	if configDir, err := config.DefaultConfigDir(); err == nil {
+		if cfg, err := config.LoadOrDefault(configDir); err == nil && cfg.ProdBackendURL != "" {
+			prodURL = cfg.ProdBackendURL
+		}
+	}
+	os.Setenv("BBCTL_BACKEND_URL", prodURL) //nolint:errcheck
 }
 
 func init() {

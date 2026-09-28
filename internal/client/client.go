@@ -84,6 +84,18 @@ func (c *Client) ListInstances(ctx context.Context, accountID string) ([]Instanc
 	return resp.Instances, nil
 }
 
+// ListInstancesV2 calls POST /v2/instances for the given account — the
+// Windows-scoped variant, which the backend pre-filters to an allowlist
+// before responding.
+func (c *Client) ListInstancesV2(ctx context.Context, accountID string) ([]InstanceInfo, error) {
+	var resp ListInstancesResponse
+	if err := c.postJSON(ctx, "/v2/instances",
+		map[string]string{"account_id": accountID}, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Instances, nil
+}
+
 // InitUploadRequest is the body for POST /v1/upload/init (spec §14.4.1).
 type InitUploadRequest struct {
 	InstanceID string `json:"instance_id"`

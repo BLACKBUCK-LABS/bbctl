@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -89,6 +90,13 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 		Version: Version,
 	})
 
+	// Windows only supports the 4-instance Zinka Chronos allowlist — skip the
+	// EC2/RDS resource-type picker (there is no RDS access, no multi-account
+	// EC2 list) and go straight to the EC2 flow.
+	if runtime.GOOS == "windows" {
+		return runInteractiveEC2(cmd, c, cfg, cfgDir, token, forceRefresh)
+	}
+
 	resKey, err := pickResourceType()
 	if err != nil {
 		return err
@@ -145,11 +153,21 @@ func anyAuthErr(errs []string) bool {
 	return false
 }
 
+// loadEC2Instances loads the instance list for the interactive picker.
+// Windows clients get the backend-filtered single-account list (LoadWindows);
+// every other platform keeps the existing all-accounts fan-out (LoadAll).
+func loadEC2Instances(ctx context.Context, c *client.Client, cfg *config.Config, cfgDir string, forceRefresh bool) ([]ec2picker.Instance, error) {
+	if runtime.GOOS == "windows" {
+		return ec2picker.LoadWindows(ctx, c, cfg, cfgDir, forceRefresh)
+	}
+	return ec2picker.LoadAll(ctx, c, cfg, cfgDir, forceRefresh)
+}
+
 // runInteractiveEC2 is the EC2 flow: load instances → fuzzy-pick → action.
 func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config, cfgDir, token string, forceRefresh bool) error {
 	sp := ui.NewSpinner("Loading EC2 instances")
 	sp.Start()
-	instances, err := ec2picker.LoadAll(cmd.Context(), c, cfg, cfgDir, forceRefresh)
+	instances, err := loadEC2Instances(cmd.Context(), c, cfg, cfgDir, forceRefresh)
 	if err == nil {
 		sp.StopOK(fmt.Sprintf("Loaded %d instances", len(instances)))
 	} else {
@@ -170,7 +188,7 @@ func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 			}
 			sp2 := ui.NewSpinner("Loading EC2 instances")
 			sp2.Start()
-			instances, err = ec2picker.LoadAll(cmd.Context(), c, cfg, cfgDir, forceRefresh)
+			instances, err = loadEC2Instances(cmd.Context(), c, cfg, cfgDir, forceRefresh)
 			if err != nil {
 				sp2.StopErr("Failed to load instances")
 				return fmt.Errorf("load instances: %w", err)

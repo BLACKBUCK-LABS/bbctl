@@ -417,6 +417,7 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		if err != nil {
 			return nil
 		}
+		localPath = unescapeLocalPath(localPath)
 		remotePath, err := promptLine("Remote path: ")
 		if err != nil {
 			return nil
@@ -435,6 +436,9 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		if err != nil {
 			return nil
 		}
+		if localPath != "-" {
+			localPath = unescapeLocalPath(localPath)
+		}
 		if remotePath == "" || localPath == "" {
 			return nil
 		}
@@ -447,6 +451,31 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 	default:
 		return nil
 	}
+}
+
+// unescapeLocalPath undoes shell-style quoting/escaping a user pasted into
+// the raw readline prompt (e.g. from a terminal tab-completion or a
+// drag-and-dropped file whose path contains spaces: `/a/11th\ AGM\ Notice.pdf`
+// or `"/a/11th AGM Notice.pdf"`). The prompt is not a real shell, so those
+// characters reach us literally and a stat on the escaped string fails with
+// "no such file or directory" even though the real file exists.
+func unescapeLocalPath(p string) string {
+	if len(p) >= 2 {
+		if (p[0] == '\'' && p[len(p)-1] == '\'') || (p[0] == '"' && p[len(p)-1] == '"') {
+			return p[1 : len(p)-1]
+		}
+	}
+	if !strings.Contains(p, "\\") {
+		return p
+	}
+	var b strings.Builder
+	for i := 0; i < len(p); i++ {
+		if p[i] == '\\' && i+1 < len(p) {
+			i++
+		}
+		b.WriteByte(p[i])
+	}
+	return b.String()
 }
 
 // promptLine reads one line of input using the readline library, which fully

@@ -92,14 +92,12 @@ func decodeJWTExp(token string) (exp int64, ok bool) {
 	if len(parts) != 3 {
 		return 0, false
 	}
-	payload := parts[1]
-	switch len(payload) % 4 {
-	case 2:
-		payload += "=="
-	case 3:
-		payload += "="
-	}
-	data, err := base64.RawURLEncoding.DecodeString(payload)
+	// JWTs use unpadded base64url (RFC 7519) — RawURLEncoding decodes that
+	// directly. Adding "=" padding here breaks it: RawURLEncoding rejects
+	// any padding character, so a previous version of this code that
+	// padded first failed to decode on every payload length not already a
+	// multiple of 4 (including BOLT's real tokens).
+	data, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return 0, false
 	}
@@ -127,8 +125,9 @@ func IsTokenExpired(configDir string) bool {
 }
 
 // IsBoltTokenExpired returns true if the stored BOLT session JWT for env is
-// missing, unparseable, or within 60 seconds of expiry. Unlike the Google
-// token, there is no refresh path — an expired BOLT token means: bbctl login.
+// missing or unparseable, or (when it carries an exp claim) within 60
+// seconds of expiry. Unlike the Google token, there is no refresh path — an
+// expired BOLT token means: bbctl login.
 func IsBoltTokenExpired(configDir, env string) bool {
 	token, err := LoadBoltToken(configDir, env)
 	if err != nil || token == "" {
@@ -137,6 +136,12 @@ func IsBoltTokenExpired(configDir, env string) bool {
 	exp, ok := decodeJWTExp(token)
 	if !ok {
 		return true
+	}
+	// Real BOLT tokens carry no "exp" claim at all (only iat/randomizer/...);
+	// expiry is enforced server-side. exp==0 means "no claim", not "expired
+	// at the epoch" — treating it as expired locked every upload out.
+	if exp == 0 {
+		return false
 	}
 	return time.Now().Add(60*time.Second).Unix() > exp
 }

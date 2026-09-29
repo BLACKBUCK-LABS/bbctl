@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"time"
 )
 
@@ -19,6 +20,7 @@ type CommandRequest struct {
 	JiraTicketID           string `json:"jira_ticket_id,omitempty"`
 	EffectiveForValidation string `json:"effective_for_validation,omitempty"`
 	ClientVersion          string `json:"client_version,omitempty"`
+	ClientOS               string `json:"client_os,omitempty"`
 	PrivateIP              string `json:"private_ip,omitempty"`
 }
 
@@ -364,6 +366,7 @@ func (c *Client) BaseURL() string { return c.baseURL }
 // RunCommand calls POST /v1/commands.
 func (c *Client) RunCommand(ctx context.Context, req CommandRequest) (*CommandResponse, error) {
 	req.ClientVersion = c.clientVersion
+	req.ClientOS = runtime.GOOS
 	var resp CommandResponse
 	if err := c.postJSON(ctx, "/v1/commands", req, &resp); err != nil {
 		return nil, err

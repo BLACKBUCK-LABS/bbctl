@@ -125,12 +125,12 @@ func runDownloadSession(ctx context.Context, instanceID, accountID, remotePath, 
 		if !scanner.Scan() {
 			break
 		}
-		newRemotePath := strings.TrimSpace(scanner.Text())
+		newRemotePath := stripSurroundingQuotes(strings.TrimSpace(scanner.Text()))
 		fmt.Fprint(os.Stdout, "Local path [. for current dir]: ")
 		if !scanner.Scan() {
 			break
 		}
-		newLocalPath := strings.TrimSpace(scanner.Text())
+		newLocalPath := stripSurroundingQuotes(strings.TrimSpace(scanner.Text()))
 		if newLocalPath == "" {
 			newLocalPath = "."
 		}

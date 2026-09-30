@@ -501,7 +501,22 @@ func promptLine(prompt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(line), nil
+	return stripSurroundingQuotes(strings.TrimSpace(line)), nil
+}
+
+// stripSurroundingQuotes removes one matching pair of leading/trailing quotes
+// from a pasted path. Windows Explorer's "Copy as path" always wraps the
+// result in double quotes (e.g. "C:\Users\me\file.txt") — passed through
+// unmodified, that quote is a literal character in the path and Windows
+// rejects it as invalid ("volume label syntax is incorrect").
+func stripSurroundingQuotes(s string) string {
+	if len(s) >= 2 {
+		first, last := s[0], s[len(s)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
 }
 
 // emailFromToken extracts the email claim from a JWT without verifying the

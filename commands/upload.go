@@ -238,12 +238,12 @@ func runUploadSession(ctx context.Context, instanceID, accountID, localPath, rem
 		if !scanner.Scan() {
 			break
 		}
-		newLocalPath := strings.TrimSpace(scanner.Text())
+		newLocalPath := stripSurroundingQuotes(strings.TrimSpace(scanner.Text()))
 		fmt.Fprint(os.Stdout, "Remote path: ")
 		if !scanner.Scan() {
 			break
 		}
-		newRemotePath := strings.TrimSpace(scanner.Text())
+		newRemotePath := stripSurroundingQuotes(strings.TrimSpace(scanner.Text()))
 		if newLocalPath == "" || newRemotePath == "" {
 			fmt.Fprintln(os.Stdout, "Paths cannot be empty.")
 			continue

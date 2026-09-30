@@ -376,18 +376,36 @@ func pickRDS(items []rdsItem) (*rdsItem, error) {
 	return &items[idx], nil
 }
 
+// availableActions returns the actions to offer for this platform. Windows
+// clients don't get "Open shell" (non-PTY SSM shell) or "Run command" —
+// they're steered to "BOLT" (the PTY relay) and upload/download instead.
+func availableActions() []action {
+	if runtime.GOOS != "windows" {
+		return actions
+	}
+	filtered := make([]action, 0, len(actions))
+	for _, a := range actions {
+		if a.Key == "shell" || a.Key == "run" {
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	return filtered
+}
+
 func pickAction(inst *ec2picker.Instance) (string, error) {
+	opts := availableActions()
 	idx, err := fuzzyfinder.Find(
-		actions,
+		opts,
 		func(i int) string {
-			return actions[i].Icon + " " + actions[i].Label
+			return opts[i].Icon + " " + opts[i].Label
 		},
 		fuzzyfinder.WithHeader(fmt.Sprintf("Action for %s (%s)", inst.Name, inst.InstanceID)),
 		fuzzyfinder.WithPreviewWindow(func(i, w, h int) string {
 			if i < 0 {
 				return ""
 			}
-			return actions[i].Preview
+			return opts[i].Preview
 		}),
 	)
 	if err != nil {
@@ -396,7 +414,7 @@ func pickAction(inst *ec2picker.Instance) (string, error) {
 		}
 		return "", err
 	}
-	return actions[idx].Key, nil
+	return opts[idx].Key, nil
 }
 
 func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instance, c *client.Client, cfg *config.Config, cfgDir, token string) error {

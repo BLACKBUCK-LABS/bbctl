@@ -19,6 +19,45 @@ func LoadAll(ctx context.Context,
 	configDir string,
 	forceRefresh bool) ([]Instance, error) {
 
+	return loadAccounts(ctx, c, cfg, configDir, forceRefresh, "",
+		func(ctx context.Context, c *client.Client, accountID string) ([]client.InstanceInfo, error) {
+			return c.ListInstances(ctx, accountID)
+		})
+}
+
+// LoadWindows fetches instances for Windows clients from every configured
+// account (same fan-out as LoadAll), via the backend's v2 endpoint — which
+// the backend itself pre-filters to an allowlist before responding, so an
+// instance from any onboarded account (not just one hardcoded account) shows
+// up as soon as it's added to the backend's WINDOWS_INSTANCE_IDS allowlist.
+func LoadWindows(ctx context.Context,
+	c *client.Client,
+	cfg *config.Config,
+	configDir string,
+	forceRefresh bool) ([]Instance, error) {
+
+	// Cache key suffix keeps this separate from LoadAll's cache entries for
+	// the same account — v2 responses are allowlist-filtered, v1 are not,
+	// and must never be read back through each other's cache file.
+	return loadAccounts(ctx, c, cfg, configDir, forceRefresh, "-windows",
+		func(ctx context.Context, c *client.Client, accountID string) ([]client.InstanceInfo, error) {
+			return c.ListInstancesV2(ctx, accountID)
+		})
+}
+
+// loadAccounts fans fetchFn out across every configured account concurrently,
+// using the cache first unless forceRefresh. Shared by LoadAll and
+// LoadWindows — only the per-account backend call (and cache namespace, via
+// cacheKeySuffix) differs between them.
+func loadAccounts(ctx context.Context,
+	c *client.Client,
+	cfg *config.Config,
+	configDir string,
+	forceRefresh bool,
+	cacheKeySuffix string,
+	fetchFn func(ctx context.Context, c *client.Client, accountID string) ([]client.InstanceInfo, error),
+) ([]Instance, error) {
+
 	if len(cfg.AccountAliases) == 0 {
 		return nil, fmt.Errorf(
 			"no account_aliases in ~/.bbctl/config.yaml — " +
@@ -34,14 +73,14 @@ func LoadAll(ctx context.Context,
 
 	for label, accountID := range cfg.AccountAliases {
 		label, accountID := label, accountID
+		cacheKey := accountID + cacheKeySuffix
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
 			backendURL := c.BaseURL()
 			if !forceRefresh {
-				cached, _ := LoadCache(configDir, backendURL, accountID)
-				if cached != nil {
+				if cached, _ := LoadCache(configDir, backendURL, cacheKey); cached != nil {
 					mu.Lock()
 					all = append(all, cached...)
 					mu.Unlock()
@@ -49,7 +88,7 @@ func LoadAll(ctx context.Context,
 				}
 			}
 
-			instances, err := fetchFromBackend(ctx, c, accountID, capitalize(label))
+			infos, err := fetchFn(ctx, c, accountID)
 			if err != nil {
 				mu.Lock()
 				errs = append(errs, fmt.Sprintf("%s: %v", label, err))
@@ -57,7 +96,8 @@ func LoadAll(ctx context.Context,
 				return
 			}
 
-			_ = SaveCache(configDir, backendURL, accountID, instances)
+			instances := toInstances(infos, accountID, capitalize(label))
+			_ = SaveCache(configDir, backendURL, cacheKey, instances)
 
 			mu.Lock()
 			all = append(all, instances...)
@@ -81,67 +121,7 @@ func LoadAll(ctx context.Context,
 	return all, nil
 }
 
-// LoadWindows fetches instances for Windows clients: a single account
-// ("zinka", from cfg.AccountAliases — not hardcoded) via the backend's
-// v2 endpoint, which the backend itself pre-filters to an allowlist before
-// responding. Unlike LoadAll, it never fans out to every configured
-// account — only the one account the allowlisted instances live in.
-func LoadWindows(ctx context.Context,
-	c *client.Client,
-	cfg *config.Config,
-	configDir string,
-	forceRefresh bool) ([]Instance, error) {
-
-	accountID, ok := cfg.AccountAliases["zinka"]
-	if !ok {
-		return nil, fmt.Errorf(
-			"no \"zinka\" entry in account_aliases in ~/.bbctl/config.yaml — " +
-				"required for the Windows instance list")
-	}
-
-	backendURL := c.BaseURL()
-	if !forceRefresh {
-		if cached, _ := LoadCache(configDir, backendURL, accountID); cached != nil {
-			return cached, nil
-		}
-	}
-
-	infos, err := c.ListInstancesV2(ctx, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("zinka: %w", err)
-	}
-
-	instances := make([]Instance, len(infos))
-	for i, info := range infos {
-		instances[i] = Instance{
-			Name:         info.Name,
-			InstanceID:   info.InstanceID,
-			AccountID:    accountID,
-			AccountLabel: "Zinka",
-			PrivateIP:    info.PrivateIP,
-			PublicIP:     info.PublicIP,
-			InstanceType: info.InstanceType,
-			State:        info.State,
-			AZ:           info.AZ,
-		}
-	}
-
-	_ = SaveCache(configDir, backendURL, accountID, instances)
-
-	sort.Slice(instances, func(i, j int) bool { return instances[i].Name < instances[j].Name })
-
-	return instances, nil
-}
-
-func fetchFromBackend(ctx context.Context,
-	c *client.Client,
-	accountID, accountLabel string) ([]Instance, error) {
-
-	infos, err := c.ListInstances(ctx, accountID)
-	if err != nil {
-		return nil, err
-	}
-
+func toInstances(infos []client.InstanceInfo, accountID, accountLabel string) []Instance {
 	result := make([]Instance, len(infos))
 	for i, info := range infos {
 		result[i] = Instance{
@@ -156,7 +136,7 @@ func fetchFromBackend(ctx context.Context,
 			AZ:           info.AZ,
 		}
 	}
-	return result, nil
+	return result
 }
 
 func capitalize(s string) string {

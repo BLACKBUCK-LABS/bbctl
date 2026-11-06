@@ -397,7 +397,7 @@ func executeAction(ctx context.Context, actionKey string, inst *ec2picker.Instan
 		if command == "" {
 			return nil
 		}
-		return runCommandDirect(ctx, inst.InstanceID, inst.AccountID, command, "", inst.PrivateIP, c)
+		return runCommandDirect(ctx, inst.InstanceID, inst.AccountID, command, inst.PrivateIP, c)
 
 	case "upload":
 		fmt.Print("Local path:  ")

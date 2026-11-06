@@ -273,6 +273,30 @@ func (c *Client) RunCommand(ctx context.Context, req CommandRequest) (*CommandRe
 	return &resp, nil
 }
 
+// RunRequest is the body for POST /v1/run (the Dwarpal-gated run-command flow).
+type RunRequest struct {
+	InstanceID    string `json:"instance_id"`
+	AccountID     string `json:"account_id"`
+	Command       string `json:"command"`
+	ClientVersion string `json:"client_version,omitempty"`
+	PrivateIP     string `json:"private_ip,omitempty"`
+}
+
+// Run calls POST /v1/run. The BOLT (IAM) token travels in X-Bolt-Token; the
+// backend validates it and asks Dwarpal whether the caller may run the command.
+func (c *Client) Run(ctx context.Context, req RunRequest, boltToken string) (*CommandResponse, error) {
+	req.ClientVersion = c.clientVersion
+	var resp CommandResponse
+	hdr := http.Header{}
+	if boltToken != "" {
+		hdr.Set("X-Bolt-Token", boltToken)
+	}
+	if err := c.postJSONWithHeaders(ctx, "/v1/run", hdr, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // Classify calls POST /v1/classify.
 func (c *Client) Classify(ctx context.Context, command, instanceID string) (*ClassifyResponse, error) {
 	body := map[string]string{"command": command, "instance_id": instanceID}
@@ -320,6 +344,11 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, body, out any) error {
+	return c.postJSONWithHeaders(ctx, path, nil, body, out)
+}
+
+// postJSONWithHeaders is postJSON plus extra request headers (e.g. X-Bolt-Token).
+func (c *Client) postJSONWithHeaders(ctx context.Context, path string, extra http.Header, body, out any) error {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -329,6 +358,11 @@ func (c *Client) postJSON(ctx context.Context, path string, body, out any) error
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for k, vs := range extra {
+		for _, v := range vs {
+			req.Header.Set(k, v)
+		}
+	}
 	c.addAuth(req)
 
 	resp, err := c.http.Do(req)

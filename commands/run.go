@@ -16,7 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var runTicket string
 var runAccount string
 
 var runCmd = &cobra.Command{
@@ -27,7 +26,6 @@ var runCmd = &cobra.Command{
 }
 
 func init() {
-	runCmd.Flags().StringVar(&runTicket, "ticket", "", "Jira ticket ID for restricted commands")
 	runCmd.Flags().StringVarP(&runAccount, "account", "a", "", "AWS account name or ID (overrides default_account_id in config)")
 	rootCmd.AddCommand(runCmd)
 }
@@ -105,17 +103,40 @@ func runRun(cmd *cobra.Command, args []string) error {
 		os.Exit(130)
 	}()
 
-	return runCommandDirect(ctx, instanceID, accountID, command, runTicket, "", c)
+	return runCommandDirect(ctx, instanceID, accountID, command, "", c)
 }
 
-func runCommandDirect(ctx context.Context, instanceID, accountID, command, ticketID, privateIP string, c *client.Client) error {
-	resp, err := c.RunCommand(ctx, client.CommandRequest{
-		InstanceID:   instanceID,
-		AccountID:    accountID,
-		Command:      command,
-		JiraTicketID: ticketID,
-		PrivateIP:    privateIP,
-	})
+// loadRunBoltToken returns the BOLT session token for env ("dev" or "prod"), or
+// an error telling the user how to log in. `bbctl run` needs it because the
+// backend authorizes every command through Dwarpal.
+func loadRunBoltToken(configDir, env string) (string, error) {
+	token, err := config.LoadBoltToken(configDir, env)
+	if err != nil || strings.TrimSpace(token) == "" {
+		login := "bbctl login"
+		if env == "prod" {
+			login = "bbctl prod login"
+		}
+		return "", fmt.Errorf("not logged in to BOLT — run: %s", login)
+	}
+	return strings.TrimSpace(token), nil
+}
+
+func runCommandDirect(ctx context.Context, instanceID, accountID, command, privateIP string, c *client.Client) error {
+	configDir, err := config.DefaultConfigDir()
+	if err != nil {
+		return err
+	}
+	boltToken, err := loadRunBoltToken(configDir, activeEnv)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.Run(ctx, client.RunRequest{
+		InstanceID: instanceID,
+		AccountID:  accountID,
+		Command:    command,
+		PrivateIP:  privateIP,
+	}, boltToken)
 	if err != nil {
 		var apiErr *client.APIError
 		if errors.As(err, &apiErr) {
@@ -126,13 +147,6 @@ func runCommandDirect(ctx context.Context, instanceID, accountID, command, ticke
 			os.Exit(130)
 		}
 		return err
-	}
-
-	if resp.TicketKey != "" {
-		rerun := fmt.Sprintf("bbctl run %s -a %s --ticket %s -- %s",
-			instanceID, accountID, resp.TicketKey, command)
-		fmt.Fprintln(os.Stdout, ticketCard(resp.TicketKey, resp.TicketURL, rerun))
-		return nil
 	}
 
 	if resp.Stdout != "" {
@@ -167,6 +181,13 @@ func apiErrorText(err *client.APIError) string {
 			"   bbctl run <instance-id> --ticket PRODACCESS-XXXX -- <command>"
 	case 401:
 		return ui.Err("Not authenticated. Run: bbctl login")
+	case 403, 409:
+		// Run-command denials ("Permission Denied by BBCTL") and the one-at-a-time
+		// message are the server's own words; show them as-is.
+		if err.Message != "" {
+			return ui.Err(err.Message)
+		}
+		return ui.Err("Error: " + err.Error())
 	case 429:
 		return ui.Warn("Rate limit exceeded — slow down or wait a minute.")
 	case 504:

@@ -50,6 +50,70 @@ func TestRunCommand_SetsClientVersion(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRun_PostsToV1Run_WithBoltTokenHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/v1/run", r.URL.Path)
+		assert.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
+		assert.Equal(t, "bolt-jwt", r.Header.Get("X-Bolt-Token"))
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "i-abc", body["instance_id"])
+		assert.Equal(t, "ec2ctl/test", body["client_version"])
+		_, hasTicket := body["jira_ticket_id"]
+		assert.False(t, hasTicket)
+		json.NewEncoder(w).Encode(client.CommandResponse{Status: "success", ExitCode: intPtr(0), Stdout: "hi"})
+	}))
+	defer srv.Close()
+
+	c := client.New(srv.URL, "tok", "ec2ctl/test")
+	resp, err := c.Run(context.Background(), client.RunRequest{InstanceID: "i-abc", AccountID: "123", Command: "ls"}, "bolt-jwt")
+	require.NoError(t, err)
+	assert.Equal(t, "hi", resp.Stdout)
+}
+
+func TestRun_NoBoltToken_NoHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, present := r.Header["X-Bolt-Token"]
+		assert.False(t, present)
+		json.NewEncoder(w).Encode(client.CommandResponse{Status: "success"})
+	}))
+	defer srv.Close()
+
+	c := client.New(srv.URL, "tok", "ec2ctl/test")
+	_, err := c.Run(context.Background(), client.RunRequest{InstanceID: "i-abc", Command: "ls"}, "")
+	require.NoError(t, err)
+}
+
+func TestRun_ServerDenial_ReturnsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Permission Denied by BBCTL", "status": "denied"})
+	}))
+	defer srv.Close()
+
+	c := client.New(srv.URL, "tok", "ec2ctl/test")
+	_, err := c.Run(context.Background(), client.RunRequest{InstanceID: "i-abc", Command: "rm -rf /"}, "b")
+	var apiErr *client.APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusForbidden, apiErr.HTTPStatus)
+	assert.Equal(t, "Permission Denied by BBCTL", apiErr.Message)
+}
+
+func TestRunCommand_StillPostsToV1Commands_NoBoltHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/commands", r.URL.Path)
+		_, present := r.Header["X-Bolt-Token"]
+		assert.False(t, present, "legacy shell path must not change")
+		json.NewEncoder(w).Encode(client.CommandResponse{Status: "success"})
+	}))
+	defer srv.Close()
+
+	c := client.New(srv.URL, "tok", "ec2ctl/test")
+	_, err := c.RunCommand(context.Background(), client.CommandRequest{InstanceID: "i-abc", Command: "ls"})
+	require.NoError(t, err)
+}
+
 func TestClassify_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/classify", r.URL.Path)

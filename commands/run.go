@@ -69,7 +69,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	accountID = cfg.ResolveAccount(accountID)
 
-	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+	c := newBackendClient(cfg, token)
 
 	if instanceID == "" {
 		instances, err := ec2picker.LoadAll(cmd.Context(), c, cfg, configDir, false)

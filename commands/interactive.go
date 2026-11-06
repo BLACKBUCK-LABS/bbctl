@@ -76,7 +76,7 @@ func runInteractive(cmd *cobra.Command, forceRefresh bool) error {
 		return fmt.Errorf("backend_url not set in ~/.bbctl/config.yaml")
 	}
 
-	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+	c := newBackendClient(cfg, token)
 
 	if ui.Std.TTY {
 		fmt.Print("\033[2J\033[H") // clear screen
@@ -161,7 +161,7 @@ func runInteractiveEC2(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 			if loadErr != nil {
 				return fmt.Errorf("login failed: %w", loadErr)
 			}
-			c = client.New(cfg.BackendURL, token, "bbctl/"+Version)
+			c = newBackendClient(cfg, token)
 			sp2 := ui.NewSpinner("Loading EC2 instances")
 			sp2.Start()
 			instances, err = ec2picker.LoadAll(cmd.Context(), c, cfg, cfgDir, forceRefresh)
@@ -285,7 +285,7 @@ func runInteractiveRDS(cmd *cobra.Command, c *client.Client, cfg *config.Config,
 			return fmt.Errorf("login failed: %w", loadErr)
 		}
 		token = newToken
-		c = client.New(cfg.BackendURL, token, "bbctl/"+Version)
+		c = newBackendClient(cfg, token)
 		sp2 := ui.NewSpinner(fmt.Sprintf("Loading databases across %d accounts", len(labels)))
 		sp2.Start()
 		all, errs = loadAllRDS(ctx, c, labels)

@@ -246,6 +246,7 @@ func (e *APIError) Error() string {
 type Client struct {
 	baseURL       string
 	token         string
+	boltToken     string
 	clientVersion string
 	http          *http.Client
 }
@@ -263,35 +264,21 @@ func New(baseURL, token, clientVersion string) *Client {
 // BaseURL returns the backend base URL this client was created with.
 func (c *Client) BaseURL() string { return c.baseURL }
 
-// RunCommand calls POST /v1/commands.
+// SetBoltToken attaches the user's BOLT (IAM) token. RunCommand sends it as
+// X-Bolt-Token so the backend can authorize every command through Dwarpal.
+func (c *Client) SetBoltToken(token string) { c.boltToken = token }
+
+// RunCommand calls POST /v1/commands. When a BOLT token is set it is sent in
+// X-Bolt-Token; the backend validates it and asks Dwarpal whether the caller
+// may run the command.
 func (c *Client) RunCommand(ctx context.Context, req CommandRequest) (*CommandResponse, error) {
 	req.ClientVersion = c.clientVersion
 	var resp CommandResponse
-	if err := c.postJSON(ctx, "/v1/commands", req, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-// RunRequest is the body for POST /v1/run (the Dwarpal-gated run-command flow).
-type RunRequest struct {
-	InstanceID    string `json:"instance_id"`
-	AccountID     string `json:"account_id"`
-	Command       string `json:"command"`
-	ClientVersion string `json:"client_version,omitempty"`
-	PrivateIP     string `json:"private_ip,omitempty"`
-}
-
-// Run calls POST /v1/run. The BOLT (IAM) token travels in X-Bolt-Token; the
-// backend validates it and asks Dwarpal whether the caller may run the command.
-func (c *Client) Run(ctx context.Context, req RunRequest, boltToken string) (*CommandResponse, error) {
-	req.ClientVersion = c.clientVersion
-	var resp CommandResponse
 	hdr := http.Header{}
-	if boltToken != "" {
-		hdr.Set("X-Bolt-Token", boltToken)
+	if c.boltToken != "" {
+		hdr.Set("X-Bolt-Token", c.boltToken)
 	}
-	if err := c.postJSONWithHeaders(ctx, "/v1/run", hdr, req, &resp); err != nil {
+	if err := c.postJSONWithHeaders(ctx, "/v1/commands", hdr, req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

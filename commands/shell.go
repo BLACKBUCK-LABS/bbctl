@@ -69,7 +69,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 	}
 	accountID = cfg.ResolveAccount(accountID)
 
-	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+	c := newBackendClient(cfg, token)
 
 	if instanceID == "" {
 		instances, err := ec2picker.LoadAll(cmd.Context(), c, cfg, configDir, false)
@@ -116,7 +116,7 @@ func (a *clientCompleterAdapter) Complete(ctx context.Context, req shell.Complet
 }
 
 func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, token, privateIP string) error {
-	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+	c := newBackendClient(cfg, token)
 	email := extractEmailFromJWT(token)
 
 	var activeTicket string
@@ -222,7 +222,7 @@ func runShellDirect(instanceID, accountID string, cfg *config.Config, cfgDir, to
 				return nil
 			}
 			token = newToken
-			c = client.New(cfg.BackendURL, token, "bbctl/"+Version)
+			c = newBackendClient(cfg, token)
 		}
 
 		// Detect curl @file references and handle uploads if needed.

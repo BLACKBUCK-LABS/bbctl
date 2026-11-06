@@ -67,7 +67,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	accountID = cfg.ResolveAccount(accountID)
 
-	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+	c := newBackendClient(cfg, token)
 
 	if instanceID == "" {
 		instances, err := ec2picker.LoadAll(cmd.Context(), c, cfg, configDir, false)
@@ -121,6 +121,19 @@ func loadRunBoltToken(configDir, env string) (string, error) {
 	return strings.TrimSpace(token), nil
 }
 
+// newBackendClient builds the backend client and, when the user is logged in to
+// BOLT, attaches the BOLT token so POST /v1/commands can authorize every command
+// through Dwarpal. Without a BOLT login the backend answers 401.
+func newBackendClient(cfg *config.Config, token string) *client.Client {
+	c := client.New(cfg.BackendURL, token, "bbctl/"+Version)
+	if dir, err := config.DefaultConfigDir(); err == nil {
+		if boltToken, err := loadRunBoltToken(dir, activeEnv); err == nil {
+			c.SetBoltToken(boltToken)
+		}
+	}
+	return c
+}
+
 func runCommandDirect(ctx context.Context, instanceID, accountID, command, privateIP string, c *client.Client) error {
 	configDir, err := config.DefaultConfigDir()
 	if err != nil {
@@ -131,12 +144,13 @@ func runCommandDirect(ctx context.Context, instanceID, accountID, command, priva
 		return err
 	}
 
-	resp, err := c.Run(ctx, client.RunRequest{
+	c.SetBoltToken(boltToken)
+	resp, err := c.RunCommand(ctx, client.CommandRequest{
 		InstanceID: instanceID,
 		AccountID:  accountID,
 		Command:    command,
 		PrivateIP:  privateIP,
-	}, boltToken)
+	})
 	if err != nil {
 		var apiErr *client.APIError
 		if errors.As(err, &apiErr) {
